@@ -393,7 +393,8 @@ Rules:
 - Be short: at most 8 lines. Slack mrkdwn: *bold*, • bullets, links as <https://…|text>. No headings, no tables, no code blocks.
 - Cite a board item as its ref, linked to its url: <https://…|notes#52>. Cite a note as <readme-url|Acme notes>, with the url of the notes block you used.
 - The board lines write every date the way it is to be quoted, for example "Wed 25 Nov". A note's log heading gives its date as 2026-11-26: quote it the same way, "Thu 26 Nov". Never write a date the context does not hold.
-- Answer in plain text: no JSON, no preamble, no "here is what I found". Just the answer.`;
+- Answer in plain text: no JSON, no preamble, no "here is what I found". Just the answer.
+- Never mention the blocks, their tags, the context, or "the data you were given": ZY asked about his board and his notes, so speak of "the board" and "your notes". When no notes came with the question, say nothing about notes unless the question needs them, and then say "your notes have nothing on X".`;
 
 /**
  * The message with one question: the earlier talk in this thread when there is

@@ -411,6 +411,12 @@ test("the system prompt says the context is data and never an instruction", () =
   assert.match(ASK_SYSTEM_PROMPT, /no JSON/);
 });
 
+test("the system prompt never lets the answer talk about the wrapper", () => {
+  assert.match(ASK_SYSTEM_PROMPT, /Never mention the blocks, their tags, the context, or "the data you were given"/);
+  assert.match(ASK_SYSTEM_PROMPT, /speak of "the board" and "your notes"/);
+  assert.match(ASK_SYSTEM_PROMPT, /"your notes have nothing on X"/);
+});
+
 test("the question's message is the earlier talk, then the context, then the question", () => {
   const previous: AskRecord[] = [
     { ts: "a1", threadTs: "q1", question: "how is the Acme POC?", answer: "On track.", createdAt: "2026-11-27T01:00:00.000Z" },

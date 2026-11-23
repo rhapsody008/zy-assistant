@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pingKey, plan, type Item, type SentPing } from "../src/rules.ts";
+import { pingKey, plan, workItems, type Item, type SentPing } from "../src/rules.ts";
 
 const UPDATED = "2026-11-20T00:00:00.000Z";
 const url = (ref: string): string => `https://github.com/rhapsody008/notes/issues/${ref.split("#")[1]}`;
@@ -189,6 +189,47 @@ test("two warnings on one morning follow the history's order, not the board's", 
   assert.equal(warns.length, 2, "both unacked Friday repings warn on Monday");
   assert.match(warns[0], /notes#53/, "B is warned first: it was pinged first on Friday");
   assert.match(warns[1], /notes#52/, "A is warned second, though the board lists it first");
+});
+
+test("a parent issue is not a unit of work: its In-progress child is what counts", () => {
+  const parent = item({ id: "ENG", ref: "notes#ENG", title: "Acme POC", target: "2026-12-15" });
+  const child = item({ id: "61", title: "Sizing", parentUrl: parent.url });
+
+  assert.deepEqual(workItems([parent, child]).map((i) => i.id), [child.id], "only the child is work");
+  assert.match(pings([parent, child], "2026-11-23", "M").briefing ?? "", /In progress: 1$/, "the parent does not count");
+});
+
+test("a parent whose child is Done or off the board is still a parent", () => {
+  const parent = item({ id: "ENG" });
+  const doneChild = item({ id: "61", parentUrl: parent.url, status: "Done" });
+  assert.deepEqual(workItems([parent, doneChild]).map((i) => i.id), [doneChild.id], "a Done child still makes its issue a parent");
+  assert.match(pings([parent, doneChild], "2026-11-23", "M").briefing ?? "", /In progress: 0$/, "and the parent is not counted");
+
+  const elsewhere = item({ id: "ENG2", ref: "notes#ENG2", title: "Globex POC", parentUrl: "https://github.com/acme/demo/issues/900" });
+  assert.deepEqual(workItems([parent, elsewhere]).map((i) => i.id), [parent.id, elsewhere.id], "their children are not on the board");
+});
+
+test("a draft counts as work: it has no sub-issues", () => {
+  const draft = item({ id: "D1", ref: "draft", url: "https://github.com/users/acme/projects/1" });
+  const parent = item({ id: "ENG", url: "https://github.com/acme/demo/issues/90" });
+  const child = item({ id: "61", parentUrl: parent.url });
+
+  assert.deepEqual(workItems([parent, child, draft]).map((i) => i.id), [child.id, draft.id]);
+});
+
+test("over the WIP limit the list of what is in flight leaves the parents out", () => {
+  const board = [
+    item({ id: "ENG1", ref: "notes#ENG1", title: "Acme POC" }),
+    item({ id: "ENG2", ref: "notes#ENG2", title: "Globex POC" }),
+    item({ id: "C1", parentUrl: url("notes#ENG1") }),
+    item({ id: "C2", parentUrl: url("notes#ENG1") }),
+    item({ id: "C3", parentUrl: url("notes#ENG2") }),
+    item({ id: "C4" }),
+  ];
+  const briefing = pings(board, "2026-11-23", "M").briefing ?? "";
+
+  assert.match(briefing, /In progress: 4 \(over the limit of 3: what are you dropping\?\)\nnotes#C1, notes#C2, notes#C3, notes#C4$/);
+  assert.ok(!/notes#ENG[12]/.test(briefing), "the engagements are not what you are dropping");
 });
 
 test("four In progress items are over the WIP limit", () => {

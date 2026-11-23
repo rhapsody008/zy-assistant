@@ -75,7 +75,7 @@ function todayTopic(settings: ManualSettings): ManualTopic {
     topic: "today",
     title: "Today",
     details: [
-      `*When*: weekdays only, ${TZ}. The morning briefing goes out once at \`${settings.briefTime}\`, the wrap-up once at \`${settings.eodTime}\`. A slot runs at most once a day; one that fails is retried on the next minute tick, and after three failures I close the slot and DM you the error.`,
+      `*When*: weekdays only, ${TZ}. The morning briefing goes out once at \`${settings.briefTime}\`. The evening sweep at \`${settings.eodTime}\` sends only pings, so a quiet evening sends nothing. A slot runs at most once a day; one that fails is retried on the next minute tick, and after three failures I close the slot and DM you the error.`,
       [
         "*What the morning briefing holds*, in this order:",
         `• *Today*: an item whose Target date is today, due within ${plural(policy.pingDays, "day")} or already overdue, whose Next touch is due or past, or that is at a milestone. With nothing due it reads "Nothing due. 🎉".`,
@@ -85,6 +85,7 @@ function todayTopic(settings: ManualSettings): ManualTopic {
         `• *In progress: N*, the WIP count. Over the limit of ${policy.wipLimit} it names what is in flight and asks what you are dropping.`,
         "• A ⚠ line at the very top for a ping from the previous workday that never got an answer (see `help pings`).",
       ].join("\n"),
+      "Parents (items with sub-issues) don't count; their tasks do.",
       `A ${policy.waiting} item shows up in Today like any other, and the chase rule that repeats the ask after ${plural(policy.waitingChaseDays, "day")} is in \`help pings\`.`,
       "`today` in a DM sends the plan for today as it would go out right now: the briefing first, then each ping it comes with. It writes nothing to the board and records nothing.",
     ],
@@ -240,7 +241,8 @@ function sentBlock(settings: ManualSettings): ManualBlock {
   return section(
     [
       "*What I send you* (automatic; you never type these)",
-      `• The briefing at \`${settings.briefTime}\` and the wrap-up at \`${settings.eodTime}\` on weekdays: one message listing everything.`,
+      `• The briefing at \`${settings.briefTime}\` on weekdays: one message with everything on it.`,
+      `• At \`${settings.eodTime}\`, only if something needs you: a ping for each item due today, and a re-ping of anything unanswered from the morning. A quiet evening sends nothing.`,
       `• Pings: a separate message about ONE item when it needs you now: a deadline close (Target date due in ${plural(policy.pingDays, "day")} or fewer) or already passed, a Next touch due, or someone to chase (a ${policy.waiting} item nobody moved for ${plural(policy.waitingChaseDays, "day")}). Each ping has buttons.`,
       "• A ping looks like this: `notes#53 Acme deck review: due in 2 days (Thu 26 Nov)  [👍 On it] [Move date] [✅ Done]`",
     ].join("\n"),

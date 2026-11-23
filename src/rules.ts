@@ -21,6 +21,8 @@
 // Ack = a button press, a thread reply, the item updated (board or issue) after the
 // ping, or a notes-repo commit under the item's Account after the ping.
 // One message per item per slot; reasons are merged, and so are their buttons.
+// WIP: an item with sub-issues on the board is a parent, an engagement rather than
+// a unit of work, so the In progress count and its list leave it out (workItems).
 //
 // Shape: every rule is a pure function (item, env) => Finding[]. Each item goes
 // through the rules of its slot in board order, then one merge step turns an
@@ -172,6 +174,17 @@ export function isAcked(p: SentPing, item: Item | undefined, activity?: Map<stri
   if (p.ackedAt) return true;
   const since = latestIso(item?.updatedAt, activity?.get(p.itemId));
   return since !== null && Date.parse(since) > Date.parse(p.sentAt);
+}
+
+/**
+ * The items that are a unit of work. An item another item names as its parent is
+ * an engagement ("Acme · POC"), and an engagement in progress is not work in
+ * progress: its sub-issues are. The children stay, wherever they are on the board;
+ * a parent with no child on the board counts, since nothing says it is one.
+ */
+export function workItems(items: readonly Item[]): Item[] {
+  const parents = new Set(items.flatMap((item) => (item.parentUrl === null ? [] : [item.parentUrl])));
+  return items.filter((item) => !parents.has(item.url));
 }
 
 /** The calendar date of an ISO timestamp. */
@@ -440,7 +453,7 @@ export function plan(items: Item[], today: string, slot: Slot, history: SentPing
   const rules = slot === "M" ? MORNING_RULES : EVENING_RULES;
   const view = open.map((item) => ({ item, findings: rules.flatMap((rule) => rule(item, env)) }));
   return {
-    briefing: slot === "M" ? renderBriefing(view, env) : null,
+    briefing: slot === "M" ? renderBriefing(view, env, workItems(items)) : null,
     pings: mergePings(view, env),
   };
 }
@@ -473,7 +486,7 @@ function mergePings(view: ItemFindings[], env: Env): Ping[] {
   return pings;
 }
 
-function renderBriefing(view: ItemFindings[], env: Env): string {
+function renderBriefing(view: ItemFindings[], env: Env, work: readonly Item[]): string {
   const policy = env.policy;
   const inSection = (name: Section): Finding[] => view.flatMap((v) => v.findings.filter((f) => f.section === name));
 
@@ -504,12 +517,12 @@ function renderBriefing(view: ItemFindings[], env: Env): string {
     if (lines.length > 0) parts.push(`*${title}*\n${lines.join("\n")}`);
   }
 
-  const working = view.filter((v) => v.item.status === policy.inProgress);
+  const working = work.filter((item) => item.status === policy.inProgress);
   const wip = working.length;
   if (wip > policy.wipLimit) {
     // Over the limit: name what is in flight, so dropping one is a choice.
     parts.push(
-      `In progress: ${wip} (over the limit of ${policy.wipLimit}: what are you dropping?)\n${working.map((v) => v.item.ref).join(", ")}`,
+      `In progress: ${wip} (over the limit of ${policy.wipLimit}: what are you dropping?)\n${working.map((item) => item.ref).join(", ")}`,
     );
   } else {
     parts.push(`In progress: ${wip}`);

@@ -60,7 +60,8 @@ below when `NOTES_REPO` is unset. With the defaults, `help` sends exactly this:
 • Anything else you write, in a new message or a thread, is read as a question.
 
 *What I send you* (automatic; you never type these)
-• The briefing at `09:00` and the wrap-up at `17:30` on weekdays: one message listing everything.
+• The briefing at `09:00` on weekdays: one message with everything on it.
+• At `17:30`, only if something needs you: a ping for each item due today, and a re-ping of anything unanswered from the morning. A quiet evening sends nothing.
 • Pings: a separate message about ONE item when it needs you now: a deadline close (Target date due in 3 days or fewer) or already passed, a Next touch due, or someone to chase (a Waiting item nobody moved for 5 days). Each ping has buttons.
 • A ping looks like this: `notes#53 Acme deck review: due in 2 days (Thu 26 Nov)  [👍 On it] [Move date] [✅ Done]`
 

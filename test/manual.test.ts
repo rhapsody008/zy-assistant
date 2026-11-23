@@ -50,7 +50,11 @@ test("the overview is what you type, what I send you, the buttons, then the page
 
   const sent = blocks[1].text.text;
   assert.match(sent, /^\*What I send you\* \(automatic; you never type these\)\n• /);
-  assert.match(sent, /• The briefing at `09:00` and the wrap-up at `17:30` on weekdays: one message listing everything\./);
+  assert.match(sent, /• The briefing at `09:00` on weekdays: one message with everything on it\./);
+  assert.match(
+    sent,
+    /• At `17:30`, only if something needs you: a ping for each item due today, and a re-ping of anything unanswered from the morning\. A quiet evening sends nothing\./,
+  );
   assert.match(sent, /• Pings: a separate message about ONE item when it needs you now/);
   assert.match(sent, /notes#53 Acme deck review: due in 2 days \(Thu 26 Nov\) {2}\[👍 On it\] \[Move date\] \[✅ Done\]/);
   assert.match(sent, /Each ping has buttons\./);
@@ -123,8 +127,8 @@ test("the policy the bot runs with is what the manual quotes", () => {
   const settings: ManualSettings = { ...DEFAULTS, briefTime: "08:15", eodTime: "18:45", policy };
 
   const overview = overviewText(settings, true);
-  assert.match(overview, /at `08:15`/);
-  assert.match(overview, /at `18:45`/);
+  assert.match(overview, /The briefing at `08:15` on weekdays/);
+  assert.match(overview, /At `18:45`, only if something needs you: a ping for each item due today/);
   assert.match(overview, /a deadline close \(Target date due in 2 days or fewer\) or already passed/);
   assert.match(overview, /a Waiting item nobody moved for 11 days/);
   assert.doesNotMatch(overview, /Workshop|T-14/, "nothing of the default policy survives");
@@ -148,7 +152,8 @@ test("the today page is the briefing page: when it goes out, what it holds, and 
 
   assert.match(page, /^\*Today\*/);
   assert.match(page, /\*When\*: weekdays only, Asia\/Singapore/);
-  assert.match(page, /The morning briefing goes out once at `09:00`, the wrap-up once at `17:30`/);
+  assert.match(page, /The morning briefing goes out once at `09:00`\. The evening sweep at `17:30` sends only pings, so a quiet evening sends nothing\./);
+  assert.match(page, /Parents \(items with sub-issues\) don't count; their tasks do\./);
   assert.match(page, /What the morning briefing holds/);
   assert.match(page, /`today` in a DM sends the plan for today as it would go out right now/);
   assert.doesNotMatch(page, /`briefing`/);
