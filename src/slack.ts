@@ -5,6 +5,7 @@
 // store, the board), so they can be tested without Bolt and without network.
 
 import { App, LogLevel } from "@slack/bolt";
+import { askQuestion, type AskDeps, type AskInput, type AskUi } from "./ask.ts";
 import { errMessage } from "./errors.ts";
 import type { BoardSource } from "./github.ts";
 import { helpReply, type ManualSettings } from "./manual.ts";
@@ -140,8 +141,8 @@ const LABELS: Record<ActionId, string> = {
 const MAX_SELECT_OPTIONS = 100;
 
 /**
- * What a DM that is no command gets. One function, because 0.5.0 answers such a DM
- * with questions instead of this hint. `note:` is only offered when the scribe is on.
+ * What a DM that is no command gets when there is no model to ask: the ask takes
+ * such a DM whenever the LLM is set. `note:` is only offered when the scribe is on.
  */
 export function unknownDmHint(scribe: boolean): string {
   return scribe
@@ -282,10 +283,15 @@ export interface HandlerDeps {
   manual: ManualSettings;
   /** The scribe, when LLM_BASE_URL and friends are set: null turns "note: ..." off. */
   scribe?: ScribeDispatch | null;
+  /** The ask, when the LLM is set: null answers a question with the hint again. */
+  ask?: AskDispatch | null;
 }
 
 /** The scribe, called without being awaited: Slack wants its three seconds. */
 export type ScribeDispatch = (dictation: ScribeDictation, ui: ScribeUi) => Promise<void>;
+
+/** The ask, called without being awaited for the same reason. */
+export type AskDispatch = (input: AskInput, ui: AskUi) => Promise<void>;
 
 export interface ActionClick {
   actionId: string; // raw action_id, e.g. "zy_done"
@@ -310,6 +316,9 @@ export interface DmMessage {
 export function touchDate(today: string, action: "touch1" | "touch7"): string {
   return nextWorkday(addDays(today, action === "touch1" ? 1 : 7));
 }
+
+/** True when a model is set: a DM that is no command is a question. */
+const askOn = (deps: HandlerDeps): boolean => deps.ask !== null && deps.ask !== undefined;
 
 /** True when a dictation would be scribed: the note topic and the note: line. */
 const scribeOn = (deps: HandlerDeps): boolean => deps.scribe !== null && deps.scribe !== undefined;
@@ -361,7 +370,11 @@ export function dictationText(text: string): string | null {
   return body === "" ? null : body; // a bare "note:" is not a dictation
 }
 
-/** A DM from ZY: a dictation is scribed, a thread reply acks that ping, then the commands. */
+/**
+ * A DM from ZY, in this order: a dictation is scribed; a reply under a ping acks
+ * that ping; `today` and the manual answer; anything else is a question when a
+ * model is set, and the one-line hint when it is not.
+ */
 export async function handleMessage(deps: HandlerDeps, message: DmMessage): Promise<void> {
   if (message.userId !== deps.userId) return;
 
@@ -372,6 +385,9 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
     return;
   }
 
+  // A ping's thread is an ack, whatever the words: that is what "Noted." means.
+  // Any other thread (an answer's, a briefing's, a dictation's, a help message's)
+  // is no ack at all, and the question below answers it in that same thread.
   if (message.threadTs) {
     const parent = deps.store.findByMessage(message.channel, message.threadTs);
     if (parent) {
@@ -396,6 +412,13 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
     return;
   }
 
+  // Anything else is a question, when there is a model to ask: a DM of its own,
+  // or a follow-up in the thread of an answer.
+  if (askOn(deps) && message.text.trim() !== "") {
+    void runAsk(deps, message);
+    return;
+  }
+
   await postMessage(deps, { channel: message.channel, text: unknownDmHint(scribeOn(deps)) });
 }
 
@@ -409,6 +432,28 @@ async function sendToday(deps: HandlerDeps, channel: string): Promise<void> {
   const preview = plan(board.items, today, "M", []);
   await postMessage(deps, { channel, text: ["(preview)", preview.briefing ?? ""].join("\n\n").trim() });
   for (const ping of preview.pings) await postMessage(deps, { channel, text: ping.text });
+}
+
+/**
+ * A question's work, off the handler's path: a model call takes longer than Slack
+ * would wait. Every error ends in the thread; nothing is thrown out.
+ */
+async function runAsk(deps: HandlerDeps, message: DmMessage): Promise<void> {
+  // A top-level question is answered in a thread of its own; a reply anywhere is
+  // answered in the thread it was asked in. The pipeline looks that thread up: a
+  // thread of answers carries its earlier questions, any other thread does not.
+  const threadTs = message.threadTs ?? message.ts;
+  const ui = threadUi(deps.client, message.channel, threadTs);
+  try {
+    await deps.ask?.({ ts: message.ts, question: message.text, threadTs }, ui);
+  } catch (err) {
+    deps.log(`ask ${message.ts} failed: ${errMessage(err)}`);
+    try {
+      await ui.reply(`couldn't answer: ${errMessage(err)}`);
+    } catch (replyErr) {
+      deps.log(`ask ${message.ts}: the error reply failed too: ${errMessage(replyErr)}`);
+    }
+  }
 }
 
 /**
@@ -445,7 +490,9 @@ async function pingHint(deps: HandlerDeps, message: DmMessage): Promise<string |
   }
 }
 
-/** The scribe's Slack side: everything replies in the dictation's own thread. */
+/** The bot's Slack side of one thread: the replies, edits and questions of the
+ * scribe and of the ask all land in the thread they belong to.
+ */
 export function threadUi(client: SlackClient, channel: string, threadTs: string): ScribeUi {
   return {
     async reply(text: string): Promise<string> {
@@ -737,6 +784,8 @@ export interface SlackBotOptions {
   manual: ManualSettings;
   /** The scribe, or null: without it "note: ..." is answered like any other DM. */
   scribe?: ScribeDeps | null;
+  /** The ask, or null: without it a question gets the hint instead of an answer. */
+  ask?: AskDeps | null;
 }
 
 export class SlackBot implements Sender {
@@ -748,6 +797,7 @@ export class SlackBot implements Sender {
   constructor(options: SlackBotOptions) {
     this.#userId = options.userId;
     const scribe = options.scribe ?? null;
+    const ask = options.ask ?? null;
     this.#scribe = scribe;
     this.#deps = {
       store: options.store,
@@ -759,6 +809,7 @@ export class SlackBot implements Sender {
       log: options.log,
       manual: options.manual,
       scribe: scribe === null ? null : (dictation, ui) => scribeHandler(scribe, dictation, ui),
+      ask: ask === null ? null : (input, ui) => askQuestion(ask, input, ui),
     };
     this.app = new App({
       token: options.botToken,

@@ -75,17 +75,28 @@ export function openaiCompatible(options: OpenAiCompatibleOptions): Llm {
 }
 
 /**
- * The reply with the reasoning and the code fences taken out. Only the text after
- * the LAST closing think tag counts: a model that reasons in several blocks puts
- * its answer after the last one. A think tag that never closes means the reply
- * was cut off in the middle of the reasoning, so there is nothing to parse.
+ * The reply was cut off inside its reasoning: there is no answer after the
+ * <think> block, so there is nothing to use. The ask retries this once.
  */
-function plain(text: string): string {
+export class UnclosedReasoning extends Error {}
+
+/**
+ * The reply without the reasoning. Only the text after the LAST closing think
+ * tag counts: a model that reasons in several blocks puts its answer after the
+ * last one. A think tag that never closes means the reply was cut off in the
+ * middle of the reasoning, so there is nothing to use.
+ */
+export function stripReasoning(text: string): string {
   const lower = text.toLowerCase();
   const close = lower.lastIndexOf("</think>");
-  if (close !== -1) return text.slice(close + "</think>".length).replace(/```[a-z]*\n?/gi, "");
-  if (lower.includes("<think>")) throw new Error("the reasoning did not finish: no closing </think> in the reply");
-  return text.replace(/```[a-z]*\n?/gi, "");
+  if (close !== -1) return text.slice(close + "</think>".length);
+  if (lower.includes("<think>")) throw new UnclosedReasoning("the reasoning did not finish: no closing </think> in the reply");
+  return text;
+}
+
+/** The same reply, with the code fences a JSON answer may arrive in taken out. */
+function plain(text: string): string {
+  return stripReasoning(text).replace(/```[a-z]*\n?/gi, "");
 }
 
 /**

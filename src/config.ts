@@ -4,7 +4,7 @@
 import { DEFAULT_POLICY, type Policy } from "./rules.ts";
 import { parseHHMM } from "./time.ts";
 
-export type Mode = "check" | "dry-run" | "run" | "scribe";
+export type Mode = "check" | "dry-run" | "run" | "scribe" | "ask";
 
 export interface SlackConfig {
   botToken: string;
@@ -41,6 +41,8 @@ export interface Config {
   dbPath: string;
   httpPort: number | null; // null: no health endpoint
   slack: SlackConfig | null;
+  /** The model when the three LLM variables are set: the ask's, and the scribe's. */
+  llm: LlmSettings | null;
   /** null: no "note: ..." in the DM, and no `scribe` mode. */
   scribe: ScribeConfig | null;
 }
@@ -72,7 +74,7 @@ function fail(mode: Mode, names: string[], hint = ""): never {
 
 /** run needs Slack, check uses it when set, dry-run never does. */
 export function loadConfig(mode: "run", env?: NodeJS.ProcessEnv): Config & { slack: SlackConfig };
-export function loadConfig(mode: "check" | "dry-run" | "scribe", env?: NodeJS.ProcessEnv): Config;
+export function loadConfig(mode: "check" | "dry-run" | "scribe" | "ask", env?: NodeJS.ProcessEnv): Config;
 export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Config {
   const get = (name: string): string => env[name] ?? "";
 
@@ -81,7 +83,9 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
       ? ["GITHUB_TOKEN", ...SLACK_VARS]
       : mode === "scribe"
         ? ["GITHUB_TOKEN", "NOTES_REPO", ...LLM_VARS]
-        : ["GITHUB_TOKEN"];
+        : mode === "ask"
+          ? ["GITHUB_TOKEN", ...LLM_VARS]
+          : ["GITHUB_TOKEN"];
   const missing = required.filter((name) => get(name) === "");
   if (missing.length > 0) fail(mode, missing);
 
@@ -125,30 +129,29 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
     throw new Error(`${mode}: NOTES_REPO must be owner/repo, got ${notesRepo}`);
   }
 
-  // The scribe is on iff all three LLM variables and NOTES_REPO are set; half of
-  // them is a typo, not a decision, so it fails here rather than going quiet.
+  // The three LLM variables are the model: the ask is on iff they are all set, and
+  // the scribe iff NOTES_REPO is set too. Half of them is a typo, not a decision, so
+  // it fails here rather than going quiet.
   const llmSet = LLM_VARS.filter((name) => get(name) !== "");
   if (llmSet.length > 0 && llmSet.length < LLM_VARS.length) {
-    fail(mode, LLM_VARS.filter((name) => get(name) === ""), ` (the scribe needs all of ${LLM_VARS.join(", ")})`);
+    fail(mode, LLM_VARS.filter((name) => get(name) === ""), ` (the scribe and the ask need all of ${LLM_VARS.join(", ")})`);
   }
   const baseUrl = get("LLM_BASE_URL");
   if (baseUrl !== "" && !/^https?:\/\//.test(baseUrl)) {
     throw new Error(`${mode}: LLM_BASE_URL must be an http(s) url, got ${baseUrl}`);
   }
-  const scribe: ScribeConfig | null =
-    llmSet.length === LLM_VARS.length && notesRepo !== ""
+  const llm: LlmSettings | null =
+    llmSet.length === LLM_VARS.length
       ? {
-          llm: {
-            baseUrl: baseUrl.replace(/\/+$/, ""),
-            apiKey: get("LLM_API_KEY"),
-            model: get("LLM_MODEL"),
-            timeoutMs: whole("LLM_TIMEOUT_MS", LLM_TIMEOUT_MS),
-            maxTokens: whole("LLM_MAX_TOKENS", LLM_MAX_TOKENS),
-          },
-          repo: notesRepo,
-          token: get("NOTES_GITHUB_TOKEN") || get("GITHUB_TOKEN"),
+          baseUrl: baseUrl.replace(/\/+$/, ""),
+          apiKey: get("LLM_API_KEY"),
+          model: get("LLM_MODEL"),
+          timeoutMs: whole("LLM_TIMEOUT_MS", LLM_TIMEOUT_MS),
+          maxTokens: whole("LLM_MAX_TOKENS", LLM_MAX_TOKENS),
         }
       : null;
+  const scribe: ScribeConfig | null =
+    llm !== null && notesRepo !== "" ? { llm, repo: notesRepo, token: get("NOTES_GITHUB_TOKEN") || get("GITHUB_TOKEN") } : null;
 
   return {
     githubToken: get("GITHUB_TOKEN"),
@@ -164,6 +167,7 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
     dbPath: get("DB_PATH") || "./data/state.db",
     httpPort: httpPort === "" ? null : Number(httpPort),
     slack,
+    llm,
     scribe,
   };
 }

@@ -1,6 +1,8 @@
-// Entry point: `check`, `dry-run`, `run` and `scribe`. Modes are described in README.md.
+// Entry point: `check`, `dry-run`, `run`, `scribe` and `ask`. Modes are described in
+// README.md.
 
 import { readFileSync } from "node:fs";
+import { answerQuestion, sourcesLine, type AnswerDeps, type NotesSource } from "./ask.ts";
 import { LLM_VARS, loadConfig, scribeMissing, type Config } from "./config.ts";
 import { errMessage } from "./errors.ts";
 import { createBoardClient, type BoardSource } from "./github.ts";
@@ -14,7 +16,7 @@ import { startScheduler } from "./scheduler.ts";
 import { extractNote, writeEntry } from "./scribe-handler.ts";
 import { renderEntry } from "./scribe.ts";
 import { SlackBot, type Sender } from "./slack.ts";
-import { openStore } from "./store.ts";
+import { ASK_RETENTION_DAYS, askCutoff, openStore } from "./store.ts";
 import { addDays, localNow, TZ } from "./time.ts";
 
 const now = (): Date => new Date();
@@ -23,12 +25,13 @@ function log(line: string): void {
   console.log(`${now().toISOString()} ${line}`);
 }
 
-/** What "help" quotes: the two slot times, the notes repo, and the policy in force. */
+/** What "help" quotes: the two slot times, the notes repo, the ask, and the policy in force. */
 function manualSettings(config: Config): ManualSettings {
   return {
     briefTime: config.briefTime,
     eodTime: config.eodTime,
     notesRepo: config.notesRepo,
+    ask: config.llm !== null,
     policy: { ...DEFAULT_POLICY, ...config.policy },
   };
 }
@@ -38,6 +41,7 @@ const USAGE = `usage: node src/main.ts <mode>
   dry-run --date YYYY-MM-DD [--slot M|E]  print what would be sent that day (default both slots)
   dry-run --week YYYY-MM-DD              print Mon-Fri, M and E (the date must be a Monday)
   scribe [--dry-run] < dictation.txt    turn a dictation into a note entry (stdin); --dry-run prints it
+  ask "<question>"                       answer a question from the board and the notes
   run                                    Slack bot plus the scheduler`;
 
 interface DryRunArgs {
@@ -98,6 +102,32 @@ async function reportSchema(board: BoardSource, owner: string, number: number, s
   }
 }
 
+/**
+ * The ask's pipeline, wired the way the deployment runs it: the model, the board,
+ * and the notes repo only when NOTES_REPO is set. Both the DM and `ask` use it;
+ * only the DM adds the store (`{ ...deps, asks }`), because only the DM has
+ * threads to remember.
+ */
+function answerSettings(config: Config): AnswerDeps {
+  const llm = config.llm;
+  if (llm === null) throw new Error("ask: LLM_BASE_URL, LLM_API_KEY and LLM_MODEL have to be set");
+  const notes: NotesSource | null =
+    config.scribe === null
+      ? null
+      : { client: createNotesClient({ token: config.scribe.token, repo: config.scribe.repo }), repo: config.scribe.repo };
+  return {
+    llm: openaiCompatible({ baseUrl: llm.baseUrl, apiKey: llm.apiKey, model: llm.model }),
+    board: createBoardClient(config.githubToken),
+    owner: config.projectOwner,
+    number: config.projectNumber,
+    notes,
+    now,
+    log,
+    timeoutMs: llm.timeoutMs,
+    maxTokens: llm.maxTokens,
+  };
+}
+
 async function check(): Promise<void> {
   const config = loadConfig("check");
   const board = createBoardClient(config.githubToken);
@@ -124,6 +154,11 @@ async function check(): Promise<void> {
     } catch (err) {
       log(`scribe: could not list the notes folders: ${errMessage(err)}`);
     }
+  }
+
+  if (config.llm !== null) {
+    // The ask is on with the model alone; the notes it may read need NOTES_REPO.
+    log(`ask: ${config.llm.model} at ${config.llm.baseUrl}, notes ${config.scribe === null ? "off (no NOTES_REPO)" : config.scribe.repo}`);
   }
 
   if (!config.slack) {
@@ -219,9 +254,31 @@ async function scribeTask(args: string[]): Promise<void> {
   log(`committed: ${await writeEntry(deps, { folder: note.folder, entry, date: note.date, topic: note.topic })}`);
 }
 
+/**
+ * `ask`: the same pipeline a DM question runs, printed instead of posted: the
+ * answer, then where it came from and how long it took. It writes nothing and
+ * keeps no history.
+ */
+async function askTask(args: string[]): Promise<void> {
+  const question = args.join(" ").trim();
+  if (question === "") throw new Error('ask: no question, try ask "how is the Acme POC going?"');
+  const config = loadConfig("ask");
+  const answer = await answerQuestion(answerSettings(config), { question, previous: [] });
+  console.log(answer.answer);
+  console.log(sourcesLine(answer));
+}
+
 async function run(): Promise<void> {
   const config = loadConfig("run");
   const store = openStore(config.dbPath);
+  // The answers are context for a follow-up in their thread, not a record: at
+  // startup and once a day after, so a long-lived bot does not keep them forever.
+  const prune = (): void => {
+    const pruned = store.pruneAsks(askCutoff(now()));
+    if (pruned > 0) log(`asks: pruned ${pruned} older than ${ASK_RETENTION_DAYS} days`);
+  };
+  prune();
+  const pruneTimer = setInterval(prune, 86_400_000);
   const board = createBoardClient(config.githubToken);
   const bot = new SlackBot({
     ...config.slack,
@@ -248,6 +305,7 @@ async function run(): Promise<void> {
             timeoutMs: config.scribe.llm.timeoutMs,
             maxTokens: config.scribe.llm.maxTokens,
           },
+    ask: config.llm === null ? null : { ...answerSettings(config), asks: store },
   });
 
   await bot.start();
@@ -256,6 +314,11 @@ async function run(): Promise<void> {
     config.scribe === null
       ? "scribe: off, a note: DM is answered like any other"
       : `scribe: ${config.scribe.llm.model} at ${config.scribe.llm.baseUrl} -> ${config.scribe.repo}`,
+  );
+  log(
+    config.llm === null
+      ? "ask: off, a DM that is no command gets the hint"
+      : `ask: ${config.llm.model}, notes ${config.scribe === null ? "off" : config.scribe.repo}`,
   );
 
   let health: Health | null = null;
@@ -277,6 +340,7 @@ async function run(): Promise<void> {
     stopping = true;
     log(`${signal}: stopping`);
     stop();
+    clearInterval(pruneTimer);
     void (async () => {
       try {
         await health?.close();
@@ -312,6 +376,9 @@ try {
       break;
     case "scribe":
       await scribeTask(args);
+      break;
+    case "ask":
+      await askTask(args);
       break;
     default:
       console.log(USAGE);

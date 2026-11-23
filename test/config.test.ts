@@ -83,7 +83,7 @@ test("the notes token is its own when it is set, and LLM_TIMEOUT_MS and the url 
 test("half of the LLM variables is an error that names the missing ones", () => {
   assert.throws(
     () => loadConfig("dry-run", { ...BASE, NOTES_REPO: "demo/notes", LLM_BASE_URL: "https://nai.example.com/v1" }),
-    /missing env LLM_API_KEY, LLM_MODEL \(the scribe needs all of LLM_BASE_URL, LLM_API_KEY, LLM_MODEL\)/,
+    /missing env LLM_API_KEY, LLM_MODEL \(the scribe and the ask need all of LLM_BASE_URL, LLM_API_KEY, LLM_MODEL\)/,
   );
 });
 
@@ -93,6 +93,17 @@ test("`scribe` mode needs the model, the notes repo and a GitHub token", () => {
     /scribe: missing env NOTES_REPO, LLM_BASE_URL, LLM_API_KEY, LLM_MODEL/,
   );
   assert.equal(loadConfig("scribe", { ...BASE, ...LLM, NOTES_REPO: "demo/notes" }).scribe?.repo, "demo/notes");
+});
+
+test("the model is on with the three LLM variables alone, and the ask mode needs nothing else", () => {
+  assert.equal(loadConfig("dry-run", { ...BASE }).llm, null, "nothing set: no model, no ask");
+  const config = loadConfig("dry-run", { ...BASE, ...LLM });
+  assert.equal(config.llm?.model, "zy-pi-uep", "the ask reads the board with no notes repo at all");
+  assert.equal(config.scribe, null, "and the scribe still needs NOTES_REPO");
+
+  assert.throws(() => loadConfig("ask", { ...BASE }), /ask: missing env LLM_BASE_URL, LLM_API_KEY, LLM_MODEL/);
+  assert.equal(loadConfig("ask", { ...BASE, ...LLM }).llm?.model, "zy-pi-uep", "NOTES_REPO is optional for ask");
+  assert.equal(loadConfig("ask", { ...BASE, ...LLM, NOTES_REPO: "demo/notes" }).scribe?.repo, "demo/notes");
 });
 
 test("a bad LLM_TIMEOUT_MS, LLM_MAX_TOKENS or LLM_BASE_URL fails loudly", () => {

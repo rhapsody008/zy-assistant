@@ -14,11 +14,12 @@ const DEFAULTS: ManualSettings = {
   briefTime: "09:00",
   eodTime: "17:30",
   notesRepo: "demo/notes",
+  ask: true,
   policy: DEFAULT_POLICY,
 };
 
 /** The same, with the scribe off and no notes repo: the smallest deployment. */
-const BARE: ManualSettings = { ...DEFAULTS, notesRepo: null };
+const BARE: ManualSettings = { ...DEFAULTS, notesRepo: null, ask: false };
 
 /** Slack rejects a section over 3000 characters, and a message over 50 blocks. */
 const MAX_SECTION_TEXT = 3000;
@@ -40,9 +41,12 @@ test("the overview is what you type, what I send you, the buttons, then the page
   const typed = blocks[0].text.text;
   assert.match(typed, /^\*What you can type\*\n• /);
   assert.match(typed, /• `today`: the plan for today, the same view as the morning briefing\./);
+  assert.match(typed, /• Ask me anything about your board or notes, e\.g\. `how's the Acme POC going\?` or `what's waiting on others\?` I answer from the board and your notes, and I never change anything\./);
   assert.match(typed, /• `note: <text>`: `note: Acme call, they want a POC in January\. I send the sizing by Friday\.`/);
   assert.match(typed, /• `help`, or `help <topic>`/);
-  assert.match(typed, /• A reply in the thread under one of my messages: that acks it \(ack = mark as seen\)\./);
+  assert.match(typed, /• Reply under a ping: marks it seen\./);
+  assert.match(typed, /• Anything else you write, in a new message or a thread, is read as a question\./);
+  assert.doesNotMatch(typed, /one of my messages/, "no reply anywhere is an ack but a ping's");
 
   const sent = blocks[1].text.text;
   assert.match(sent, /^\*What I send you\* \(automatic; you never type these\)\n• /);
@@ -57,7 +61,7 @@ test("the overview is what you type, what I send you, the buttons, then the page
     assert.equal(buttons.split("\n").filter((line) => line.includes(`*${label}`)).length, 1, `one line for ${label}`);
   }
 
-  assert.equal(blocks.at(-1)?.text.text, "More: `help pings`, `help buttons`, `help note`, `help updates`, `help today`");
+  assert.equal(blocks.at(-1)?.text.text, "More: `help pings`, `help buttons`, `help note`, `help ask`, `help updates`, `help today`");
 });
 
 test("the manual never names `briefing`, and `help briefing` is the today page", () => {
@@ -82,8 +86,9 @@ test("every overview section and every page fits the Block Kit limits", () => {
 });
 
 test("the note line and the note topic are only there when the scribe is on", () => {
-  assert.deepEqual(topics().map((topic) => topic.topic), ["today", "pings", "buttons", "note", "updates"]);
-  assert.deepEqual(manualTopics(DEFAULTS, false).map((topic) => topic.topic), ["today", "pings", "buttons", "updates"]);
+  assert.deepEqual(topics().map((topic) => topic.topic), ["today", "pings", "buttons", "note", "ask", "updates"]);
+  assert.deepEqual(manualTopics(DEFAULTS, false).map((topic) => topic.topic), ["today", "pings", "buttons", "ask", "updates"]);
+  assert.deepEqual(manualTopics(BARE, false).map((topic) => topic.topic), ["today", "pings", "buttons", "updates"]);
 
   const bare = overviewText(BARE, false);
   assert.doesNotMatch(bare, /`note:|`help note`/, "the scribe is off: nothing of notes is promised");
@@ -190,6 +195,42 @@ test("the note page says what a dictation becomes, and what it does not do yet",
   assert.match(page, /nothing goes to the board\. Board proposals come in step 2/);
   assert.match(page, /"this Friday" is the coming Friday/);
   assert.match(page, /"next Friday" is the Friday of the following week, 7 days after/);
+});
+
+test("the ask page says what it reads, that it is read-only, and that it says when it does not know", () => {
+  const page = helpReply(DEFAULTS, true, "ask").text;
+
+  assert.match(page, /^\*Questions\*/);
+  assert.match(page, /Ask me a question in the DM and I answer it from the board and your notes/);
+  assert.match(page, /every item that is not Done, plus the Done items touched in the last two weeks/);
+  assert.match(page, /the README of up to three folders your question names,.*from `demo\/notes`/);
+  assert.match(page, /I answer only from what I read/);
+  assert.match(page, /the notes stop before the date you mean/);
+  assert.match(page, /It is read-only\. Nothing is written to the board or to the notes/);
+  assert.match(page, /A follow-up goes in the same thread/);
+  assert.match(page, /the last few questions of that thread/);
+  assert.match(page, /Without a model \(`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`\)/);
+});
+
+test("with no notes repo the ask page says the answer is the board alone", () => {
+  const settings: ManualSettings = { ...DEFAULTS, notesRepo: null };
+  const page = helpReply(settings, true, "ask").text;
+
+  assert.match(page, /the notes: nothing, twice over/);
+  assert.doesNotMatch(page, /demo\/notes/);
+});
+
+test("a reply under a ping is an ack; only a model turns the other replies into questions", () => {
+  assert.match(overviewText(BARE, false), /• Reply under a ping: marks it seen\./);
+  assert.doesNotMatch(overviewText(BARE, false), /read as a question/, "no model: an unknown DM is a hint, not a question");
+  assert.match(overviewText(DEFAULTS, true), /• Anything else you write, in a new message or a thread, is read as a question\./);
+});
+
+test("the ask line and the ask page are only there when a model is set", () => {
+  assert.match(overviewText(DEFAULTS, true), /• Ask me anything about your board or notes/);
+  assert.doesNotMatch(overviewText(BARE, false), /Ask me anything/, "no model, no promise to answer questions");
+  assert.match(helpReply(BARE, false, "ask").text, /^No topic `ask`\. Here is the overview\./);
+  assert.equal(manualTopics(BARE, false).some((topic) => topic.topic === "ask"), false);
 });
 
 test("the README quotes the overview the bot sends", () => {

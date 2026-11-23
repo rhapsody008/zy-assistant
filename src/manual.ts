@@ -5,9 +5,10 @@
 // tried to type a ping. Then "help <topic>" opens the page behind a topic. Every
 // number the text quotes is taken from the settings it is built with (the live
 // policy and the two slot times), so the manual cannot drift from what the bot
-// does. The note line and the note topic exist only when the scribe is on, and
-// the notes-repo ack line in "updates" only when NOTES_REPO is set: the manual
-// describes this deployment, not every deployment.
+// does. The note line and the note topic exist only when the scribe is on, the ask
+// line and the ask topic only when a model is set, and the notes-repo ack line in
+// "updates" only when NOTES_REPO is set: the manual describes this deployment, not
+// every deployment.
 
 import type { Policy } from "./rules.ts";
 import { TZ } from "./time.ts";
@@ -16,7 +17,9 @@ import { TZ } from "./time.ts";
 export interface ManualSettings {
   briefTime: string; // HH:MM, BRIEF_TIME
   eodTime: string; // HH:MM, EOD_TIME
-  notesRepo: string | null; // NOTES_REPO: where the scribe writes
+  notesRepo: string | null; // NOTES_REPO: where the scribe writes, and what the ask reads
+  /** True when the LLM variables are set: a DM may then hold a question. */
+  ask: boolean;
   policy: Policy;
 }
 
@@ -154,15 +157,37 @@ function noteTopic(settings: ManualSettings): ManualTopic {
   };
 }
 
+function askTopic(settings: ManualSettings): ManualTopic {
+  const reads =
+    settings.notesRepo === null
+      ? "• the notes: nothing, twice over. Without `NOTES_REPO` there is no notes repo to read, so the answer is the board alone."
+      : `• the notes: the README of up to three folders your question names, its header and the newest part of its log, from \`${settings.notesRepo}\`.`;
+  return {
+    topic: "ask",
+    title: "Questions",
+    details: [
+      'Ask me a question in the DM and I answer it from the board and your notes: `how\'s the Acme POC going?`, `what\'s waiting on others?`, `what did we decide about the Globex sizing?`. My answer comes in the thread under your question.',
+      [
+        "*What I read*, every time:",
+        "• the board: every item that is not Done, plus the Done items touched in the last two weeks, the most recently updated first, at most 150 lines;",
+        reads,
+      ].join("\n"),
+      "I answer only from what I read. When the board has no item for what you asked, or the notes stop before the date you mean, I say so and say what is missing, rather than guess. Every date, name and status I write comes from there.",
+      "It is read-only. Nothing is written to the board or to the notes, no button is pressed, and I have no tools: the worst that can happen is a wrong answer.",
+      "A follow-up goes in the same thread: I rebuild from the fresh board and notes, and I keep the last few questions of that thread in mind. Without a model (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`) there is nothing to ask, and a DM that is no command answers with the one-line hint.",
+    ],
+  };
+}
+
 function updatesTopic(settings: ManualSettings): ManualTopic {
   const acks = [
     "• a button under the ping (see `help buttons`);",
     "• a plain reply in the ping's thread;",
     "• the board item changing after the ping: its status, its dates or its title, or a comment on its issue;",
+    ...(settings.notesRepo === null
+      ? []
+      : ["• a commit to the notes repo under `Accounts/<the item's Account>/`, which is why a `note:` about an account can quiet that account's items."]),
   ];
-  if (settings.notesRepo !== null) {
-    acks.push("• a commit to the notes repo under `Accounts/<the item's Account>/`, which is why a `note:` about an account can quiet that account's items.");
-  }
   return {
     topic: "updates",
     title: "Updates",
@@ -174,25 +199,37 @@ function updatesTopic(settings: ManualSettings): ManualTopic {
   };
 }
 
-/** The topics this deployment has, in manual order: "note" only with the scribe on. */
+/** The topics this deployment has, in manual order: "note" only with the scribe on,
+ * "ask" only with a model to ask.
+ */
 export function manualTopics(settings: ManualSettings, scribe: boolean): ManualTopic[] {
-  const topics = [todayTopic(settings), pingsTopic(settings), buttonsTopic(settings)];
-  if (scribe) topics.push(noteTopic(settings));
-  topics.push(updatesTopic(settings));
-  return topics;
+  return [
+    todayTopic(settings),
+    pingsTopic(settings),
+    buttonsTopic(settings),
+    ...(scribe ? [noteTopic(settings)] : []),
+    ...(settings.ask ? [askTopic(settings)] : []),
+    updatesTopic(settings),
+  ];
 }
 
 const section = (text: string): ManualBlock => ({ type: "section", text: { type: "mrkdwn", text } });
 
 /** The overview's first part: the few things you type, one line each. */
-function typedBlock(scribe: boolean): ManualBlock {
+function typedBlock(settings: ManualSettings, scribe: boolean): ManualBlock {
   return section(
     [
       "*What you can type*",
       "• `today`: the plan for today, the same view as the morning briefing.",
+      ...(settings.ask
+        ? [
+            "• Ask me anything about your board or notes, e.g. `how's the Acme POC going?` or `what's waiting on others?` I answer from the board and your notes, and I never change anything.",
+          ]
+        : []),
       ...(scribe ? ["• `note: <text>`: `note: Acme call, they want a POC in January. I send the sizing by Friday.` and I save it to the notes repo."] : []),
       "• `help`, or `help <topic>`: this manual, or the page behind one topic.",
-      "• A reply in the thread under one of my messages: that acks it (ack = mark as seen).",
+      "• Reply under a ping: marks it seen.",
+      ...(settings.ask ? ["• Anything else you write, in a new message or a thread, is read as a question."] : []),
     ].join("\n"),
   );
 }
@@ -226,13 +263,13 @@ function buttonBlock(policy: Policy): ManualBlock {
 /** The last line of the overview: where each page is. */
 function moreBlock(topics: ManualTopic[]): ManualBlock {
   const has = (topic: string): boolean => topics.some((t) => t.topic === topic);
-  const pages = ["pings", "buttons", ...(has("note") ? ["note"] : []), "updates", "today"];
+  const pages = ["pings", "buttons", ...(has("note") ? ["note"] : []), ...(has("ask") ? ["ask"] : []), "updates", "today"];
   return section(`More: ${pages.map((topic) => `\`help ${topic}\``).join(", ")}`);
 }
 
 /** The overview: what you type, what I send you, the buttons, then where the pages are. Pure. */
 export function overviewBlocks(settings: ManualSettings, scribe: boolean): ManualBlock[] {
-  return [typedBlock(scribe), sentBlock(settings), buttonBlock(settings.policy), moreBlock(manualTopics(settings, scribe))];
+  return [typedBlock(settings, scribe), sentBlock(settings), buttonBlock(settings.policy), moreBlock(manualTopics(settings, scribe))];
 }
 
 /** The overview as plain text: what a README or a log prints. The same words. */

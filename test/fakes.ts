@@ -4,7 +4,7 @@ import type { Llm, LlmRequest } from "../src/llm.ts";
 import { ShaConflict, type NotesClient, type NotesFile } from "../src/notes.ts";
 import type { Ping, SentPing, Slot } from "../src/rules.ts";
 import type { Sent, Sender } from "../src/slack.ts";
-import type { Dictation, DictationPatch, DictationStatus, DictationStore, NewPing, PingRecord, PingStore } from "../src/store.ts";
+import type { AskRecord, AskStore, Dictation, DictationPatch, DictationStatus, DictationStore, NewPing, PingRecord, PingStore } from "../src/store.ts";
 
 export class FakeStore implements PingStore {
   readonly pings = new Map<string, PingRecord>();
@@ -160,6 +160,40 @@ export class FakeNotes implements NotesClient {
     this.writes.push({ path, text, sha, message });
     this.files.set(path, { text, sha: `sha-${this.commits}` });
     return `https://github.com/demo/notes/commit/${this.commits}`;
+  }
+}
+
+/** The asks and asks_seen tables: the same shapes, in maps. */
+export class FakeAskStore implements AskStore {
+  readonly rows = new Map<string, AskRecord>();
+  readonly seen = new Map<string, string>();
+
+  claimAsk(ts: string, at: string): boolean {
+    if (this.seen.has(ts)) return false;
+    this.seen.set(ts, at);
+    return true;
+  }
+
+  recordAsk(ask: AskRecord): void {
+    this.rows.set(ask.ts, ask);
+  }
+
+  asksInThread(threadTs: string, limit: number): AskRecord[] {
+    const rows = [...this.rows.values()]
+      .filter((row) => row.threadTs === threadTs)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return rows.slice(Math.max(0, rows.length - limit));
+  }
+
+  pruneAsks(before: string): number {
+    let pruned = 0;
+    for (const [ts, row] of this.rows) {
+      if (row.createdAt >= before) continue;
+      this.rows.delete(ts);
+      pruned += 1;
+    }
+    for (const [ts, at] of this.seen) if (at < before) this.seen.delete(ts);
+    return pruned;
   }
 }
 

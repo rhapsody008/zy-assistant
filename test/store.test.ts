@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { openStore } from "../src/store.ts";
+import { askCutoff, openStore } from "../src/store.ts";
 
 const PING = {
   key: "2026-11-23:M:ITEM_1",
@@ -157,4 +157,60 @@ test("a dictation left writing by a dead process can be claimed again after a re
   const second = openStore(path);
   assert.equal(second.findDictation("1.1")?.status, "failed");
   assert.equal(second.claimDictation("1.1", ["failed"]), true);
+});
+
+test("an answered question comes back for the thread it was asked in, oldest first", () => {
+  const store = openStore(":memory:");
+  store.recordAsk({ ts: "a1", threadTs: "q1", question: "how is Acme?", answer: "On track.", createdAt: "2026-11-27T01:00:00.000Z" });
+  store.recordAsk({ ts: "a2", threadTs: "q1", question: "and Globex?", answer: "Waiting.", createdAt: "2026-11-27T02:00:00.000Z" });
+  store.recordAsk({ ts: "a3", threadTs: "q9", question: "other thread", answer: "Other.", createdAt: "2026-11-27T03:00:00.000Z" });
+
+  assert.deepEqual(
+    store.asksInThread("q1", 3).map((row) => row.ts),
+    ["a1", "a2"],
+    "the thread's own answers, in the order they were said",
+  );
+  assert.deepEqual(store.asksInThread("q1", 1).map((row) => row.ts), ["a2"], "the last one, for a follow-up");
+  assert.deepEqual(store.asksInThread("q1", 0), []);
+  assert.deepEqual(store.asksInThread("nope", 3), []);
+
+  const row = store.asksInThread("q1", 3)[0];
+  assert.equal(row.question, "how is Acme?");
+  assert.equal(row.answer, "On track.");
+  assert.equal(row.createdAt, "2026-11-27T01:00:00.000Z");
+  store.close();
+});
+
+test("answers older than the cut are pruned, and the rest stays", () => {
+  const store = openStore(":memory:");
+  store.recordAsk({ ts: "old", threadTs: "q1", question: "an old one", answer: "x", createdAt: "2026-10-01T00:00:00.000Z" });
+  store.recordAsk({ ts: "new", threadTs: "q1", question: "a new one", answer: "y", createdAt: "2026-11-27T00:00:00.000Z" });
+
+  assert.equal(store.pruneAsks("2026-10-28T00:00:00.000Z"), 1);
+  assert.deepEqual(store.asksInThread("q1", 5).map((row) => row.ts), ["new"], "the column stays for the follow-up");
+  assert.equal(store.pruneAsks("2026-10-28T00:00:00.000Z"), 0, "nothing left to prune");
+  store.close();
+});
+
+test("a question's message ts is claimed once, and the claim survives a failed answer", () => {
+  const store = openStore(":memory:");
+
+  assert.equal(store.claimAsk("msg-1", "2026-11-27T01:00:00.000Z"), true, "the first delivery takes it");
+  assert.equal(store.claimAsk("msg-1", "2026-11-27T01:00:01.000Z"), false, "a redelivery does not");
+  assert.equal(store.claimAsk("msg-2", "2026-11-27T01:00:02.000Z"), true, "another question, another claim");
+  assert.equal(store.asksInThread("msg-1", 3).length, 0, "a claim is not an answer: nothing was said yet");
+  store.close();
+});
+
+test("pruning takes the claims with the answers, and the cutoff is 30 days back", () => {
+  const store = openStore(":memory:");
+  assert.equal(askCutoff(new Date("2026-11-27T01:00:00.000Z")), "2026-10-28T01:00:00.000Z");
+
+  store.claimAsk("old-claim", "2026-10-01T00:00:00.000Z");
+  store.claimAsk("new-claim", "2026-11-27T00:00:00.000Z");
+  store.pruneAsks(askCutoff(new Date("2026-11-27T01:00:00.000Z")));
+
+  assert.equal(store.claimAsk("old-claim", "2026-11-27T02:00:00.000Z"), true, "an old claim is gone with its month");
+  assert.equal(store.claimAsk("new-claim", "2026-11-27T02:00:00.000Z"), false, "a fresh one stays");
+  store.close();
 });

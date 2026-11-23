@@ -1,7 +1,9 @@
 // State: one SQLite file. What was pinged (and whether it was acked), which
 // briefings went out, which slots already ran, how often a failing slot has been
-// retried, and every dictation the scribe has not finished with yet. `:memory:`
-// is accepted so tests never touch the disk.
+// retried, every dictation the scribe has not finished with yet, and the
+// questions the DM has taken and answered (the claims that dedupe a redelivery,
+// and the answers a follow-up in their thread quotes). `:memory:` is accepted so
+// tests never touch the disk.
 
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -57,6 +59,37 @@ export interface DictationStore {
   claimDictation(ts: string, from: DictationStatus[]): boolean;
   findDictation(ts: string): Dictation | null;
   updateDictation(ts: string, patch: DictationPatch): void;
+}
+
+/** One answered question: the answer message, and the thread it belongs to. */
+export interface AskRecord {
+  ts: string; // the answer message's ts, the key: what a follow-up in the thread looks up
+  threadTs: string; // the thread the question was asked in and answered in
+  question: string;
+  answer: string;
+  createdAt: string; // ISO
+}
+
+export interface AskStore {
+  /**
+   * Takes the question's own message ts: true for the first delivery and false
+   * for any after it, so a redelivered Slack event is answered once. The claim is
+   * kept whether the answer succeeds or not.
+   */
+  claimAsk(ts: string, at: string): boolean;
+  recordAsk(ask: AskRecord): void;
+  /** The last `limit` answers in one thread, oldest first: the talk before a follow-up. */
+  asksInThread(threadTs: string, limit: number): AskRecord[];
+  /** Drops what is older than `before` (ISO): the answers, and the claims with them. */
+  pruneAsks(before: string): number;
+}
+
+/** How long an answered question stays, for the follow-up in its thread. */
+export const ASK_RETENTION_DAYS = 30;
+
+/** The instant before which answers and claims are pruned, `at` minus the retention. */
+export function askCutoff(at: Date): string {
+  return new Date(at.getTime() - ASK_RETENTION_DAYS * 86_400_000).toISOString();
 }
 
 export interface PingStore {
@@ -119,6 +152,22 @@ CREATE TABLE IF NOT EXISTS dictations (
   created_at TEXT NOT NULL,
   error TEXT
 );
+-- Every question answered in the DM, so a reply in that thread can carry the
+-- conversation it belongs to. Pruned after a month: it is context, not a record.
+CREATE TABLE IF NOT EXISTS asks (
+  ts TEXT PRIMARY KEY,
+  thread_ts TEXT NOT NULL,
+  question TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS asks_thread ON asks (thread_ts, created_at);
+-- Every question message taken, written before the model is called: Slack
+-- delivers the same event twice sometimes, and one question has one answer.
+CREATE TABLE IF NOT EXISTS asks_seen (
+  ts TEXT PRIMARY KEY,
+  seen_at TEXT NOT NULL
+);
 `;
 
 type Row = Record<string, unknown>;
@@ -159,7 +208,17 @@ function toDictation(row: Row): Dictation {
 /** `${date}:${slot}:briefing`, the same shape as a ping key. */
 export const briefingKey = (date: string, slot: Slot): string => pingKey(date, slot, "briefing");
 
-export class SqliteStore implements PingStore, DictationStore {
+function toAsk(row: Row): AskRecord {
+  return {
+    ts: text(row.ts),
+    threadTs: text(row.thread_ts),
+    question: text(row.question),
+    answer: text(row.answer),
+    createdAt: text(row.created_at),
+  };
+}
+
+export class SqliteStore implements PingStore, DictationStore, AskStore {
   #db: DatabaseSync;
 
   constructor(dbPath: string) {
@@ -261,6 +320,33 @@ export class SqliteStore implements PingStore, DictationStore {
     set("error", patch.error);
     if (columns.length === 0) return;
     this.#db.prepare(`UPDATE dictations SET ${columns.join(", ")} WHERE ts = ?`).run(...values, ts);
+  }
+
+  claimAsk(ts: string, at: string): boolean {
+    const result = this.#db.prepare("INSERT OR IGNORE INTO asks_seen (ts, seen_at) VALUES (?, ?)").run(ts, at);
+    return Number(result.changes) > 0;
+  }
+
+  recordAsk(ask: AskRecord): void {
+    this.#db
+      .prepare("INSERT OR REPLACE INTO asks (ts, thread_ts, question, answer, created_at) VALUES (?, ?, ?, ?, ?)")
+      .run(ask.ts, ask.threadTs, ask.question, ask.answer, ask.createdAt);
+  }
+
+  asksInThread(threadTs: string, limit: number): AskRecord[] {
+    if (limit < 1) return [];
+    // Newest first, then read back to front: the caller wants the talk in order.
+    const rows = this.#db
+      .prepare("SELECT * FROM asks WHERE thread_ts = ? ORDER BY created_at DESC, ts DESC LIMIT ?")
+      .all(threadTs, limit);
+    return rows.map(toAsk).reverse();
+  }
+
+  pruneAsks(before: string): number {
+    const answers = this.#db.prepare("DELETE FROM asks WHERE created_at < ?").run(before);
+    // A claim a redelivery could still come for is months old by any measure.
+    this.#db.prepare("DELETE FROM asks_seen WHERE seen_at < ?").run(before);
+    return Number(answers.changes);
   }
 
   close(): void {

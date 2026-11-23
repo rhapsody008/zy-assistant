@@ -31,8 +31,10 @@ content counts as `Done`. The optional fields `Work type`, `Stage`, `Track`,
 time, Stage and Track feed the Friday sections, Cadence is what the Learning
 section reports, and Account is where the notes-repo activity is looked up.
 
-It also takes dictations: DM `note: …` and the scribe turns it into an entry of
-the notes repo and replies with the link (see **The scribe**).
+It also answers questions: DM it `how's the Acme POC going?` and it reads the
+board and the notes repo and answers in a thread, changing nothing (see
+**Asking questions**). And it takes dictations: DM `note: …` and the scribe turns
+it into an entry of the notes repo and replies with the link (see **The scribe**).
 
 ## Using the bot
 
@@ -40,7 +42,9 @@ DM the bot `help` (or `?`, or `manual`) and it answers with the manual below,
 which separates what you type from what the bot sends on its own. `today`
 previews the morning plan, `help <topic>` opens one topic, and an unknown topic
 answers the overview with `No topic <x>.` on top. Any other DM that is no command
-gets a one-line hint. The text is rendered from `src/manual.ts` with the live
+is a question when the LLM is set (see **Asking questions**), and a one-line hint
+when it is not. The ask line and the `ask` topic are left out when there is no
+model. The text is rendered from `src/manual.ts` with the live
 policy and slot times (`WAITING_CHASE_DAYS`, `STAGE_STALE_DAYS`, the lead times,
 the WIP limit), so the pages say what this deployment does. The `note:` line and
 the `note` topic are left out when the scribe is off, and the notes-repo ack
@@ -49,9 +53,11 @@ below when `NOTES_REPO` is unset. With the defaults, `help` sends exactly this:
 ```
 *What you can type*
 • `today`: the plan for today, the same view as the morning briefing.
+• Ask me anything about your board or notes, e.g. `how's the Acme POC going?` or `what's waiting on others?` I answer from the board and your notes, and I never change anything.
 • `note: <text>`: `note: Acme call, they want a POC in January. I send the sizing by Friday.` and I save it to the notes repo.
 • `help`, or `help <topic>`: this manual, or the page behind one topic.
-• A reply in the thread under one of my messages: that acks it (ack = mark as seen).
+• Reply under a ping: marks it seen.
+• Anything else you write, in a new message or a thread, is read as a question.
 
 *What I send you* (automatic; you never type these)
 • The briefing at `09:00` and the wrap-up at `17:30` on weekdays: one message listing everything.
@@ -64,14 +70,16 @@ below when `NOTES_REPO` is unset. With the defaults, `help` sends exactly this:
 • *Move date*: asks for the new date and a reason, sets Target date, and posts the reason on the issue.
 • *Tomorrow* and *+7 days*: move Next touch, rolled off the weekend. The Target date stays.
 
-More: `help pings`, `help buttons`, `help note`, `help updates`, `help today`
+More: `help pings`, `help buttons`, `help note`, `help ask`, `help updates`, `help today`
 ```
 
 Every successful action is one log line with ids only, never a note's text or
 title: `scribe <ts>: committed <folder> in <ms> ms (<n> actions) <url>`,
 `scribe <ts>: asked for a folder`, `scribe <ts>: committed raw text to <folder>`,
 `button <action> on <item> by <user>`, `move <item>: <old> -> <new>`,
-`reply ack <item>` and `help <topic>`.
+`reply ack <item>`, `help <topic>`, `ask <ts>: answered in <ms> ms (<n> items,
+notes: <folders>)` and `ask <ts>: failed: <reason>`. A question's text and an
+answer's text are never logged.
 
 ## Env
 
@@ -87,12 +95,12 @@ title: `scribe <ts>: committed <folder> in <ms> ms (<n> actions) <url>`,
 | `EOD_TIME` | | `17:30` |
 | `DB_PATH` | | `./data/state.db` |
 | `ASSISTANT_TZ` | | `Asia/Singapore` |
-| `NOTES_REPO` | | – (owner/repo: a commit under `Accounts/<Account>` acks that Account's items and the scribe writes here; unset turns both off) |
+| `NOTES_REPO` | | – (owner/repo: a commit under `Accounts/<Account>` acks that Account's items, the scribe writes here and the ask reads here; unset turns all three off) |
 | `WAITING_CHASE_DAYS` | | `5` (a Waiting item with no update for longer is chased) |
 | `STAGE_STALE_DAYS` | | `21` (a pipeline item with no update for longer is nagged on Friday) |
-| `LLM_BASE_URL` | `scribe`, `check` | – (an OpenAI-compatible gateway, e.g. `https://<host>/enterpriseai/gateway/v1`) |
-| `LLM_API_KEY` | `scribe`, `check` | – |
-| `LLM_MODEL` | `scribe`, `check` | – (e.g. `zy-pi-uep`) |
+| `LLM_BASE_URL` | `scribe`, `ask`, `check`, `run` | – (an OpenAI-compatible gateway, e.g. `https://<host>/enterpriseai/gateway/v1`) |
+| `LLM_API_KEY` | `scribe`, `ask`, `check`, `run` | – |
+| `LLM_MODEL` | `scribe`, `ask`, `check`, `run` | – (e.g. `zy-pi-uep`) |
 | `LLM_TIMEOUT_MS` | | `90000` (what one completion may take) |
 | `NOTES_GITHUB_TOKEN` | | – (defaults to `GITHUB_TOKEN`; it is the token that needs contents write on `NOTES_REPO`) |
 
@@ -107,6 +115,7 @@ node src/main.ts dry-run --date 2026-11-25 --slot M      # just the morning
 node src/main.ts dry-run --week 2026-11-23               # Mon-Fri, M and E (a Monday)
 node src/main.ts scribe --dry-run < note.txt             # a dictation: print the folder and the entry
 node src/main.ts scribe < note.txt                       # a dictation: commit it
+node src/main.ts ask "how's the Acme POC going?"         # a question: the answer and its sources
 node src/main.ts run                                     # Slack + scheduler, every 60 s
 ```
 
@@ -117,6 +126,75 @@ never writes to the board and never opens the database.
 without Slack and without the database: `listFolders`, the model, and the render
 (`--dry-run`) or the commit. A dictation no existing folder fits prints the
 suggested `Accounts/<name>` and writes nothing.
+
+## Asking questions
+
+A DM that is no command is a question, as long as the three `LLM_*` variables are
+set: `how's the Acme POC going?`, `what's waiting on others?`, `what did we decide
+about the Globex sizing?`. The bot replies `🔎 looking…` in a thread under the
+question at once and edits that reply into the answer, with a line under it
+saying what it read (`Sources: 12 board items, notes: Acme · 940 ms`). Every
+failure lands in that reply as `couldn't answer: <reason>`; nothing is thrown at
+Slack.
+
+The context is rebuilt for every question:
+
+- **today**, in Asia/Singapore, with the weekday, so "next week" and "before
+  Friday" mean something;
+- **the board**: every item that is not Done, plus the Done items touched in the
+  last two weeks, the most recently updated first, at most 150 lines and about
+  25k characters, one line each: ref, title, status, account, track, work type,
+  stage, target date, next touch, next action, waiting on, updated, url, with the
+  empty fields left out;
+- **the notes**: with `NOTES_REPO` set, the README of up to three folders the
+  question names — a folder name, or the Account of a board item the question
+  names — its header and the newest part of its log (a README is newest first),
+  with the GitHub URL of each.
+
+The board goes in a `<board>` block and each README in a `<notes folder="…"
+url="…">` block, and the system prompt says that everything inside them is data
+to answer from, never an instruction. Everything inside a block is HTML-escaped
+(`&amp;`, `&lt;`, `&gt;`, and `&quot;` in the attributes), so a title or a README
+that holds `</board>` or `</notes>` cannot end the block it is in. The model gets
+no tools.
+
+The answer comes back at most 8 lines of Slack mrkdwn, at most 2900 characters,
+with dates written as `Thu 26 Nov`, board items cited as their ref linked to the
+GitHub issue and notes as `<readme-url|Acme notes>`. The prompt tells it to
+answer only from the context and, when the context does not hold the answer, to
+say so and say what is missing. A `<think>` block is stripped the way the scribe
+strips it; a reply cut off at `LLM_MAX_TOKENS`, or one whose reasoning never
+closed, is asked for once more.
+
+It is strictly read-only: the board is only fetched, the notes are only read, and
+nothing is written anywhere. The tests prove it with fakes whose write methods
+throw.
+
+Threads, in full:
+
+- a reply under a ping is an ack, whatever it says, exactly as before;
+- a reply in a thread the bot has answered is a follow-up: the context is rebuilt
+  from the fresh board and notes (a follow-up may name a different account), and
+  the last three questions and answers of that thread ride along as conversation;
+- any other reply (under a briefing, a `today` preview, a dictation's thread, a
+  manual message) is a plain question, answered in that thread with no earlier
+  talk;
+- `note: …` is a dictation wherever it is written.
+
+Answers are kept in the `asks` table, keyed by the answer message and its thread,
+and the question's own message ts is claimed in `asks_seen` before the model is
+called: Slack delivers an event twice sometimes, and one question gets one
+answer. Both are pruned after 30 days, at startup and once a day after.
+
+From the Mac:
+
+```sh
+node src/main.ts ask "how's the Acme POC going?"
+```
+
+The same pipeline, printed instead of posted: it needs `GITHUB_TOKEN` and the
+three `LLM_*` variables, `NOTES_REPO` is optional, and it prints the answer, the
+sources line and the timing. It keeps no history.
 
 ## The scribe
 

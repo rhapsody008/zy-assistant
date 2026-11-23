@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Board, BoardSource } from "../src/github.ts";
 import { DEFAULT_POLICY, type Item, type Ping } from "../src/rules.ts";
+import type { AskInput, AskUi } from "../src/ask.ts";
 import {
   askBlocks,
   dictationText,
@@ -20,6 +21,7 @@ import {
   type Block,
   type HandlerDeps,
   type MoveSubmit,
+  type AskDispatch,
   type PostMessageArgs,
   type ScribeDispatch,
   type SlackClient,
@@ -167,6 +169,7 @@ function harness(item: Item | null = null) {
     briefTime: "09:00",
     eodTime: "17:30",
     notesRepo: null,
+    ask: false,
     policy: DEFAULT_POLICY,
   };
   const deps: HandlerDeps = {
@@ -520,6 +523,22 @@ function recordScribe() {
   return { calls, uis, settled, dispatch };
 }
 
+/** An ask that only records: what it was asked, and the ui it was given. */
+function recordAsk() {
+  const calls: AskInput[] = [];
+  const uis: AskUi[] = [];
+  let resolve = (): void => {};
+  const settled = new Promise<void>((r) => {
+    resolve = r;
+  });
+  const dispatch: AskDispatch = async (input, ui) => {
+    calls.push(input);
+    uis.push(ui);
+    resolve();
+  };
+  return { calls, uis, settled, dispatch };
+}
+
 /** Resolves once the fake client has posted one more message: no timers. */
 function nextPost(client: FakeClient): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -594,6 +613,132 @@ test("with the scribe on, the unknown-DM hint offers note: too", async () => {
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "ping" });
 
   assert.deepEqual(client.posts.map((post) => post.text), ["I didn't catch that. Type `today`, `note: …`, or `help`."]);
+});
+
+test("a plain DM is a question when a model is set, and the handler returns at once", async () => {
+  const { deps, client, logs } = harness();
+  const ask = recordAsk();
+  deps.ask = ask.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "how is the Acme POC going?" });
+  await ask.settled;
+
+  assert.deepEqual(ask.calls, [{ ts: "222.2", question: "how is the Acme POC going?", threadTs: "222.2" }], "answered in a thread of its own");
+  assert.deepEqual(client.posts, [], "the pipeline does the talking, off the handler's path");
+  assert.deepEqual(logs, []);
+});
+
+test("a message from anyone but ZY is never a question either", async () => {
+  const { deps } = harness();
+  const ask = recordAsk();
+  deps.ask = ask.dispatch;
+
+  await handleMessage(deps, { userId: "U_OTHER", channel: "D", ts: "222.2", threadTs: null, text: "how is the Acme POC going?" });
+
+  assert.deepEqual(ask.calls, []);
+});
+
+test("the commands are still commands with a model set: today, help, and note:", async () => {
+  const { deps, client } = harness();
+  const ask = recordAsk();
+  deps.ask = ask.dispatch;
+  deps.scribe = async () => {};
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "today" });
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "help" });
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.4", threadTs: null, text: "note: ten nodes" });
+
+  assert.deepEqual(ask.calls, [], "none of the three is a question");
+  assert.equal(client.posts.length, 2, "the preview and the manual");
+});
+
+test("a reply in a ping's thread still acks it, and is never a question", async () => {
+  const { deps, client, store } = harness();
+  const ask = recordAsk();
+  deps.ask = ask.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: "111.1", text: "how is the Acme POC going?" });
+
+  assert.deepEqual(ask.calls, []);
+  assert.equal(store.findByKey(KEY)?.ackedAt, "2026-11-27T01:00:00.000Z");
+  assert.equal(client.posts[0].text, "Noted.");
+});
+
+test("a reply in a dictation's thread is a question, not an ack", async () => {
+  const { deps, client } = harness();
+  const ask = recordAsk();
+  deps.ask = ask.dispatch;
+  deps.scribe = async () => {};
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.9", threadTs: "222.2", text: "what did we decide about Acme?" });
+  await ask.settled;
+
+  assert.deepEqual(ask.calls, [{ ts: "222.9", question: "what did we decide about Acme?", threadTs: "222.2" }], "answered in the scribe thread");
+  assert.deepEqual(client.posts, [], "and nothing is acked: a dictation thread is nobody's ping");
+});
+
+test("a reply under a briefing or a today preview is a question too", async () => {
+  const { deps } = harness();
+  const ask = recordAsk();
+  deps.ask = ask.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.4", threadTs: "111.7", text: "what's waiting on others?" });
+  await ask.settled;
+
+  assert.deepEqual(ask.calls, [{ ts: "222.4", question: "what's waiting on others?", threadTs: "111.7" }]);
+  assert.equal(deps.store.findByKey(KEY)?.ackedAt, null, "no ping is acked by it");
+});
+
+test("a reply in the thread of an answer is a follow-up in that same thread", async () => {
+  const { deps } = harness();
+  const ask = recordAsk();
+  deps.ask = ask.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: "222.2", text: "and the Globex one?" });
+  await ask.settled;
+
+  assert.deepEqual(ask.calls, [{ ts: "222.3", question: "and the Globex one?", threadTs: "222.2" }], "the thread of the answer, not the question");
+});
+
+test("an empty DM text is no question: it gets the hint even with a model set", async () => {
+  const { deps, client } = harness();
+  const ask = recordAsk();
+  deps.ask = ask.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "   " });
+
+  assert.deepEqual(ask.calls, []);
+  assert.deepEqual(client.posts.map((post) => post.text), ["I didn't catch that. Type `today` or `help`."]);
+});
+
+test("an ask that throws is logged and answered in the thread, never thrown out", async () => {
+  const { deps, client, logs } = harness();
+  deps.ask = async () => {
+    throw new Error("the ask blew up");
+  };
+  const posted = nextPost(client);
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "how is the Acme POC going?" });
+  await posted;
+
+  assert.equal(client.posts[0].thread_ts, "222.2");
+  assert.equal(client.posts[0].text, "couldn't answer: the ask blew up");
+  assert.match(logs.join("\n"), /ask 222\.2 failed: the ask blew up/);
+});
+
+test("the pipeline gets the bot's Slack side of the thread it answers in", async () => {
+  const { deps, client } = harness();
+  const ask = recordAsk();
+  deps.ask = ask.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "what's waiting on others?" });
+  await ask.settled;
+  const ui = ask.uis[0];
+
+  assert.equal(await ui.reply("🔎 looking…"), "ts-1");
+  assert.deepEqual(client.posts[0], { channel: "D", text: "🔎 looking…", thread_ts: "222.3" }, "the answer lands in the question's thread");
+  await ui.edit("ts-1", "the answer");
+  assert.deepEqual(client.updates[0], { channel: "D", ts: "ts-1", text: "the answer" });
 });
 
 test("today sends the morning preview, and briefing still does the same", async () => {
