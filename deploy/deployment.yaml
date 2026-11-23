@@ -29,7 +29,7 @@ spec:
       containers:
         - name: app
           # Tag pinned in kustomization.yaml (images:).
-          image: ghcr.io/rhapsody008/zy-assistant:0.3.0
+          image: ghcr.io/rhapsody008/zy-assistant:0.4.0
           envFrom:
             # Created outside this repo: GITHUB_TOKEN, SLACK_BOT_TOKEN,
             # SLACK_APP_TOKEN, SLACK_USER_ID.
@@ -48,6 +48,10 @@ spec:
               value: "Asia/Singapore"
             - name: NOTES_REPO
               value: "rhapsody008/notes"
+            - name: LLM_BASE_URL
+              value: "https://nai.yolocal.cloud/enterpriseai/gateway/v1"
+            - name: LLM_MODEL
+              value: "zy-pi-uep"
             - name: DB_PATH
               value: "/data/state.db"
             - name: HTTP_PORT
