@@ -261,6 +261,41 @@ test("a second click on a written note changes nothing and says so", async () =>
   assert.equal(ui.replies.at(-1), "already written: https://github.com/demo/notes/commit/1");
 });
 
+test("a commit is logged with the folder, the duration and the actions, never the note's title", async () => {
+  const { deps, notes, logs, ui } = harness(json(NOTE));
+  let at = NOW.getTime();
+  deps.now = () => new Date(at);
+  const write = notes.writeFile.bind(notes);
+  notes.writeFile = async (path, text, sha, message) => {
+    at += 40; // the commit takes 40 ms
+    return write(path, text, sha, message);
+  };
+
+  await scribeHandler(deps, { ts: TS, text: DICTATION, hint: null }, ui);
+
+  assert.deepEqual(logs, [
+    "scribe 1700000000.000100: committed Accounts/Acme in 40 ms (1 actions) https://github.com/demo/notes/commit/1",
+  ]);
+  assert.doesNotMatch(logs.join("\n"), /Acme VPC sizing/, "no note title in the log");
+  assert.doesNotMatch(logs.join("\n"), /ten nodes/, "and none of the dictation");
+});
+
+test("a folder question and a raw commit are each one log line, by id", async () => {
+  const { deps, notes, logs, ui } = harness(json({ ...NOTE, folder: null, newFolderName: "Initech" }));
+  await scribeHandler(deps, { ts: TS, text: DICTATION, hint: null }, ui);
+  assert.deepEqual(logs, [`scribe ${TS}: asked for a folder`]);
+
+  // The model never answers: the same question, then the words as they were dictated.
+  const raw = harness("I cannot make a note of that.", "Still no JSON.");
+  await scribeHandler(raw.deps, { ts: TS, text: DICTATION, hint: null }, raw.ui);
+  await scribeChoice(raw.deps, { ts: TS, action: "folder", value: "Accounts/Acme" }, raw.ui);
+
+  assert.equal(notes.writes.length, 0, "the first dictation was never answered");
+  assert.equal(raw.notes.writes.length, 1);
+  assert.deepEqual(raw.logs.filter((line) => line.includes("committed")), [`scribe ${TS}: committed raw text to Accounts/Acme`]);
+  assert.doesNotMatch(raw.logs.join("\n"), /the Acme workshop/, "the words stay in the note, not in the log");
+});
+
 test("a choice for a dictation the bot never stored is logged, not thrown", async () => {
   const { deps, notes, logs, ui } = harness();
 

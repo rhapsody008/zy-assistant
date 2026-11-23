@@ -290,6 +290,9 @@ test("the system prompt carries the rules, today's date and every folder", () =>
   assert.match(prompt, /pick it ONLY from the list/);
   assert.match(prompt, /never invent facts, names, numbers or dates/i);
   assert.match(prompt, /Relative dates .* resolve against today/);
+  assert.match(prompt, /"This Friday" is the next Friday on or after today \(today itself when today is a Friday\)/);
+  assert.match(prompt, /"next Friday" is the Friday of the following week, 7 days after "this Friday"/);
+  assert.match(prompt, /The same holds for every other weekday/);
   assert.match(prompt, /"I", "me" and "mine" mean ZY/);
   assert.match(scribeSystemPrompt("2026-11-25", []), /\(none yet\)/);
 });

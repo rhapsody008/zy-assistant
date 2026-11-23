@@ -4,12 +4,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Board, BoardSource } from "../src/github.ts";
-import type { Item, Ping } from "../src/rules.ts";
+import { DEFAULT_POLICY, type Item, type Ping } from "../src/rules.ts";
 import {
   askBlocks,
   dictationText,
   handleAction,
-  helpText,
+  helpRequest,
   selectFolders,
   handleMessage,
   handleMoveSubmit,
@@ -25,6 +25,7 @@ import {
   type UpdateMessageArgs,
   type ViewsOpenArgs,
 } from "../src/slack.ts";
+import type { ManualSettings } from "../src/manual.ts";
 import type { ScribeDictation, ScribeUi } from "../src/scribe-handler.ts";
 import { FakeStore } from "./fakes.ts";
 
@@ -161,6 +162,12 @@ function harness(item: Item | null = null) {
   if (item) board.board.items.push(item);
   const store = new FakeStore();
   const logs: string[] = [];
+  const manual: ManualSettings = {
+    briefTime: "09:00",
+    eodTime: "17:30",
+    notesRepo: null,
+    policy: DEFAULT_POLICY,
+  };
   const deps: HandlerDeps = {
     client,
     board,
@@ -170,6 +177,7 @@ function harness(item: Item | null = null) {
     userId: "U_ZY",
     now: () => new Date("2026-11-27T01:00:00Z"), // Friday 09:00 in Singapore
     log: (line) => logs.push(line),
+    manual,
   };
   store.recordPing({
     key: KEY,
@@ -181,7 +189,7 @@ function harness(item: Item | null = null) {
     channel: "D",
     ts: "111.1",
   });
-  return { deps, client, board, store, logs };
+  return { deps, client, board, store, logs, manual };
 }
 
 function click(overrides: Partial<ActionClick> = {}): ActionClick {
@@ -220,6 +228,24 @@ test("a +7 days click writes Next touch a week out (Friday -> Friday)", async ()
 
   assert.deepEqual(board.dates, [{ projectId: "PVT_1", itemId: "ITEM_1", fieldId: "F_TOUCH", date: "2026-12-04" }]);
   assert.match(client.updates[0].text, /→ next touch Fri 4 Dec/);
+});
+
+test("a successful click is logged with the action and the item, and a failed one is not", async () => {
+  const { deps, logs } = harness();
+  await handleAction(deps, click({ actionId: "zy_ack" }));
+  assert.deepEqual(logs, ["button ack on ITEM_1 by U_ZY"]);
+
+  const failed = harness();
+  failed.board.failWrites = true;
+  await handleAction(failed.deps, click({ actionId: "zy_done" }));
+  assert.deepEqual(failed.logs, ["button done on 2026-11-25:M:ITEM_1 failed: board is down"], "the failure line, not a success one");
+});
+
+test("a thread reply that acks a ping is logged with the item", async () => {
+  const { deps, logs } = harness();
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: "111.1", text: "shipped it" });
+
+  assert.deepEqual(logs, ["reply ack ITEM_1"]);
 });
 
 test("a click from anyone but ZY does nothing", async () => {
@@ -380,6 +406,14 @@ test("a draft has no issue to comment on: the note goes in the ping's thread", a
   assert.equal(store.findByKey(KEY)?.ackedAt, "2026-11-27T01:00:00.000Z");
 });
 
+test("a move is logged as the old and the new date, and never the reason", async () => {
+  const { deps, board, logs } = harness(boardItem());
+  await handleMoveSubmit(deps, submit({ date: "2026-12-02", reason: "the Acme workshop moved" }));
+
+  assert.deepEqual(board.dates, [{ projectId: "PVT_1", itemId: "ITEM_1", fieldId: "F_TARGET", date: "2026-12-02" }]);
+  assert.deepEqual(logs, ["move ITEM_1: 2026-11-25 -> 2026-12-02"]);
+});
+
 test("a move submit from anyone but ZY is ignored", async () => {
   const { deps, client, board, store } = harness(boardItem());
   await handleMoveSubmit(deps, submit({ userId: "U_OTHER" }));
@@ -537,36 +571,72 @@ test("a note: from anyone but ZY does nothing at all", async () => {
   assert.deepEqual(client.posts, []);
 });
 
-test("without the scribe the help is exactly 0.3.0's: no note: line at all", async () => {
+test("a DM that is no command gets one line pointing at help", async () => {
   const { deps, client } = harness();
 
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "note: ten nodes" });
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "hello?" });
 
   assert.deepEqual(client.posts.map((post) => post.text), [
-    [
-      "zy-assistant: I DM you the board plan in the morning and at end of day.",
-      'Reply "briefing" for a preview of the morning plan.',
-      "A button, or a reply in a ping's thread, marks the ping acked.",
-    ].join("\n"),
-    [
-      "zy-assistant: I DM you the board plan in the morning and at end of day.",
-      'Reply "briefing" for a preview of the morning plan.',
-      "A button, or a reply in a ping's thread, marks the ping acked.",
-    ].join("\n"),
+    "I didn't catch that. Reply `help` for what I can do.",
+    "I didn't catch that. Reply `help` for what I can do.",
   ]);
-  assert.equal(client.posts[0].text.includes("note:"), false);
 });
 
-test("with the scribe on, the help says how to dictate", async () => {
+test("help, ? and manual all answer the overview, and with the scribe off it never mentions notes", async () => {
+  const { deps, client } = harness();
+
+  for (const text of ["help", "?", "  Manual  ", "HELP"]) {
+    await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text });
+  }
+
+  assert.equal(client.posts.length, 4);
+  for (const post of client.posts) {
+    assert.ok(post.blocks !== undefined && post.blocks.length > 1, `${post.text} is a manual, not a line`);
+    assert.match(post.text, /Reply `help <topic>` for details: `briefing`, `pings`, `buttons`, `updates`\./);
+    assert.doesNotMatch(post.text, /note:|`note`/);
+  }
+});
+
+test("help <topic> answers that page, and an unknown topic keeps the overview with the miss on top", async () => {
+  const { deps, client, logs } = harness();
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "help buttons" });
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "help Pings" });
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.4", threadTs: null, text: "help horoscope" });
+
+  assert.match(client.posts[0].text, /^\*Buttons\*\n\n.*On it/, "the page, not the overview");
+  assert.doesNotMatch(client.posts[0].text, /Reply `help <topic>`/);
+  assert.match(client.posts[1].text, /^\*Pings\*/, "the topic is matched however it is typed");
+  assert.match(client.posts[2].text, /^No topic `horoscope`\. Here is the overview\./);
+  assert.match(client.posts[2].text, /Reply `help <topic>` for details/);
+  assert.deepEqual(logs, ["help buttons", "help Pings", "help horoscope"], "ids only: what was asked for");
+});
+
+test("a help request is read from the command words alone", () => {
+  assert.equal(helpRequest("help"), "");
+  assert.equal(helpRequest("  HELP "), "");
+  assert.equal(helpRequest("?"), "");
+  assert.equal(helpRequest("manual"), "");
+  assert.equal(helpRequest("help buttons"), "buttons");
+  assert.equal(helpRequest("Help   Pings "), "Pings");
+  assert.equal(helpRequest("helpful"), null);
+  assert.equal(helpRequest("briefing"), null, "briefing is its own command");
+  assert.equal(helpRequest("note: ten nodes"), null);
+  assert.equal(helpRequest(""), null);
+});
+
+test("with the scribe on, the manual has the note topic and its page says how to dictate", async () => {
   const { deps, client } = harness();
   deps.scribe = async () => {};
 
-  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "hello?" });
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "help" });
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "help note" });
 
-  assert.match(client.posts[0].text, /Dictate a note: "note: "/);
-  assert.equal(helpText(false).includes("note:"), false);
-  assert.equal(helpText(true).startsWith(helpText(false)), true);
+  assert.match(client.posts[0].text, /\*Notes\*/);
+  assert.match(client.posts[0].text, /`note: <text>` in a DM/);
+  assert.match(client.posts[1].text, /^\*Notes\*/);
+  assert.match(client.posts[1].text, /`note:` and then the dictation/);
 });
 
 test("a scribe that throws says so in the thread instead of failing silently", async () => {

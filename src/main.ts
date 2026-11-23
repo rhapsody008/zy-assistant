@@ -1,13 +1,14 @@
 // Entry point: `check`, `dry-run`, `run` and `scribe`. Modes are described in README.md.
 
 import { readFileSync } from "node:fs";
-import { LLM_VARS, loadConfig, scribeMissing } from "./config.ts";
+import { LLM_VARS, loadConfig, scribeMissing, type Config } from "./config.ts";
 import { errMessage } from "./errors.ts";
 import { createBoardClient, type BoardSource } from "./github.ts";
 import { Health } from "./health.ts";
 import { openaiCompatible } from "./llm.ts";
+import type { ManualSettings } from "./manual.ts";
 import { createNotesClient } from "./notes.ts";
-import { plan, type Slot } from "./rules.ts";
+import { DEFAULT_POLICY, plan, type Slot } from "./rules.ts";
 import { requiredProblems, STATUS, validateSchema, type SchemaReport } from "./schema.ts";
 import { startScheduler } from "./scheduler.ts";
 import { extractNote, writeEntry } from "./scribe-handler.ts";
@@ -20,6 +21,16 @@ const now = (): Date => new Date();
 
 function log(line: string): void {
   console.log(`${now().toISOString()} ${line}`);
+}
+
+/** What "help" quotes: the two slot times, the notes repo, and the policy in force. */
+function manualSettings(config: Config): ManualSettings {
+  return {
+    briefTime: config.briefTime,
+    eodTime: config.eodTime,
+    notesRepo: config.notesRepo,
+    policy: { ...DEFAULT_POLICY, ...config.policy },
+  };
 }
 
 const USAGE = `usage: node src/main.ts <mode>
@@ -127,6 +138,7 @@ async function check(): Promise<void> {
     board,
     now,
     log,
+    manual: manualSettings(config),
   });
   const who = await bot.authTest();
   log(`slack ok: ${String(who.user)} in ${String(who.team)}`);
@@ -219,6 +231,7 @@ async function run(): Promise<void> {
     board,
     now,
     log,
+    manual: manualSettings(config),
     scribe:
       config.scribe === null
         ? null

@@ -34,6 +34,54 @@ section reports, and Account is where the notes-repo activity is looked up.
 It also takes dictations: DM `note: …` and the scribe turns it into an entry of
 the notes repo and replies with the link (see **The scribe**).
 
+## Using the bot
+
+DM the bot `help` (or `?`, or `manual`) and it answers with the manual below;
+`help <topic>` opens one topic, and an unknown topic answers the overview with
+`No topic <x>.` on top. Any other DM that is no command gets a one-line hint.
+The text is rendered from `src/manual.ts` with the live policy and slot times
+(`WAITING_CHASE_DAYS`, `STAGE_STALE_DAYS`, the lead times, the WIP limit), so the
+topic pages say what this deployment does. The `note` topic is left out when the
+scribe is off, and the notes-repo ack below when `NOTES_REPO` is unset. With the
+defaults, `help` sends exactly this:
+
+```
+*Briefing*
+• Two DMs a day on weekdays (Asia/Singapore): the morning briefing at `09:00` and the end-of-day sweep at `17:30`.
+• The morning one: Today, Coming up, Stale dates, a ⚠ line per unanswered re-ping, and the In-progress count.
+• Friday adds Pipeline and Learning. `briefing` in a DM previews the morning plan.
+
+*Pings*
+• A ping is one DM about one item: its link, why it is due, and its buttons.
+• A Target date pings from T-3 down to T-0, then daily while it is overdue (14 days).
+• Also: Workshop at T-14 and T-7, POC at T-14 and T-7; a Next touch that is due; a Waiting item nobody moved for 5 days.
+• What is still unanswered at 17:30 is re-pinged, and shows as ⚠ the next morning.
+
+*Buttons*
+• Every ping has buttons under it. Only your clicks count, and a click is the approval: I write to the board at once.
+• *👍 On it* changes nothing on the board; it only marks the ping handled. *✅ Done* sets Status to Done.
+• *Tomorrow* and *+7 days* move Next touch. *Move date* sets Target date and comments why.
+• A plain reply in the ping's thread acks it too.
+
+*Notes*
+• `note: <text>` in a DM, or in a ping's thread, and I turn it into a note.
+• It lands at the top of the log in `<folder>/README.md` of the notes repo, and I reply with the commit link.
+• No folder fits, or the model fails? I ask where it goes. Nothing dictated is ever lost.
+
+*Updates*
+• An ack is what stops a re-ping: a button, a reply, or progress on the board.
+• The board item changing after the ping acks it, so editing it on GitHub is enough.
+• A commit under `Accounts/<Account>/` in the notes repo does the same.
+
+Reply `help <topic>` for details: `briefing`, `pings`, `buttons`, `note`, `updates`.
+```
+
+Every successful action is one log line with ids only, never a note's text or
+title: `scribe <ts>: committed <folder> in <ms> ms (<n> actions) <url>`,
+`scribe <ts>: asked for a folder`, `scribe <ts>: committed raw text to <folder>`,
+`button <action> on <item> by <user>`, `move <item>: <old> -> <new>`,
+`reply ack <item>` and `help <topic>`.
+
 ## Env
 
 | Variable | Needed by | Default |
@@ -87,7 +135,7 @@ replies in the same thread with the link. Dictated under a ping, the ping's item
 title is given to the model as context; it does not ack the ping.
 
 It is off unless `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` and `NOTES_REPO` are
-all set: with any of them unset the bot behaves exactly as it did in 0.3.0.
+all set: with any of them unset the bot behaves as 0.3.0 did, apart from the help text.
 Half-set LLM variables are a startup error, not a quiet no.
 
 The model is Nutanix Enterprise AI (`…/enterpriseai/gateway/v1`, model

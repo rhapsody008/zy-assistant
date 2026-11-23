@@ -73,7 +73,7 @@ Rules:
 - decisions: what was decided, one string each; an empty array when nothing was decided.
 - actions: one per thing somebody has to do. The owner is "ZY" when ZY does it (the dictation says "I", "me", "my"), otherwise the person or team named. due is a date only when the dictation gives one, otherwise null.
 - Never invent facts, names, numbers or dates. What the dictation does not say is not there.
-- Relative dates ("tomorrow", "next Friday", "in two weeks", "end of the month") resolve against today's date.
+- Relative dates ("tomorrow", "next Friday", "in two weeks", "end of the month") resolve against today's date. "This Friday" is the next Friday on or after today (today itself when today is a Friday); "next Friday" is the Friday of the following week, 7 days after "this Friday". The same holds for every other weekday.
 - ZY is the user: "I", "me" and "mine" mean ZY's own words.
 - Empty arrays are fine and correct. Never pad a field to look complete.`;
 

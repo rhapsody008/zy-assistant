@@ -149,6 +149,8 @@ interface CommitArgs {
   date: string; // for the commit message
   topic: string; // ditto, and in the reply
   actions: Note["actions"];
+  /** True: the words go in verbatim, because the model never answered. */
+  raw: boolean;
   ui: ScribeUi;
   /** The "writing…" message to turn into the result, or null to reply afresh. */
   ackTs: string | null;
@@ -160,6 +162,7 @@ interface CommitArgs {
  * GitHub is back: nothing is stranded.
  */
 async function commit(deps: ScribeDeps, args: CommitArgs): Promise<void> {
+  const startedAt = deps.now().getTime();
   let url: string;
   try {
     url = await writeEntry(deps, { folder: args.folder, entry: args.entry, date: args.date, topic: args.topic });
@@ -177,6 +180,9 @@ async function commit(deps: ScribeDeps, args: CommitArgs): Promise<void> {
     return;
   }
   deps.dictations.updateDictation(args.ts, { status: "done", folder: args.folder, commitUrl: url, error: null });
+  // One line per commit, ids only: no dictation text, no note title, no folder tree.
+  if (args.raw) deps.log(`scribe ${args.ts}: committed raw text to ${args.folder}`);
+  else deps.log(`scribe ${args.ts}: committed ${args.folder} in ${deps.now().getTime() - startedAt} ms (${args.actions.length} actions) ${url}`);
   await report(args.ui, args.ackTs, doneMessage(args.folder, args.topic, url, args.actions));
 }
 
@@ -242,6 +248,7 @@ export async function scribeHandler(deps: ScribeDeps, dictation: ScribeDictation
       date: note.date,
       topic: note.topic,
       actions: note.actions,
+      raw: false,
       ui,
       ackTs,
     });
@@ -261,6 +268,7 @@ export async function scribeHandler(deps: ScribeDeps, dictation: ScribeDictation
     text = suggested === null ? "Where should this note go?" : `New folder \`${suggested.path}\`?`;
   }
   await ui.ask({ ts: dictation.ts, text, folders, create: suggested?.name ?? null, retry: false });
+  deps.log(`scribe ${dictation.ts}: asked for a folder`);
 }
 
 /** ZY's answer to the folder question: an existing folder, a new one, a retry, or cancel. */
@@ -370,6 +378,7 @@ export async function scribeChoice(deps: ScribeDeps, choice: ScribeChoice, ui: S
       date: today,
       topic: "Raw dictation (unprocessed)",
       actions: [],
+      raw: true,
       ui,
       ackTs: null,
     });
@@ -382,6 +391,7 @@ export async function scribeChoice(deps: ScribeDeps, choice: ScribeChoice, ui: S
     date: note.date,
     topic: note.topic,
     actions: note.actions,
+    raw: false,
     ui,
     ackTs: null,
   });

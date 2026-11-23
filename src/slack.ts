@@ -7,6 +7,7 @@
 import { App, LogLevel } from "@slack/bolt";
 import { errMessage } from "./errors.ts";
 import type { BoardSource } from "./github.ts";
+import { helpReply, type ManualSettings } from "./manual.ts";
 import { plan, type ActionId, type Ping } from "./rules.ts";
 import { STATUS } from "./schema.ts";
 import {
@@ -138,17 +139,17 @@ const LABELS: Record<ActionId, string> = {
 /** Slack rejects a select with more than 100 options. */
 const MAX_SELECT_OPTIONS = 100;
 
-const HELP = [
-  "zy-assistant: I DM you the board plan in the morning and at end of day.",
-  'Reply "briefing" for a preview of the morning plan.',
-  "A button, or a reply in a ping's thread, marks the ping acked.",
-];
+/** A DM that is no command at all: one line, so a stray message is not read as a feature. */
+const UNKNOWN_DM = "I didn't catch that. Reply `help` for what I can do.";
 
-const NOTE_HELP = 'Dictate a note: "note: " and the rest in a DM, or in a ping\'s thread.';
-
-/** The DM help: the note line only when the scribe is on, so 0.3.0 reads as 0.3.0. */
-export function helpText(scribe: boolean): string {
-  return (scribe ? [...HELP, NOTE_HELP] : HELP).join("\n");
+/**
+ * What a DM asks the manual for: "" for the overview, the topic word for a page,
+ * and null when the message is no help request. Case and spacing do not matter.
+ */
+export function helpRequest(text: string): string | null {
+  const match = /^(?:help|\?|manual)(?:\s+([\s\S]+))?$/i.exec(text.trim());
+  if (!match) return null;
+  return (match[1] ?? "").trim();
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
@@ -261,6 +262,8 @@ export interface HandlerDeps {
   userId: string; // ZY: the only person the bot obeys
   now: () => Date;
   log: (line: string) => void;
+  /** What the manual quotes: the two slot times, the notes repo, the live policy. */
+  manual: ManualSettings;
   /** The scribe, when LLM_BASE_URL and friends are set: null turns "note: ..." off. */
   scribe?: ScribeDispatch | null;
 }
@@ -291,6 +294,9 @@ export interface DmMessage {
 export function touchDate(today: string, action: "touch1" | "touch7"): string {
   return nextWorkday(addDays(today, action === "touch1" ? 1 : 7));
 }
+
+/** True when a dictation would be scribed: the note topic and the note: line. */
+const scribeOn = (deps: HandlerDeps): boolean => deps.scribe !== null && deps.scribe !== undefined;
 
 /** A button click. Only ZY's clicks do anything; ZY's click is the board approval. */
 export async function handleAction(deps: HandlerDeps, click: ActionClick): Promise<void> {
@@ -326,6 +332,7 @@ export async function handleAction(deps: HandlerDeps, click: ActionClick): Promi
   }
 
   deps.store.markAcked(button.key, deps.now().toISOString());
+  deps.log(`button ${actionId} on ${ping.itemId} by ${click.userId}`);
   // The write is done: if the message update fails it is only cosmetic.
   await updateMessage(deps, click.channel, click.ts, `${text}\n→ ${result}`, [section(text), context(`→ ${result}`)]);
 }
@@ -338,7 +345,7 @@ export function dictationText(text: string): string | null {
   return body === "" ? null : body; // a bare "note:" is not a dictation
 }
 
-/** A DM from ZY: a dictation is scribed, a thread reply acks that ping, "briefing" previews, else help. */
+/** A DM from ZY: a dictation is scribed, a thread reply acks that ping, then the commands. */
 export async function handleMessage(deps: HandlerDeps, message: DmMessage): Promise<void> {
   if (message.userId !== deps.userId) return;
 
@@ -353,6 +360,7 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
     const parent = deps.store.findByMessage(message.channel, message.threadTs);
     if (parent) {
       deps.store.markAcked(parent.key, deps.now().toISOString());
+      deps.log(`reply ack ${parent.itemId}`);
       await postMessage(deps, { channel: message.channel, text: "Noted.", thread_ts: message.threadTs });
       return;
     }
@@ -367,7 +375,16 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
     return;
   }
 
-  await postMessage(deps, { channel: message.channel, text: helpText(deps.scribe !== null && deps.scribe !== undefined) });
+  // The manual: the overview, or the page behind "help <topic>".
+  const asked = helpRequest(message.text);
+  if (asked !== null) {
+    deps.log(asked === "" ? "help" : `help ${asked}`);
+    const reply = helpReply(deps.manual, scribeOn(deps), asked === "" ? null : asked);
+    await postMessage(deps, { channel: message.channel, text: reply.text, blocks: reply.blocks });
+    return;
+  }
+
+  await postMessage(deps, { channel: message.channel, text: UNKNOWN_DM });
 }
 
 /**
@@ -643,6 +660,7 @@ export async function handleMoveSubmit(deps: HandlerDeps, submit: MoveSubmit): P
   }
 
   // The date is on the board: the move counts from here whatever happens next.
+  deps.log(`move ${ping.itemId}: ${old ?? "none"} -> ${date}`);
   const commentary = `Target date moved ${old ?? "none"} → ${date} by zy-assistant: ${note}`;
   // An Issue takes a comment; a draft has nowhere to put one, so the note goes
   // in the ping's thread, under the buttons it replaces.
@@ -691,6 +709,8 @@ export interface SlackBotOptions {
   board: BoardSource;
   now: () => Date;
   log: (line: string) => void;
+  /** What "help" quotes: the slot times, NOTES_REPO and the live policy. */
+  manual: ManualSettings;
   /** The scribe, or null: without it "note: ..." is answered like any other DM. */
   scribe?: ScribeDeps | null;
 }
@@ -713,6 +733,7 @@ export class SlackBot implements Sender {
       userId: options.userId,
       now: options.now,
       log: options.log,
+      manual: options.manual,
       scribe: scribe === null ? null : (dictation, ui) => scribeHandler(scribe, dictation, ui),
     };
     this.app = new App({
