@@ -1,8 +1,10 @@
 // Shared test doubles. No network, no disk, no real timers.
 
+import type { Llm, LlmRequest } from "../src/llm.ts";
+import { ShaConflict, type NotesClient, type NotesFile } from "../src/notes.ts";
 import type { Ping, SentPing, Slot } from "../src/rules.ts";
 import type { Sent, Sender } from "../src/slack.ts";
-import type { NewPing, PingRecord, PingStore } from "../src/store.ts";
+import type { Dictation, DictationPatch, DictationStatus, DictationStore, NewPing, PingRecord, PingStore } from "../src/store.ts";
 
 export class FakeStore implements PingStore {
   readonly pings = new Map<string, PingRecord>();
@@ -56,8 +58,7 @@ export class FakeStore implements PingStore {
   }
 }
 
-/** Holds a fake's reply open until the test opens it: no timers involved. */
-export class Gate {
+/** Holds a fake's reply open until the test opens it: no timers involved. */export class Gate {
   readonly opened: Promise<void>;
   readonly entered: Promise<void>;
   #open: () => void = () => {};
@@ -106,5 +107,99 @@ export class FakeSender implements Sender {
     }
     this.sent.push(ping);
     return { channel: "DM", ts: `ts-${this.sent.length}` };
+  }
+}
+
+/** The note model: scripted replies, one per call, and no network. */
+export class FakeLlm implements Llm {
+  readonly requests: LlmRequest[] = [];
+  readonly replies: string[] = [];
+  /** When set, every call throws this: the gateway is down. */
+  down: Error | null = null;
+
+  async complete(req: LlmRequest): Promise<string> {
+    this.requests.push(req);
+    if (this.down) throw this.down;
+    const reply = this.replies.shift();
+    if (reply === undefined) throw new Error("FakeLlm: no reply left");
+    return reply;
+  }
+}
+
+/** The notes repo: files in a map, and the shas a write has to carry. */
+export class FakeNotes implements NotesClient {
+  readonly files = new Map<string, NotesFile>();
+  readonly folders: string[] = [];
+  readonly writes: Array<{ path: string; text: string; sha: string | null; message: string }> = [];
+  readonly reads: string[] = [];
+  /** How many writes to refuse with a ShaConflict first: another writer got there. */
+  conflicts = 0;
+  /** When set, every read fails: the notes repo cannot be reached. */
+  failReads: Error | null = null;
+  commits = 0;
+
+  async listFolders(): Promise<string[]> {
+    return [...this.folders];
+  }
+
+  async readFile(path: string): Promise<NotesFile | null> {
+    this.reads.push(path);
+    if (this.failReads) throw this.failReads;
+    const file = this.files.get(path);
+    return file === undefined ? null : { ...file };
+  }
+
+  async writeFile(path: string, text: string, sha: string | null, message: string): Promise<string> {
+    this.commits += 1;
+    if (this.conflicts > 0) {
+      this.conflicts -= 1;
+      // Someone else wrote first: the file on main has a new sha now.
+      this.files.set(path, { text: this.files.get(path)?.text ?? "", sha: `sha-${this.commits}` });
+      throw new ShaConflict(`write ${path}: GitHub API 409: sha does not match`);
+    }
+    this.writes.push({ path, text, sha, message });
+    this.files.set(path, { text, sha: `sha-${this.commits}` });
+    return `https://github.com/demo/notes/commit/${this.commits}`;
+  }
+}
+
+/** The dictations table: the same shape, in a map. */
+export class FakeDictations implements DictationStore {
+  readonly rows = new Map<string, Dictation>();
+
+  recordDictation(dictation: { ts: string; text: string; createdAt: string }): boolean {
+    if (this.rows.has(dictation.ts)) return false;
+    this.rows.set(dictation.ts, {
+      ts: dictation.ts,
+      text: dictation.text,
+      status: "stored",
+      folder: null,
+      noteJson: null,
+      commitUrl: null,
+      createdAt: dictation.createdAt,
+      error: null,
+    });
+    return true;
+  }
+
+  findDictation(ts: string): Dictation | null {
+    return this.rows.get(ts) ?? null;
+  }
+
+  claimDictation(ts: string, from: DictationStatus[]): boolean {
+    const row = this.rows.get(ts);
+    if (row === undefined || !from.includes(row.status)) return false;
+    row.status = "writing";
+    return true;
+  }
+
+  updateDictation(ts: string, patch: DictationPatch): void {
+    const row = this.rows.get(ts);
+    if (row === undefined) return;
+    if (patch.status !== undefined) row.status = patch.status;
+    if (patch.folder !== undefined) row.folder = patch.folder;
+    if (patch.noteJson !== undefined) row.noteJson = patch.noteJson;
+    if (patch.commitUrl !== undefined) row.commitUrl = patch.commitUrl;
+    if (patch.error !== undefined) row.error = patch.error;
   }
 }

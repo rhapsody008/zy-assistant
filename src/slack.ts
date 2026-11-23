@@ -9,6 +9,16 @@ import { errMessage } from "./errors.ts";
 import type { BoardSource } from "./github.ts";
 import { plan, type ActionId, type Ping } from "./rules.ts";
 import { STATUS } from "./schema.ts";
+import {
+  FOLDER_BLOCK_PREFIX,
+  parseScribeChoice,
+  scribeChoice,
+  scribeHandler,
+  type ScribeAsk,
+  type ScribeDeps,
+  type ScribeDictation,
+  type ScribeUi,
+} from "./scribe-handler.ts";
 import type { PingRecord, PingStore } from "./store.ts";
 import { addDays, fmtDate, localNow, nextWorkday, TZ } from "./time.ts";
 
@@ -33,9 +43,24 @@ interface ContextBlock {
   elements: Array<{ type: "mrkdwn"; text: string }>;
 }
 
+interface ButtonElement {
+  type: "button";
+  action_id: string;
+  text: { type: "plain_text"; text: string };
+  value: string;
+}
+
+interface SelectElement {
+  type: "static_select";
+  action_id: string;
+  placeholder: { type: "plain_text"; text: string };
+  options: Array<{ text: { type: "plain_text"; text: string }; value: string }>;
+}
+
 interface ActionsBlock {
   type: "actions";
-  elements: Array<{ type: "button"; action_id: string; text: { type: "plain_text"; text: string }; value: string }>;
+  block_id?: string;
+  elements: Array<ButtonElement | SelectElement>;
 }
 
 export type Block = SectionBlock | ContextBlock | ActionsBlock;
@@ -110,11 +135,21 @@ const LABELS: Record<ActionId, string> = {
   touch7: "+7 days",
 };
 
+/** Slack rejects a select with more than 100 options. */
+const MAX_SELECT_OPTIONS = 100;
+
 const HELP = [
   "zy-assistant: I DM you the board plan in the morning and at end of day.",
   'Reply "briefing" for a preview of the morning plan.',
   "A button, or a reply in a ping's thread, marks the ping acked.",
-].join("\n");
+];
+
+const NOTE_HELP = 'Dictate a note: "note: " and the rest in a DM, or in a ping\'s thread.';
+
+/** The DM help: the note line only when the scribe is on, so 0.3.0 reads as 0.3.0. */
+export function helpText(scribe: boolean): string {
+  return (scribe ? [...HELP, NOTE_HELP] : HELP).join("\n");
+}
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
 
@@ -226,7 +261,12 @@ export interface HandlerDeps {
   userId: string; // ZY: the only person the bot obeys
   now: () => Date;
   log: (line: string) => void;
+  /** The scribe, when LLM_BASE_URL and friends are set: null turns "note: ..." off. */
+  scribe?: ScribeDispatch | null;
 }
+
+/** The scribe, called without being awaited: Slack wants its three seconds. */
+export type ScribeDispatch = (dictation: ScribeDictation, ui: ScribeUi) => Promise<void>;
 
 export interface ActionClick {
   actionId: string; // raw action_id, e.g. "zy_done"
@@ -290,9 +330,24 @@ export async function handleAction(deps: HandlerDeps, click: ActionClick): Promi
   await updateMessage(deps, click.channel, click.ts, `${text}\n→ ${result}`, [section(text), context(`→ ${result}`)]);
 }
 
-/** A DM from ZY: a thread reply acks that ping, "briefing" previews, else help. */
+/** "note: the workshop settled on x" -> "the workshop settled on x"; else null. */
+export function dictationText(text: string): string | null {
+  const match = /^note\s*:\s*([\s\S]*)$/i.exec(text.trim());
+  if (!match) return null;
+  const body = match[1].trim();
+  return body === "" ? null : body; // a bare "note:" is not a dictation
+}
+
+/** A DM from ZY: a dictation is scribed, a thread reply acks that ping, "briefing" previews, else help. */
 export async function handleMessage(deps: HandlerDeps, message: DmMessage): Promise<void> {
   if (message.userId !== deps.userId) return;
+
+  // A dictation wins over the thread-ack: dictated under a ping, it is about the ping.
+  const note = dictationText(message.text);
+  if (note !== null && deps.scribe) {
+    void runScribe(deps, message, note);
+    return;
+  }
 
   if (message.threadTs) {
     const parent = deps.store.findByMessage(message.channel, message.threadTs);
@@ -312,7 +367,125 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
     return;
   }
 
-  await postMessage(deps, { channel: message.channel, text: HELP });
+  await postMessage(deps, { channel: message.channel, text: helpText(deps.scribe !== null && deps.scribe !== undefined) });
+}
+
+/**
+ * The scribe's work, off the handler's path: the event is already acked, and a
+ * commit takes longer than Slack would wait. Every error ends in the thread.
+ */
+async function runScribe(deps: HandlerDeps, message: DmMessage, text: string): Promise<void> {
+  const ui = threadUi(deps.client, message.channel, message.ts);
+  try {
+    const hint = await pingHint(deps, message);
+    await deps.scribe?.({ ts: message.ts, text, hint }, ui);
+  } catch (err) {
+    deps.log(`scribe ${message.ts} failed: ${errMessage(err)}`);
+    try {
+      await ui.reply(`⚠️ the scribe failed: ${errMessage(err)}`);
+    } catch (replyErr) {
+      deps.log(`scribe ${message.ts}: the error reply failed too: ${errMessage(replyErr)}`);
+    }
+  }
+}
+
+/** A note dictated under a ping is about that ping's item: its title is the hint. */
+async function pingHint(deps: HandlerDeps, message: DmMessage): Promise<string | null> {
+  if (!message.threadTs) return null;
+  const parent = deps.store.findByMessage(message.channel, message.threadTs);
+  if (!parent) return null;
+  try {
+    const board = await deps.board.fetchBoard(deps.owner, deps.number);
+    return board.items.find((item) => item.id === parent.itemId)?.title ?? null;
+  } catch (err) {
+    // The hint is a nicety: a board the bot cannot read must not stop the note.
+    deps.log(`scribe ${message.ts}: no hint, the board read failed: ${errMessage(err)}`);
+    return null;
+  }
+}
+
+/** The scribe's Slack side: everything replies in the dictation's own thread. */
+export function threadUi(client: SlackClient, channel: string, threadTs: string): ScribeUi {
+  return {
+    async reply(text: string): Promise<string> {
+      const res = await client.chat.postMessage({ channel, text, thread_ts: threadTs });
+      if (!res.ts) throw new Error("chat.postMessage returned no ts");
+      return res.ts;
+    },
+    async edit(ts: string, text: string): Promise<void> {
+      await client.chat.update({ channel, ts, text });
+    },
+    async ask(ask: ScribeAsk): Promise<void> {
+      await client.chat.postMessage({ channel, text: ask.text, thread_ts: threadTs, blocks: askBlocks(ask) });
+    },
+  };
+}
+
+/**
+ * The folder question: the dictation's text, the buttons, and the folders. The
+ * select holds at most Slack's 100 options (Accounts first, each sorted), its
+ * options carry the folder alone, and the dictation rides in its block_id.
+ */
+export function askBlocks(ask: ScribeAsk): Block[] {
+  const elements: Array<ButtonElement | SelectElement> = [];
+  if (ask.create !== null) {
+    elements.push({ type: "button", action_id: "zy_scribe_create", text: { type: "plain_text", text: "Create" }, value: ask.ts });
+  }
+  if (ask.retry) {
+    elements.push({ type: "button", action_id: "zy_scribe_retry", text: { type: "plain_text", text: "Retry" }, value: ask.ts });
+  }
+  elements.push({ type: "button", action_id: "zy_scribe_cancel", text: { type: "plain_text", text: "Cancel" }, value: ask.ts });
+  const folders = selectFolders(ask.folders);
+  if (folders.length > 0) {
+    elements.push({
+      type: "static_select",
+      action_id: "zy_scribe_folder",
+      placeholder: { type: "plain_text", text: "…or put it in" },
+      options: folders.map((folder) => ({ text: { type: "plain_text", text: folder }, value: folder })),
+    });
+  }
+  return [section(ask.text), { type: "actions", block_id: `${FOLDER_BLOCK_PREFIX}${ask.ts}`, elements }];
+}
+
+/** The folders a select may offer: Accounts first, each group sorted, at most 100. Pure. */
+export function selectFolders(folders: readonly string[]): string[] {
+  const accounts = folders.filter((folder) => folder.startsWith("Accounts/")).sort();
+  const others = folders.filter((folder) => !folder.startsWith("Accounts/")).sort();
+  return [...accounts, ...others].slice(0, MAX_SELECT_OPTIONS);
+}
+
+/**
+ * A folder choice. Only ZY's click counts, and the commit behind it is longer
+ * than Slack's three seconds, so the caller acks first and does not wait.
+ */
+async function dispatchScribeChoice(deps: HandlerDeps, scribe: ScribeDeps, args: ScribeClick): Promise<void> {
+  if (args.userId !== deps.userId || args.channel === null) return;
+  const choice = parseScribeChoice(args.actionId, args.value, args.selected, args.blockId);
+  if (!choice) {
+    deps.log(`scribe: ${args.actionId} is not a choice the bot knows`);
+    return;
+  }
+  const ui = threadUi(deps.client, args.channel, choice.ts);
+  try {
+    await scribeChoice(scribe, choice, ui);
+  } catch (err) {
+    deps.log(`scribe ${choice.ts}: the choice failed: ${errMessage(err)}`);
+    try {
+      await ui.reply(`⚠️ the scribe failed: ${errMessage(err)}`);
+    } catch (replyErr) {
+      deps.log(`scribe ${choice.ts}: the error reply failed too: ${errMessage(replyErr)}`);
+    }
+  }
+}
+
+/** A click on the folder question: the button's value, or the select's option and block. */
+export interface ScribeClick {
+  actionId: string;
+  value: string | null;
+  selected: string | null;
+  blockId: string | null; // the select's block carries the dictation
+  userId: string;
+  channel: string | null;
 }
 
 async function postMessage(deps: HandlerDeps, args: PostMessageArgs): Promise<void> {
@@ -518,15 +691,20 @@ export interface SlackBotOptions {
   board: BoardSource;
   now: () => Date;
   log: (line: string) => void;
+  /** The scribe, or null: without it "note: ..." is answered like any other DM. */
+  scribe?: ScribeDeps | null;
 }
 
 export class SlackBot implements Sender {
   readonly app: App;
   #userId: string;
+  #scribe: ScribeDeps | null;
   #deps: Omit<HandlerDeps, "client">;
 
   constructor(options: SlackBotOptions) {
     this.#userId = options.userId;
+    const scribe = options.scribe ?? null;
+    this.#scribe = scribe;
     this.#deps = {
       store: options.store,
       board: options.board,
@@ -535,6 +713,7 @@ export class SlackBot implements Sender {
       userId: options.userId,
       now: options.now,
       log: options.log,
+      scribe: scribe === null ? null : (dictation, ui) => scribeHandler(scribe, dictation, ui),
     };
     this.app = new App({
       token: options.botToken,
@@ -550,6 +729,27 @@ export class SlackBot implements Sender {
       await ack();
       if (body.type !== "block_actions") return;
       if (!("action_id" in action) || typeof action.action_id !== "string") return;
+      if (action.action_id.startsWith("zy_scribe_")) {
+        // A folder choice: a GitHub commit follows, so it is not awaited here.
+        if (this.#scribe === null) return;
+        const selected =
+          "selected_option" in action && action.selected_option !== null && typeof action.selected_option === "object" && "value" in action.selected_option && typeof action.selected_option.value === "string"
+            ? action.selected_option.value
+            : null;
+        void dispatchScribeChoice(
+          { ...this.#deps, client },
+          this.#scribe,
+          {
+            actionId: action.action_id,
+            value: "value" in action && typeof action.value === "string" ? action.value : null,
+            selected,
+            blockId: "block_id" in action && typeof action.block_id === "string" ? action.block_id : null,
+            userId: body.user.id,
+            channel: body.channel?.id ?? null,
+          },
+        );
+        return;
+      }
       await handleAction(
         { ...this.#deps, client },
         {

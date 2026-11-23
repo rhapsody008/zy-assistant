@@ -1,12 +1,17 @@
-// Entry point: `check`, `dry-run` and `run`. Modes are described in README.md.
+// Entry point: `check`, `dry-run`, `run` and `scribe`. Modes are described in README.md.
 
-import { loadConfig } from "./config.ts";
+import { readFileSync } from "node:fs";
+import { LLM_VARS, loadConfig, scribeMissing } from "./config.ts";
 import { errMessage } from "./errors.ts";
 import { createBoardClient, type BoardSource } from "./github.ts";
 import { Health } from "./health.ts";
+import { openaiCompatible } from "./llm.ts";
+import { createNotesClient } from "./notes.ts";
 import { plan, type Slot } from "./rules.ts";
 import { requiredProblems, STATUS, validateSchema, type SchemaReport } from "./schema.ts";
 import { startScheduler } from "./scheduler.ts";
+import { extractNote, writeEntry } from "./scribe-handler.ts";
+import { renderEntry } from "./scribe.ts";
 import { SlackBot, type Sender } from "./slack.ts";
 import { openStore } from "./store.ts";
 import { addDays, localNow, TZ } from "./time.ts";
@@ -21,6 +26,7 @@ const USAGE = `usage: node src/main.ts <mode>
   check                                  read the board, and DM a hello if Slack env is set
   dry-run --date YYYY-MM-DD [--slot M|E]  print what would be sent that day (default both slots)
   dry-run --week YYYY-MM-DD              print Mon-Fri, M and E (the date must be a Monday)
+  scribe [--dry-run] < dictation.txt    turn a dictation into a note entry (stdin); --dry-run prints it
   run                                    Slack bot plus the scheduler`;
 
 interface DryRunArgs {
@@ -93,6 +99,22 @@ async function check(): Promise<void> {
     log(`${item.ref} [${item.status ?? "no status"}] target=${item.target ?? "-"} next=${item.nextTouch ?? "-"} ${item.title}`);
   }
 
+  if (!config.scribe) {
+    // Nothing of the scribe's set at all: no line, so `check` reads exactly as it
+    // did in 0.3.0. Half of it set is worth saying, and a typo fails in loadConfig.
+    const missing = scribeMissing();
+    if (LLM_VARS.some((name) => (process.env[name] ?? "") !== "")) log(`scribe: off, missing ${missing.join(", ")}`);
+  } else {
+    const { llm, repo, token } = config.scribe;
+    log(`scribe: ${llm.model} at ${llm.baseUrl}, notes repo ${repo}`);
+    try {
+      const folders = await createNotesClient({ token, repo }).listFolders();
+      log(`scribe: ${folders.length} folders: ${folders.join(", ") || "(none)"}`);
+    } catch (err) {
+      log(`scribe: could not list the notes folders: ${errMessage(err)}`);
+    }
+  }
+
   if (!config.slack) {
     log("Slack env is not set, skipping auth.test and the DM");
     return;
@@ -143,6 +165,48 @@ async function dryRun(args: string[]): Promise<void> {
   }
 }
 
+/**
+ * `scribe`: the same pipeline as a DM, one dictation at a time, so ZY can try a
+ * note from the Mac. --dry-run prints the folder and the entry and writes nothing.
+ */
+async function scribeTask(args: string[]): Promise<void> {
+  const dryRun = args.includes("--dry-run");
+  const unknown = args.filter((arg) => arg !== "--dry-run");
+  if (unknown.length > 0) throw new Error(`scribe: unknown option ${unknown[0]}`);
+
+  const config = loadConfig("scribe");
+  const scribe = config.scribe;
+  if (scribe === null) throw new Error("scribe: LLM_BASE_URL, LLM_API_KEY, LLM_MODEL and NOTES_REPO have to be set");
+
+  const text = readFileSync(0, "utf8").trim();
+  if (text === "") throw new Error("scribe: no dictation on stdin");
+
+  const deps = {
+    llm: openaiCompatible({ baseUrl: scribe.llm.baseUrl, apiKey: scribe.llm.apiKey, model: scribe.llm.model }),
+    notes: createNotesClient({ token: scribe.token, repo: scribe.repo }),
+    log,
+    timeoutMs: scribe.llm.timeoutMs,
+    maxTokens: scribe.llm.maxTokens,
+  };
+  const today = localNow(now(), TZ).date;
+  const folders = await deps.notes.listFolders();
+  log(`notes repo ${scribe.repo}: ${folders.length} folders`);
+
+  const note = await extractNote(deps, { text, hint: null, today, folders });
+  const entry = renderEntry(note);
+  console.log(entry);
+  if (note.folder === null) {
+    log(`folder: none of the ${folders.length} fit; the model suggests Accounts/${note.newFolderName}`);
+    throw new Error("scribe: no existing folder, so nothing was written (create the folder, then run again)");
+  }
+  log(`folder: ${note.folder}`);
+  if (dryRun) {
+    log("dry run: nothing written");
+    return;
+  }
+  log(`committed: ${await writeEntry(deps, { folder: note.folder, entry, date: note.date, topic: note.topic })}`);
+}
+
 async function run(): Promise<void> {
   const config = loadConfig("run");
   const store = openStore(config.dbPath);
@@ -155,10 +219,31 @@ async function run(): Promise<void> {
     board,
     now,
     log,
+    scribe:
+      config.scribe === null
+        ? null
+        : {
+            llm: openaiCompatible({
+              baseUrl: config.scribe.llm.baseUrl,
+              apiKey: config.scribe.llm.apiKey,
+              model: config.scribe.llm.model,
+            }),
+            notes: createNotesClient({ token: config.scribe.token, repo: config.scribe.repo }),
+            dictations: store,
+            now,
+            log,
+            timeoutMs: config.scribe.llm.timeoutMs,
+            maxTokens: config.scribe.llm.maxTokens,
+          },
   });
 
   await bot.start();
   log("slack connected");
+  log(
+    config.scribe === null
+      ? "scribe: off, a note: DM is answered like any other"
+      : `scribe: ${config.scribe.llm.model} at ${config.scribe.llm.baseUrl} -> ${config.scribe.repo}`,
+  );
 
   let health: Health | null = null;
   if (config.httpPort !== null) {
@@ -211,6 +296,9 @@ try {
       break;
     case "run":
       await run();
+      break;
+    case "scribe":
+      await scribeTask(args);
       break;
     default:
       console.log(USAGE);

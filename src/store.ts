@@ -1,6 +1,7 @@
 // State: one SQLite file. What was pinged (and whether it was acked), which
-// briefings went out, which slots already ran, and how often a failing slot has
-// been retried. `:memory:` is accepted so tests never touch the disk.
+// briefings went out, which slots already ran, how often a failing slot has been
+// retried, and every dictation the scribe has not finished with yet. `:memory:`
+// is accepted so tests never touch the disk.
 
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -21,6 +22,41 @@ export interface NewPing {
 export interface PingRecord extends SentPing {
   channel: string;
   ts: string;
+}
+
+export type DictationStatus = "stored" | "asked" | "writing" | "done" | "failed" | "cancelled";
+
+/** One `note: ...` DM: the raw text first, then whatever the model made of it. */
+export interface Dictation {
+  ts: string; // the Slack message ts: the dedupe key
+  text: string; // the dictation, verbatim
+  status: DictationStatus;
+  folder: string | null; // where the note went, or will go
+  noteJson: string | null; // the extracted note, so a folder choice never calls the model again
+  commitUrl: string | null;
+  createdAt: string; // ISO
+  error: string | null;
+}
+
+/** Only the fields being changed: a status stays until something sets it. */
+export interface DictationPatch {
+  status?: DictationStatus;
+  folder?: string | null;
+  noteJson?: string | null;
+  commitUrl?: string | null;
+  error?: string | null;
+}
+
+export interface DictationStore {
+  /** Stores the raw text before anything else; false when that ts was stored already. */
+  recordDictation(dictation: { ts: string; text: string; createdAt: string }): boolean;
+  /**
+   * Takes the dictation for writing: true only for the call that moved it out of
+   * one of `from`. A second click, or a second delivery, gets false.
+   */
+  claimDictation(ts: string, from: DictationStatus[]): boolean;
+  findDictation(ts: string): Dictation | null;
+  updateDictation(ts: string, patch: DictationPatch): void;
 }
 
 export interface PingStore {
@@ -71,6 +107,18 @@ CREATE TABLE IF NOT EXISTS slot_failures (
   last_error TEXT NOT NULL,
   PRIMARY KEY (date, slot)
 );
+-- Every dictation, from the moment it is stored: the model can be down, GitHub
+-- can be down, and the words are not to be lost either way.
+CREATE TABLE IF NOT EXISTS dictations (
+  ts TEXT PRIMARY KEY,
+  text TEXT NOT NULL,
+  status TEXT NOT NULL,
+  folder TEXT,
+  note_json TEXT,
+  commit_url TEXT,
+  created_at TEXT NOT NULL,
+  error TEXT
+);
 `;
 
 type Row = Record<string, unknown>;
@@ -93,16 +141,33 @@ function toPingRecord(row: Row): PingRecord {
   return { ...toSentPing(row), channel: text(row.channel), ts: text(row.ts) };
 }
 
+const nullableText = (v: unknown): string | null => (v === null || v === undefined ? null : text(v));
+
+function toDictation(row: Row): Dictation {
+  return {
+    ts: text(row.ts),
+    text: text(row.text),
+    status: text(row.status) as DictationStatus,
+    folder: nullableText(row.folder),
+    noteJson: nullableText(row.note_json),
+    commitUrl: nullableText(row.commit_url),
+    createdAt: text(row.created_at),
+    error: nullableText(row.error),
+  };
+}
+
 /** `${date}:${slot}:briefing`, the same shape as a ping key. */
 export const briefingKey = (date: string, slot: Slot): string => pingKey(date, slot, "briefing");
 
-export class SqliteStore implements PingStore {
+export class SqliteStore implements PingStore, DictationStore {
   #db: DatabaseSync;
 
   constructor(dbPath: string) {
     if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
     this.#db = new DatabaseSync(dbPath);
     this.#db.exec(SCHEMA);
+    // A write the last process never finished: hand it back to the retry button.
+    this.#db.exec("UPDATE dictations SET status = 'failed', error = 'interrupted by a restart' WHERE status = 'writing'");
   }
 
   recordPing(p: NewPing): void {
@@ -157,6 +222,45 @@ export class SqliteStore implements PingStore {
       .run(date, slot, error);
     const row = this.#db.prepare("SELECT attempts FROM slot_failures WHERE date = ? AND slot = ?").get(date, slot);
     return row ? Number(row.attempts) : 1;
+  }
+
+  recordDictation(dictation: { ts: string; text: string; createdAt: string }): boolean {
+    const result = this.#db
+      .prepare("INSERT INTO dictations (ts, text, status, created_at) VALUES (?, ?, 'stored', ?) ON CONFLICT(ts) DO NOTHING")
+      .run(dictation.ts, dictation.text, dictation.createdAt);
+    return Number(result.changes) > 0;
+  }
+
+  findDictation(ts: string): Dictation | null {
+    const row = this.#db.prepare("SELECT * FROM dictations WHERE ts = ?").get(ts);
+    return row ? toDictation(row) : null;
+  }
+
+  claimDictation(ts: string, from: DictationStatus[]): boolean {
+    if (from.length === 0) return false;
+    // One statement, so two clicks cannot both win: the second sees 'writing'.
+    const marks = from.map(() => "?").join(", ");
+    const result = this.#db
+      .prepare(`UPDATE dictations SET status = 'writing' WHERE ts = ? AND status IN (${marks})`)
+      .run(ts, ...from);
+    return Number(result.changes) === 1;
+  }
+
+  updateDictation(ts: string, patch: DictationPatch): void {
+    const columns: string[] = [];
+    const values: Array<string | null> = [];
+    const set = (column: string, value: string | null | undefined): void => {
+      if (value === undefined) return;
+      columns.push(`${column} = ?`);
+      values.push(value);
+    };
+    set("status", patch.status);
+    set("folder", patch.folder);
+    set("note_json", patch.noteJson);
+    set("commit_url", patch.commitUrl);
+    set("error", patch.error);
+    if (columns.length === 0) return;
+    this.#db.prepare(`UPDATE dictations SET ${columns.join(", ")} WHERE ts = ?`).run(...values, ts);
   }
 
   close(): void {

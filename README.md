@@ -31,6 +31,9 @@ content counts as `Done`. The optional fields `Work type`, `Stage`, `Track`,
 time, Stage and Track feed the Friday sections, Cadence is what the Learning
 section reports, and Account is where the notes-repo activity is looked up.
 
+It also takes dictations: DM `note: …` and the scribe turns it into an entry of
+the notes repo and replies with the link (see **The scribe**).
+
 ## Env
 
 | Variable | Needed by | Default |
@@ -45,9 +48,14 @@ section reports, and Account is where the notes-repo activity is looked up.
 | `EOD_TIME` | | `17:30` |
 | `DB_PATH` | | `./data/state.db` |
 | `ASSISTANT_TZ` | | `Asia/Singapore` |
-| `NOTES_REPO` | | – (owner/repo: a commit under `Accounts/<Account>` acks that Account's items; unset turns the lookup off) |
+| `NOTES_REPO` | | – (owner/repo: a commit under `Accounts/<Account>` acks that Account's items and the scribe writes here; unset turns both off) |
 | `WAITING_CHASE_DAYS` | | `5` (a Waiting item with no update for longer is chased) |
 | `STAGE_STALE_DAYS` | | `21` (a pipeline item with no update for longer is nagged on Friday) |
+| `LLM_BASE_URL` | `scribe`, `check` | – (an OpenAI-compatible gateway, e.g. `https://<host>/enterpriseai/gateway/v1`) |
+| `LLM_API_KEY` | `scribe`, `check` | – |
+| `LLM_MODEL` | `scribe`, `check` | – (e.g. `zy-pi-uep`) |
+| `LLM_TIMEOUT_MS` | | `90000` (what one completion may take) |
+| `NOTES_GITHUB_TOKEN` | | – (defaults to `GITHUB_TOKEN`; it is the token that needs contents write on `NOTES_REPO`) |
 
 No token is ever logged or written to the database.
 
@@ -58,11 +66,85 @@ node src/main.ts check                                   # board summary + Slack
 node src/main.ts dry-run --date 2026-11-25               # print M and E for that day
 node src/main.ts dry-run --date 2026-11-25 --slot M      # just the morning
 node src/main.ts dry-run --week 2026-11-23               # Mon-Fri, M and E (a Monday)
+node src/main.ts scribe --dry-run < note.txt             # a dictation: print the folder and the entry
+node src/main.ts scribe < note.txt                       # a dictation: commit it
 node src/main.ts run                                     # Slack + scheduler, every 60 s
 ```
 
 `dry-run` reads the live board with an empty history: it prints, it never sends,
 never writes to the board and never opens the database.
+
+`scribe` reads the dictation from stdin and runs the same pipeline a DM does,
+without Slack and without the database: `listFolders`, the model, and the render
+(`--dry-run`) or the commit. A dictation no existing folder fits prints the
+suggested `Accounts/<name>` and writes nothing.
+
+## The scribe
+
+DM the bot `note: …` — as a DM or as a reply in a ping's thread — and it turns
+the words into one entry of the notes repo, commits it without asking, and
+replies in the same thread with the link. Dictated under a ping, the ping's item
+title is given to the model as context; it does not ack the ping.
+
+It is off unless `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` and `NOTES_REPO` are
+all set: with any of them unset the bot behaves exactly as it did in 0.3.0.
+Half-set LLM variables are a startup error, not a quiet no.
+
+The model is Nutanix Enterprise AI (`…/enterpriseai/gateway/v1`, model
+`zy-pi-uep`): plain chat completions with `temperature: 0`, no `response_format`
+and no tool calling, because the gateway need not have them. The answer is one
+JSON object, taken out of the reply's `<think>` block and code fences, parsed and
+validated; an unusable answer is sent back once more with the reason, and then
+given up on.
+
+What it does with a dictation:
+
+1. replies `📝 writing…` in the thread, and stores the raw text in SQLite before
+   anything else (the message `ts` is the key: a redelivered event does nothing);
+2. lists `Accounts/`, `Partners/` and `Events/` and asks the model for
+   `{ folder, newFolderName, date, type, topic, attendees, summary, decisions, actions }`;
+3. a folder the model picks from that list is used as it is; when none fits it
+   asks `New folder Accounts/<name>?` with a **Create** button, a **Cancel** and
+   a select of the existing folders, and the answer resumes from the stored note
+   (the model is not asked again);
+4. reads the folder's `README.md` (or makes one) and inserts the entry directly
+   under its `## Log` line, newest first, then commits it as
+   `notes(<folder>): <date> <topic> [scribe]`; a README that changed under it is
+   read again, up to three times;
+5. edits the `📝 writing…` reply to `✅ <folder>: <topic> → <link>`, plus the
+   note's actions with "board proposals: coming in step 2".
+
+If the model cannot answer at all, nothing is lost: the raw text is offered the
+existing folders and committed verbatim as
+`## <today> · Meeting · Raw dictation (unprocessed)` with the text quoted, once
+the folder is chosen. Until then the dictation stays in the `dictations` table
+with the error that stopped it.
+
+Format v0 of an entry:
+
+```markdown
+## 2026-11-25 · Workshop · Acme VPC sizing
+
+**Attendees:** ZY, Ana
+**Summary:** Two to five sentences.
+**Decisions:**
+- Ten nodes
+
+### Actions
+- [ ] ZY: send the sizing sheet (due 2026-11-28)
+
+_Scribed by zy-assistant from Slack._
+```
+
+`Attendees`, `Decisions` and `### Actions` are left out when they are empty. The
+actions are also stored (in the dictation's `note_json`) and listed in the reply:
+they are what step 2 will turn into board proposals. Nothing proposes anything
+to the board yet.
+
+The Slack handler returns before the work starts and every error becomes a
+thread reply, so Slack's three-second budget is never the scribe's problem. The
+deployment's secret does not carry the LLM variables yet: the pod runs with the
+scribe off, by design.
 
 ## Develop
 

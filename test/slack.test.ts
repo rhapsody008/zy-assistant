@@ -6,7 +6,11 @@ import { test } from "node:test";
 import type { Board, BoardSource } from "../src/github.ts";
 import type { Item, Ping } from "../src/rules.ts";
 import {
+  askBlocks,
+  dictationText,
   handleAction,
+  helpText,
+  selectFolders,
   handleMessage,
   handleMoveSubmit,
   pingBlocks,
@@ -16,10 +20,12 @@ import {
   type HandlerDeps,
   type MoveSubmit,
   type PostMessageArgs,
+  type ScribeDispatch,
   type SlackClient,
   type UpdateMessageArgs,
   type ViewsOpenArgs,
 } from "../src/slack.ts";
+import type { ScribeDictation, ScribeUi } from "../src/scribe-handler.ts";
 import { FakeStore } from "./fakes.ts";
 
 class FakeClient implements SlackClient {
@@ -28,10 +34,13 @@ class FakeClient implements SlackClient {
   readonly modals: ViewsOpenArgs[] = [];
   failUpdate = false;
   failViews = false;
+  /** Called after every post: a test waits on the reply it expects. */
+  onPost: (() => void) | null = null;
 
   readonly chat = {
     postMessage: async (args: PostMessageArgs): Promise<{ ts?: string }> => {
       this.posts.push(args);
+      this.onPost?.();
       return { ts: `ts-${this.posts.length}` };
     },
     update: async (args: UpdateMessageArgs): Promise<unknown> => {
@@ -458,4 +467,180 @@ test("a metadata that points at no ping is logged, not thrown", async () => {
   assert.deepEqual(board.dates, []);
   assert.deepEqual(client.updates, []);
   assert.match(logs.join("\n"), /private_metadata holds no ping/);
+});
+
+/** A scribe that only records: what it was asked to do, and the ui it was given. */
+function recordScribe() {
+  const calls: ScribeDictation[] = [];
+  const uis: ScribeUi[] = [];
+  let resolve = (): void => {};
+  const settled = new Promise<void>((r) => {
+    resolve = r;
+  });
+  const dispatch: ScribeDispatch = async (dictation, ui) => {
+    calls.push(dictation);
+    uis.push(ui);
+    resolve();
+  };
+  return { calls, uis, settled, dispatch };
+}
+
+/** Resolves once the fake client has posted one more message: no timers. */
+function nextPost(client: FakeClient): Promise<void> {
+  return new Promise<void>((resolve) => {
+    client.onPost = resolve;
+  });
+}
+
+test("only a message that starts with note: is a dictation", () => {
+  assert.equal(dictationText("note: ten nodes"), "ten nodes");
+  assert.equal(dictationText("  Note :  ten nodes  "), "ten nodes");
+  assert.equal(dictationText("note:no space"), "no space");
+  assert.equal(dictationText("note:  "), null, "a bare note: is not a dictation");
+  assert.equal(dictationText("notes: ten nodes"), null);
+  assert.equal(dictationText("please note: ten nodes"), null, "the prefix is the first thing in the message");
+  assert.equal(dictationText("briefing"), null);
+});
+
+test("a note: DM reaches the scribe in the background, without the prefix", async () => {
+  const { deps, client } = harness();
+  const scribe = recordScribe();
+  deps.scribe = scribe.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "  Note:  ten nodes is enough  " });
+  await scribe.settled;
+
+  assert.deepEqual(scribe.calls, [{ ts: "222.2", text: "ten nodes is enough", hint: null }]);
+  assert.deepEqual(client.posts, [], "the handler returns at once: the flow does the talking");
+});
+
+test("a note: in a ping's thread is about that item, and is not an ack", async () => {
+  const { deps, store } = harness(boardItem({ title: "Acme VPC sizing" }));
+  const scribe = recordScribe();
+  deps.scribe = scribe.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: "111.1", text: "note: ten nodes is enough" });
+  await scribe.settled;
+
+  assert.deepEqual(scribe.calls, [{ ts: "222.2", text: "ten nodes is enough", hint: "Acme VPC sizing" }]);
+  assert.equal(store.findByKey(KEY)?.ackedAt, null, "a dictated note is not a quiet ack");
+});
+
+test("a note: from anyone but ZY does nothing at all", async () => {
+  const { deps, client } = harness(boardItem());
+  const scribe = recordScribe();
+  deps.scribe = scribe.dispatch;
+
+  await handleMessage(deps, { userId: "U_OTHER", channel: "D", ts: "222.2", threadTs: null, text: "note: ten nodes" });
+
+  assert.deepEqual(scribe.calls, []);
+  assert.deepEqual(client.posts, []);
+});
+
+test("without the scribe the help is exactly 0.3.0's: no note: line at all", async () => {
+  const { deps, client } = harness();
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "note: ten nodes" });
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "hello?" });
+
+  assert.deepEqual(client.posts.map((post) => post.text), [
+    [
+      "zy-assistant: I DM you the board plan in the morning and at end of day.",
+      'Reply "briefing" for a preview of the morning plan.',
+      "A button, or a reply in a ping's thread, marks the ping acked.",
+    ].join("\n"),
+    [
+      "zy-assistant: I DM you the board plan in the morning and at end of day.",
+      'Reply "briefing" for a preview of the morning plan.',
+      "A button, or a reply in a ping's thread, marks the ping acked.",
+    ].join("\n"),
+  ]);
+  assert.equal(client.posts[0].text.includes("note:"), false);
+});
+
+test("with the scribe on, the help says how to dictate", async () => {
+  const { deps, client } = harness();
+  deps.scribe = async () => {};
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "hello?" });
+
+  assert.match(client.posts[0].text, /Dictate a note: "note: "/);
+  assert.equal(helpText(false).includes("note:"), false);
+  assert.equal(helpText(true).startsWith(helpText(false)), true);
+});
+
+test("a scribe that throws says so in the thread instead of failing silently", async () => {
+  const { deps, client, logs } = harness();
+  deps.scribe = async () => {
+    throw new Error("the notes repo is down");
+  };
+  const posted = nextPost(client);
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "note: ten nodes" });
+  await posted;
+
+  assert.equal(client.posts.length, 1);
+  assert.equal(client.posts[0].thread_ts, "222.2", "the dictation's own thread");
+  assert.equal(client.posts[0].text, "⚠️ the scribe failed: the notes repo is down");
+  assert.match(logs.join("\n"), /scribe 222\.2 failed: the notes repo is down/);
+});
+
+test("the folder question offers Create, Cancel and the existing folders", () => {
+  const blocks = askBlocks({
+    ts: "1700.1",
+    text: "New folder `Accounts/Initech`?",
+    folders: ["Accounts/Acme"],
+    create: "Initech",
+    retry: false,
+  });
+  const sent = JSON.parse(JSON.stringify(blocks)) as Array<Record<string, any>>;
+
+  assert.equal(sent[0].type, "section");
+  assert.equal(sent[0].text.text, "New folder `Accounts/Initech`?");
+  assert.equal(sent[1].block_id, "zy_scribe_1700.1", "the select's block carries the dictation");
+  const elements = sent[1].elements as Array<Record<string, any>>;
+  assert.deepEqual(elements.map((e) => e.action_id), ["zy_scribe_create", "zy_scribe_cancel", "zy_scribe_folder"]);
+  assert.equal(elements[0].value, "1700.1", "the button carries the dictation");
+  assert.equal(elements[1].value, "1700.1");
+  assert.equal(elements[2].options[0].text.text, "Accounts/Acme");
+  assert.equal(elements[2].options[0].value, "Accounts/Acme", "an option is the folder alone");
+
+  // No name to create: there is only an existing folder to pick, or Cancel.
+  const bare = JSON.parse(JSON.stringify(askBlocks({ ts: "t", text: "Where should the raw dictation go?", folders: [], create: null, retry: false })));
+  assert.deepEqual(bare[1].elements.map((e: Record<string, any>) => e.action_id), ["zy_scribe_cancel"]);
+
+  // A failed write: a Retry button that carries the dictation, and no folders.
+  const retry = JSON.parse(JSON.stringify(askBlocks({ ts: "t", text: "Try writing it again?", folders: [], create: null, retry: true })));
+  assert.deepEqual(retry[1].elements.map((e: Record<string, any>) => e.action_id), ["zy_scribe_retry", "zy_scribe_cancel"]);
+  assert.equal(retry[1].elements[0].value, "t");
+});
+
+test("the folder select is capped at 100 options with short values, Accounts first", () => {
+  const folders: string[] = [];
+  for (let i = 0; i < 75; i += 1) {
+    folders.push(`Partners/Globex-${i}`);
+    folders.push(`Accounts/Acme-${i}`);
+  }
+  assert.equal(folders.length, 150);
+
+  const blocks = askBlocks({ ts: "1700.1", text: "Where should this note go?", folders, create: null, retry: false });
+  const sent = JSON.parse(JSON.stringify(blocks)) as Array<Record<string, any>>;
+  const select = (sent[1].elements as Array<Record<string, any>>).find((e) => e.action_id === "zy_scribe_folder");
+  assert.ok(select !== undefined);
+
+  const options = select.options as Array<{ text: { text: string }; value: string }>;
+  assert.equal(options.length, 100, "Slack takes at most 100 options");
+  for (const option of options) {
+    assert.equal(option.value, option.text.text);
+    assert.ok(option.value.length <= 150, `${option.value} is one short value`);
+  }
+  const values = options.map((option) => option.value);
+  assert.equal(values[0].valueOf(), "Accounts/Acme-0", "Accounts first");
+  assert.deepEqual(values.slice(0, 75).every((value) => value.startsWith("Accounts/")), true);
+  assert.deepEqual(values.slice(0, 75), [...values.slice(0, 75)].sort(), "and sorted");
+  assert.equal(values[75], "Partners/Globex-0", "then the rest, sorted");
+  assert.equal(sent[1].block_id, "zy_scribe_1700.1", "the ts rides in the block_id, not in 100 values");
+
+  assert.deepEqual(selectFolders(["Partners/B", "Accounts/B", "Accounts/A"]), ["Accounts/A", "Accounts/B", "Partners/B"]);
+  assert.equal(selectFolders(Array.from({ length: 150 }, (_, i) => `Accounts/A${i}`)).length, 100);
 });
