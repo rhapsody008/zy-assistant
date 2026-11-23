@@ -1,0 +1,15 @@
+# The assistant's SQLite file (pings, acks, which slots ran) mounted at /data.
+# No storageClassName: the cluster default (nutanix-volume) applies. It stays
+# Pending until the pod mounts it, and its reclaim policy is Delete, so losing
+# this object loses the state: acceptable, a re-run only re-pings (the board is
+# the source of truth).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: zy-assistant-data
+  labels: { app.kubernetes.io/name: zy-assistant }
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
