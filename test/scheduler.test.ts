@@ -21,6 +21,12 @@ function item(id: string, fields: Partial<Item> = {}): Item {
     nextTouch: null,
     nextAction: null,
     waitingOn: null,
+    type: null,
+    stage: null,
+    track: null,
+    account: null,
+    cadence: null,
+    parentUrl: null,
     updatedAt: UPDATED,
     ...fields,
   };
@@ -177,4 +183,28 @@ test("a slot that fails every time briefs once, then gives up with a DM", async 
 
   await runTick(new Date("2026-11-23T01:03:00Z"));
   assert.equal(sender.dms.length, 2, "a closed slot is not retried");
+});
+
+test("every tick reports when it finished, quiet ticks included", async () => {
+  const { deps } = harness(ITEMS);
+  const reports: unknown[] = [];
+  // The clock advances while the tick works: a report must carry the time the
+  // work ended, never the time the tick was handed.
+  const finishes = ["2026-11-23T01:00:07.000Z", "2026-11-23T01:01:03.000Z", "2026-11-28T01:00:02.000Z"];
+  let next = 0;
+  const reporting: SchedulerDeps = {
+    ...deps,
+    now: () => new Date(finishes[next++] ?? finishes[finishes.length - 1]),
+    onTick: (report) => reports.push(report),
+  };
+
+  await tick(new Date(NINE), reporting); // runs M
+  await tick(new Date(NINE_OH_ONE), reporting); // M already ran
+  await tick(new Date(SATURDAY_NINE), reporting); // the weekend is quiet
+
+  assert.deepEqual(
+    reports,
+    finishes.map((at) => ({ at: new Date(at) })),
+    "the report time is the clock after the work, and the report carries nothing else",
+  );
 });

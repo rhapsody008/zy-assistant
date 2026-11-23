@@ -1,14 +1,18 @@
 // Entry point: `check`, `dry-run` and `run`. Modes are described in README.md.
 
 import { loadConfig } from "./config.ts";
-import { createBoardClient } from "./github.ts";
+import { createBoardClient, type BoardSource } from "./github.ts";
+import { Health } from "./health.ts";
 import { plan, type Slot } from "./rules.ts";
+import { requiredProblems, STATUS, validateSchema, type SchemaReport } from "./schema.ts";
 import { startScheduler } from "./scheduler.ts";
-import { SlackBot } from "./slack.ts";
+import { SlackBot, type Sender } from "./slack.ts";
 import { openStore } from "./store.ts";
 import { addDays, localNow, TZ } from "./time.ts";
 
 const now = (): Date => new Date();
+
+const reason = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 function log(line: string): void {
   console.log(`${now().toISOString()} ${line}`);
@@ -56,13 +60,36 @@ function isMonday(date: string): boolean {
   return new Date(`${date}T00:00:00Z`).getUTCDay() === 1;
 }
 
+/** One line for the log: what the board has, or what it is missing. */
+function schemaLine(report: SchemaReport): string {
+  const parts: string[] = [];
+  if (report.missingRequired.length > 0) parts.push(`missing required: ${report.missingRequired.join(", ")}`);
+  if (report.missingOptions.length > 0) parts.push(`missing options: ${report.missingOptions.join(", ")}`);
+  if (report.missingOptional.length > 0) parts.push(`missing optional: ${report.missingOptional.join(", ")}`);
+  return parts.length === 0 ? "all fields and options present" : parts.join("; ");
+}
+
+/** `run` startup: a board the bot cannot read is one DM, not a crash. */
+async function reportSchema(board: BoardSource, owner: string, number: number, sender: Sender): Promise<void> {
+  try {
+    const project = await board.fetchBoard(owner, number);
+    const report = validateSchema(project);
+    log(`board schema: ${schemaLine(report)}`);
+    const problems = requiredProblems(report);
+    if (problems.length > 0) await sender.sendDm(`zy-assistant: board schema problem: ${problems.join("; ")}`);
+  } catch (err) {
+    log(`board schema check failed: ${reason(err)}`);
+  }
+}
+
 async function check(): Promise<void> {
   const config = loadConfig("check");
   const board = createBoardClient(config.githubToken);
   const project = await board.fetchBoard(config.projectOwner, config.projectNumber);
   log(`board "${project.title}" ${config.projectOwner}/${config.projectNumber}: ${project.items.length} items`);
+  log(`board schema: ${schemaLine(validateSchema(project))}`);
   for (const item of project.items) {
-    if (item.status === "Done") continue;
+    if (item.status === STATUS.done) continue;
     if (!item.target && !item.nextTouch) continue;
     log(`${item.ref} [${item.status ?? "no status"}] target=${item.target ?? "-"} next=${item.nextTouch ?? "-"} ${item.title}`);
   }
@@ -133,7 +160,18 @@ async function run(): Promise<void> {
 
   await bot.start();
   log("slack connected");
-  const stop = startScheduler({ config, board, store, sender: bot, now, log });
+
+  let health: Health | null = null;
+  if (config.httpPort !== null) {
+    health = new Health(now);
+    const port = await health.listen(config.httpPort);
+    log(`health: GET /healthz on port ${port}`);
+  }
+
+  // Not awaited: the scheduler must start even if GitHub is slow to answer.
+  void reportSchema(board, config.projectOwner, config.projectNumber, bot);
+
+  const stop = startScheduler({ config, board, store, sender: bot, now, log, onTick: (report) => health?.record(report) });
   log(`scheduler running: M at ${config.briefTime}, E at ${config.eodTime} (${TZ})`);
 
   let stopping = false;
@@ -142,14 +180,21 @@ async function run(): Promise<void> {
     stopping = true;
     log(`${signal}: stopping`);
     stop();
-    void bot
-      .stop()
-      .catch((err: unknown) => log(`slack stop failed: ${err instanceof Error ? err.message : String(err)}`))
-      .finally(() => {
-        store.close();
-        log("stopped");
-        process.exit(0);
-      });
+    void (async () => {
+      try {
+        await health?.close();
+      } catch (err) {
+        log(`health stop failed: ${reason(err)}`);
+      }
+      try {
+        await bot.stop();
+      } catch (err) {
+        log(`slack stop failed: ${reason(err)}`);
+      }
+      store.close();
+      log("stopped");
+      process.exit(0);
+    })();
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
@@ -173,6 +218,6 @@ try {
       process.exitCode = 2;
   }
 } catch (err) {
-  console.error(`zy-assistant: ${err instanceof Error ? err.message : String(err)}`);
+  console.error(`zy-assistant: ${reason(err)}`);
   process.exitCode = 1;
 }

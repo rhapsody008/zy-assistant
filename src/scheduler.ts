@@ -21,6 +21,13 @@ export interface SchedulerDeps {
   sender: Sender;
   now: () => Date;
   log: (line: string) => void;
+  /** After every tick, how it ended, for the health endpoint. */
+  onTick?: (report: TickReport) => void;
+}
+
+/** When a tick finished: read the clock after the work, not when it started. */
+export interface TickReport {
+  at: Date;
 }
 
 /** A slot stays open for two hours; a later tick treats it as missed. */
@@ -47,15 +54,19 @@ const reason = (err: unknown): string => (err instanceof Error ? err.message : S
 export async function tick(now: Date, deps: SchedulerDeps): Promise<void> {
   try {
     const { date, minutes } = localNow(now);
-    if (isWeekend(date)) return;
-    for (const s of dailySlots(deps.config)) {
-      if (minutes < s.start || minutes >= s.start + SLOT_WINDOW_MINUTES) continue;
-      if (deps.store.slotRan(date, s.slot)) continue;
-      await runSlot(date, s.slot, now, deps);
+    if (!isWeekend(date)) {
+      for (const s of dailySlots(deps.config)) {
+        if (minutes < s.start || minutes >= s.start + SLOT_WINDOW_MINUTES) continue;
+        if (deps.store.slotRan(date, s.slot)) continue;
+        await runSlot(date, s.slot, now, deps);
+      }
     }
   } catch (err) {
     deps.log(`tick failed: ${reason(err)}`);
   }
+  // The work is done: this is when the tick finished, and what the health
+  // endpoint judges for freshness. A slow board or Slack makes it later.
+  deps.onTick?.({ at: deps.now() });
 }
 
 /**

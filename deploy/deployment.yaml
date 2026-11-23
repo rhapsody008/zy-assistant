@@ -48,6 +48,22 @@ spec:
               value: "Asia/Singapore"
             - name: DB_PATH
               value: "/data/state.db"
+            - name: HTTP_PORT
+              value: "8080"
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          # Liveness only: /healthz is 200 while the scheduler has ticked in the
+          # last 5 minutes. No readiness probe, this pod serves no user traffic.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 10
+            timeoutSeconds: 5
           resources:
             requests:
               cpu: 50m
@@ -66,8 +82,6 @@ spec:
             # Node and SQLite want a writable /tmp; the root filesystem does not.
             - name: tmp
               mountPath: /tmp
-          # No probe: this is a socket-mode worker with no port. A crash exits
-          # the process and the kubelet restarts the container.
       volumes:
         - name: data
           persistentVolumeClaim:

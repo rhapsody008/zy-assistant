@@ -7,6 +7,7 @@
 import { App, LogLevel } from "@slack/bolt";
 import type { BoardSource } from "./github.ts";
 import { plan, type ActionId, type Ping } from "./rules.ts";
+import { STATUS } from "./schema.ts";
 import type { PingRecord, PingStore } from "./store.ts";
 import { addDays, fmtDate, localNow, nextWorkday, TZ } from "./time.ts";
 
@@ -254,10 +255,10 @@ async function applyAction(deps: HandlerDeps, actionId: ActionId, ping: PingReco
   const board = await deps.board.fetchBoard(deps.owner, deps.number);
   if (actionId === "done") {
     const field = board.fields.get("Status");
-    const option = field?.options?.get("Done");
-    if (!field || !option) throw new Error('the board has no "Status" field with a "Done" option');
+    const option = field?.options?.get(STATUS.done);
+    if (!field || !option) throw new Error(`the board has no "Status" field with a "${STATUS.done}" option`);
     await deps.board.setSingleSelect(board.projectId, ping.itemId, field.id, option);
-    return "marked Done on the board";
+    return `marked ${STATUS.done} on the board`;
   }
   const field = board.fields.get("Next touch");
   if (!field) throw new Error('the board has no "Next touch" field');

@@ -1,5 +1,6 @@
-// GraphQL mapping: field names, refs, the closed -> Done rule, the draft item
-// and the max updatedAt. One fake page, no network.
+// GraphQL mapping: field names, refs, the closed -> Done rule, the draft item,
+// the optional fields, the parent issue and the max updatedAt. One fake page, no
+// network. Synthetic board: "Acme" and the repo "demo".
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -15,6 +16,13 @@ const ISSUE = {
       { __typename: "ProjectV2ItemFieldDateValue", date: "2026-11-25", field: { name: "Next touch" } },
       { __typename: "ProjectV2ItemFieldTextValue", text: "write the draft", field: { name: "Next action" } },
       { __typename: "ProjectV2ItemFieldTextValue", text: "answers from design", field: { name: "Waiting on" } },
+      { __typename: "ProjectV2ItemFieldSingleSelectValue", name: "Feature", field: { name: "Type" } },
+      { __typename: "ProjectV2ItemFieldSingleSelectValue", name: "Build", field: { name: "Stage" } },
+      { __typename: "ProjectV2ItemFieldTextValue", text: "demo", field: { name: "Track" } },
+      { __typename: "ProjectV2ItemFieldTextValue", text: "Acme", field: { name: "Account" } },
+      { __typename: "ProjectV2ItemFieldTextValue", text: "weekly", field: { name: "Cadence" } },
+      // A field the bot does not map must be ignored, not break the item.
+      { __typename: "ProjectV2ItemFieldTextValue", text: "ignore me", field: { name: "Notes" } },
     ],
   },
   content: {
@@ -25,6 +33,7 @@ const ISSUE = {
     state: "OPEN",
     updatedAt: "2026-11-21T10:00:00Z",
     repository: { name: "notes" },
+    parent: { url: "https://github.com/rhapsody008/notes/issues/9" },
   },
 };
 
@@ -74,6 +83,11 @@ const PAGE = {
             { __typename: "ProjectV2Field", id: "F_TOUCH", name: "Next touch" },
             { __typename: "ProjectV2Field", id: "F_ACTION", name: "Next action" },
             { __typename: "ProjectV2Field", id: "F_WAITING", name: "Waiting on" },
+            { __typename: "ProjectV2SingleSelectField", id: "F_TYPE", name: "Type", options: [{ id: "O_FEATURE", name: "Feature" }] },
+            { __typename: "ProjectV2SingleSelectField", id: "F_STAGE", name: "Stage", options: [{ id: "O_BUILD", name: "Build" }] },
+            { __typename: "ProjectV2Field", id: "F_TRACK", name: "Track" },
+            { __typename: "ProjectV2Field", id: "F_ACCOUNT", name: "Account" },
+            { __typename: "ProjectV2Field", id: "F_CADENCE", name: "Cadence" },
           ],
         },
         items: {
@@ -128,6 +142,12 @@ test("maps field names, item content and the closed rule", async () => {
     nextTouch: "2026-11-25",
     nextAction: "write the draft",
     waitingOn: "answers from design",
+    type: "Feature",
+    stage: "Build",
+    track: "demo",
+    account: "Acme",
+    cadence: "weekly",
+    parentUrl: "https://github.com/rhapsody008/notes/issues/9",
     updatedAt: "2026-11-21T10:00:00Z", // the content is newer than the item
   });
 
@@ -140,4 +160,22 @@ test("maps field names, item content and the closed rule", async () => {
   assert.equal(draft.status, null);
   assert.equal(draft.target, null);
   assert.equal(draft.updatedAt, "2026-11-17T00:00:00Z");
+
+  assert.equal(draft.parentUrl, null, "a draft has no parent issue");
+  assert.equal(draft.type, null);
+  assert.equal(merged.parentUrl, null, "a pull request has no parent issue");
+});
+
+test("the board query asks for 50 field values, the parent issue and names inside the union", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  await createBoardClient("test-token", fakeFetch(calls)).fetchBoard("rhapsody008", 1);
+  const body = JSON.parse(String(calls[0].init.body)) as { query: string };
+
+  // 20 was not enough in production: an item carries about 20 values and the
+  // extra ones are dropped silently.
+  assert.ok(body.query.includes("fieldValues(first: 50)"), "50 field values");
+  assert.ok(body.query.includes("parent { url }"), "the parent issue of an Issue");
+  // A field selection on a union must sit inside an inline fragment on the
+  // shared type, or the whole query fails.
+  assert.ok(body.query.includes("... on ProjectV2FieldCommon { name }"), "field name inside the fragment");
 });

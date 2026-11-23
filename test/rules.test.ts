@@ -18,6 +18,12 @@ function item(fields: Partial<Item> & Pick<Item, "id">): Item {
     nextTouch: null,
     nextAction: null,
     waitingOn: null,
+    type: null,
+    stage: null,
+    track: null,
+    account: null,
+    cadence: null,
+    parentUrl: null,
     updatedAt: UPDATED,
     ...fields,
   };
@@ -162,6 +168,28 @@ test("a Friday reping on A still warns on Monday", () => {
   assert.match(result.briefing ?? "", /⚠ \*No update\* on <[^>]*notes#52>/);
 });
 
+test("two warnings on one morning follow the history's order, not the board's", () => {
+  const friday = "2026-11-27";
+  const reping = (i: Item, sentAt: string): SentPing => ({
+    key: pingKey(friday, "E", i.id),
+    itemId: i.id,
+    date: friday,
+    slot: "E",
+    kind: "reping",
+    sentAt,
+    ackedAt: null,
+  });
+  // Friday evening pinged B first and A second; the board lists A before B.
+  const history = [reping(B, "2026-11-27T09:30:00.000Z"), reping(A, "2026-11-27T09:31:00.000Z")];
+
+  const briefing = pings(BOARD, "2026-11-30", "M", history).briefing ?? "";
+  const warns = briefing.split("\n").filter((line) => line.startsWith("⚠"));
+
+  assert.equal(warns.length, 2, "both unacked Friday repings warn on Monday");
+  assert.match(warns[0], /notes#53/, "B is warned first: it was pinged first on Friday");
+  assert.match(warns[1], /notes#52/, "A is warned second, though the board lists it first");
+});
+
 test("four In progress items are over the WIP limit", () => {
   const result = pings([...BOARD, F], "2026-11-23", "M");
   assert.match(result.briefing ?? "", /In progress: 4 \(over the limit of 3/);
@@ -193,4 +221,40 @@ test("an item already due tomorrow has no duplicate touch-tomorrow line", () => 
   const briefing = pings([due], "2026-11-24", "M").briefing ?? "";
   assert.ok(!briefing.includes("touch tomorrow"));
   assert.match(briefing, /notes#60[^\n]*due in 1 day/);
+});
+
+test("a Type with a lead time replaces pingDays for that item only", () => {
+  // Wednesday, 2026-11-25. Alpha is due in 6 days: past the default 3, inside a
+  // Feature's 7. Delta is due in the same 6 days and has no Type.
+  const feature = item({ id: "70", type: "Feature", target: "2026-12-01" });
+  const plain = item({ id: "71", target: "2026-12-01" });
+  const board = [feature, plain];
+
+  assert.deepEqual(pings(board, "2026-11-25", "M").pings, [], "the default policy has no per-type lead time");
+  assert.deepEqual(plan(board, "2026-11-25", "M", [], { policy: { leadDaysByType: {} } }).pings, []);
+
+  const withFeature = plan(board, "2026-11-25", "M", [], { policy: { leadDaysByType: { Feature: 7 } } });
+  assert.deepEqual(withFeature.pings.map((p) => p.itemId), [feature.id]);
+  assert.match(withFeature.pings[0].text, /due in 6 days/);
+});
+
+test("a Type the policy does not know keeps pingDays", () => {
+  const other = item({ id: "72", type: "Chore", target: "2026-11-30" }); // 5 days out
+  assert.deepEqual(plan([other], "2026-11-25", "M", [], { policy: { leadDaysByType: { Feature: 7 } } }).pings, []);
+});
+
+test("Policy overrides the status names, the day windows and the WIP limit", () => {
+  const doing = item({ id: "73", status: "Doing", target: "2026-11-25" });
+  const board = [doing, item({ id: "74", status: "Doing" }), item({ id: "75", status: "Doing" })];
+
+  const defaultPolicy = plan(board, "2026-11-25", "M", []);
+  assert.deepEqual(defaultPolicy.pings, [], "Doing is not In progress by default");
+  assert.match(defaultPolicy.briefing ?? "", /In progress: 0/);
+
+  const custom = plan(board, "2026-11-25", "M", [], { policy: { inProgress: "Doing", wipLimit: 2 } });
+  assert.deepEqual(custom.pings.map((p) => p.itemId), [doing.id]);
+  assert.match(custom.briefing ?? "", /In progress: 3 \(over the limit of 2/);
+
+  const short = plan([item({ id: "76", target: "2026-11-30" })], "2026-11-25", "M", [], { policy: { pingDays: 7 } });
+  assert.deepEqual(short.pings.map((p) => p.itemId), ["76"], "pingDays 7 reaches 5 days out");
 });

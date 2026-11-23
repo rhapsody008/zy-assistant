@@ -93,3 +93,49 @@ reads the env file and keeps the database in
 
 The Slack app manifest is `slack-app-manifest.yaml` (socket mode, so there is no
 public URL; bot scopes `chat:write`, `im:write`, `im:history`).
+
+## Release
+
+A PR runs CI (`typecheck` + tests) on GitHub Actions: `.github/workflows/ci.yml`.
+
+A release is a tag; Actions builds the image and pushes it to GHCR
+(`.github/workflows/release.yml`):
+
+```sh
+git tag vX.Y.Z && git push origin vX.Y.Z
+```
+
+That publishes `ghcr.io/rhapsody008/zy-assistant:X.Y.Z` (linux/amd64, no `latest`).
+Deploying is then a one-line bump of `newTag` in `deploy/kustomization.yaml` on
+`main`: Project CD applies it. Rollback is reverting that commit.
+
+Never deploy near the configured slot times (`BRIEF_TIME` / `EOD_TIME`): a tick
+in flight is gone with the pod.
+
+One-time setup: in the GHCR package settings, under "Manage Actions access", give
+this repo Write.
+
+## Health
+
+With `HTTP_PORT` set (the manifest uses `8080`) `run` opens a `node:http` server
+with one route. It records nothing else and needs no token.
+
+```
+GET /healthz
+200 {"ok":true,"lastTickAt":"2026-11-25T01:00:00.000Z"}   last tick finished under 5 minutes ago
+503 {"ok":false,"lastTickAt":null}                        no tick yet, or the last one is older
+404                                                       any other path or method
+```
+
+`lastTickAt` is when the scheduler's last tick **finished**: the clock is read
+again after the board fetch and the Slack sends, so a slow tick is not counted
+as fresh from the moment it started. Every tick reports, whether it ran a slot
+or not. The scheduler reports through an injected callback, so no state is
+global and the tests drive it with a fake clock. Without `HTTP_PORT` no server
+is started and the bot behaves exactly as before.
+
+The deployment uses it as a liveness probe only: 30 s delay, 60 s period, 10
+failed probes before a restart. A failing or refused probe counts, so the budget
+is about 10.5 minutes at startup (30 s + 10 × 60 s) for the first tick to land,
+and about 15 minutes once the ticks stop (5 minutes of freshness, then 10
+probes). SIGTERM closes the server, then Slack, then the database.

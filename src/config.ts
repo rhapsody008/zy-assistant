@@ -18,6 +18,7 @@ export interface Config {
   briefTime: string; // HH:MM, ASSISTANT_TZ
   eodTime: string; // HH:MM, ASSISTANT_TZ
   dbPath: string;
+  httpPort: number | null; // null: no health endpoint
   slack: SlackConfig | null;
 }
 
@@ -53,6 +54,11 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
   const number = Number(get("PROJECT_NUMBER") || "1");
   if (!Number.isInteger(number) || number < 1) throw new Error(`${mode}: PROJECT_NUMBER must be a positive integer`);
 
+  const httpPort = get("HTTP_PORT");
+  if (httpPort !== "" && !(/^\d{1,5}$/.test(httpPort) && Number(httpPort) >= 1 && Number(httpPort) <= 65535)) {
+    throw new Error(`${mode}: HTTP_PORT must be a port number, got ${httpPort}`);
+  }
+
   return {
     githubToken: get("GITHUB_TOKEN"),
     projectOwner: get("PROJECT_OWNER") || "rhapsody008",
@@ -60,6 +66,7 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
     briefTime,
     eodTime,
     dbPath: get("DB_PATH") || "./data/state.db",
+    httpPort: httpPort === "" ? null : Number(httpPort),
     slack,
   };
 }

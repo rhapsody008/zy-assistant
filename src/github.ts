@@ -1,8 +1,9 @@
-// GitHub Project v2 over GraphQL. Fields are mapped by NAME ("Status",
-// "Target date", "Next touch", "Next action", "Waiting on"), never by id, so a
-// board view can be rebuilt without touching the code.
+// GitHub Project v2 over GraphQL. Fields are mapped by NAME (src/schema.ts is
+// the one place those names live), never by id, so a board view can be rebuilt
+// without touching the code.
 
 import type { Item } from "./rules.ts";
+import { ALL_FIELDS, STATUS, type FieldSpec, type ItemField } from "./schema.ts";
 
 export interface BoardField {
   id: string;
@@ -27,7 +28,7 @@ const API_URL = "https://api.github.com/graphql";
 /** Injectable so tests never touch the network. */
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
-const BOARD_QUERY = `
+export const BOARD_QUERY = `
 query Board($owner: String!, $number: Int!, $cursor: String) {
   user(login: $owner) {
     projectV2(number: $number) {
@@ -45,7 +46,7 @@ query Board($owner: String!, $number: Int!, $cursor: String) {
         nodes {
           id
           updatedAt
-          fieldValues(first: 20) {
+          fieldValues(first: 50) {
             nodes {
               __typename
               ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2FieldCommon { name } } }
@@ -55,7 +56,7 @@ query Board($owner: String!, $number: Int!, $cursor: String) {
           }
           content {
             __typename
-            ... on Issue { number title url state updatedAt repository { name } }
+            ... on Issue { number title url state updatedAt repository { name } parent { url } }
             ... on PullRequest { number title url state updatedAt repository { name } }
             ... on DraftIssue { title updatedAt }
           }
@@ -102,6 +103,7 @@ interface RawContent {
   state?: string;
   updatedAt?: string;
   repository?: { name?: string } | null;
+  parent?: { url?: string } | null;
 }
 
 interface RawItem {
@@ -139,18 +141,12 @@ function mapItem(raw: RawItem, fallbackUrl: string): Item | null {
   const content = raw.content;
   if (!content) return null;
 
-  let status: string | null = null;
-  let target: string | null = null;
-  let nextTouch: string | null = null;
-  let nextAction: string | null = null;
-  let waitingOn: string | null = null;
+  const values: Partial<Record<ItemField, string | null>> = {};
   for (const value of raw.fieldValues?.nodes ?? []) {
     const name = value.field?.name;
-    if (name === "Status" && value.__typename === "ProjectV2ItemFieldSingleSelectValue") status = value.name ?? null;
-    else if (name === "Target date") target = value.date ?? null;
-    else if (name === "Next touch") nextTouch = value.date ?? null;
-    else if (name === "Next action") nextAction = value.text ?? null;
-    else if (name === "Waiting on") waitingOn = value.text ?? null;
+    if (!name) continue;
+    const spec = ALL_FIELDS.find((f) => f.name === name);
+    if (spec) values[spec.item] = fieldValue(spec, value);
   }
 
   const closed = content.state === "CLOSED" || content.state === "MERGED";
@@ -160,13 +156,33 @@ function mapItem(raw: RawItem, fallbackUrl: string): Item | null {
     ref: draft ? "draft" : `${content.repository?.name ?? "?"}#${content.number ?? "?"}`,
     title: content.title ?? "",
     url: draft ? fallbackUrl : content.url ?? fallbackUrl,
-    status: closed ? "Done" : status,
-    target,
-    nextTouch,
-    nextAction,
-    waitingOn,
+    status: closed ? STATUS.done : values.status ?? null,
+    target: values.target ?? null,
+    nextTouch: values.nextTouch ?? null,
+    nextAction: values.nextAction ?? null,
+    waitingOn: values.waitingOn ?? null,
+    type: values.type ?? null,
+    stage: values.stage ?? null,
+    track: values.track ?? null,
+    account: values.account ?? null,
+    cadence: values.cadence ?? null,
+    parentUrl: content.parent?.url ?? null,
     updatedAt: latest(raw.updatedAt, content.updatedAt),
   };
+}
+
+/** One field value as the response carries it. */
+function fieldValue(spec: FieldSpec, value: RawValue): string | null {
+  switch (spec.kind) {
+    case "singleSelect":
+      return value.__typename === "ProjectV2ItemFieldSingleSelectValue" ? value.name ?? null : null;
+    case "date":
+      return value.date ?? null;
+    case "text":
+      return value.text ?? null;
+    case "any":
+      return value.name ?? value.text ?? null;
+  }
 }
 
 export function createBoardClient(token: string, fetchFn: FetchLike = fetch): BoardSource {

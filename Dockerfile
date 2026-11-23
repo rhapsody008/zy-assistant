@@ -1,5 +1,8 @@
 FROM node:26-slim
 
+# Links the GHCR package to the repo.
+LABEL org.opencontainers.image.source="https://github.com/rhapsody008/zy-assistant"
+
 WORKDIR /srv/app
 
 # Runtime deps only: @slack/bolt. Node runs the TypeScript directly.
