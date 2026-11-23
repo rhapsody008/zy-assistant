@@ -1,6 +1,6 @@
 {
   "name": "zy-assistant",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "private": true,
   "description": "Slack reminder bot for a GitHub Project board",
   "license": "MIT",

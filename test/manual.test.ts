@@ -1,6 +1,7 @@
-// The user manual, pinned: the overview and the page behind every topic say what
-// the bot does, quote the live policy rather than a copy of it, and fit in the
-// Block Kit limits Slack enforces. Synthetic names only: "Acme", "Globex".
+// The user manual, pinned: the overview separates what ZY types from what the bot
+// sends, every page says what the bot does, the text quotes the live policy rather
+// than a copy of it, and it fits in the Block Kit limits Slack enforces. Synthetic
+// names only: "Acme", "Globex".
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -32,21 +33,41 @@ function fits(blocks: Array<{ text: { text: string } }>): void {
 
 const topics = (settings: ManualSettings = DEFAULTS) => manualTopics(settings, true);
 
-test("the overview has one section per topic and ends with how to go deeper", () => {
+test("the overview is what you type, what I send you, the buttons, then the pages", () => {
   const blocks = overviewBlocks(DEFAULTS, true);
-  const withScribe = topics().map((topic) => topic.topic);
+  assert.equal(blocks.length, 4, "what you type, what I send you, the buttons, then where the pages are");
 
-  assert.deepEqual(withScribe, ["briefing", "pings", "buttons", "note", "updates"]);
-  assert.equal(blocks.length, withScribe.length + 1, "one section each, then the hint");
-  for (const [index, topic] of topics().entries()) {
-    assert.match(blocks[index].text.text, new RegExp(`^\\*${topic.title}\\*\\n• `), `${topic.topic} starts with its header`);
-    const lines = blocks[index].text.text.split("\n").length - 1;
-    assert.ok(lines >= 2 && lines <= 4, `${topic.topic} has ${lines} lines`);
+  const typed = blocks[0].text.text;
+  assert.match(typed, /^\*What you can type\*\n• /);
+  assert.match(typed, /• `today`: the plan for today, the same view as the morning briefing\./);
+  assert.match(typed, /• `note: <text>`: `note: Acme call, they want a POC in January\. I send the sizing by Friday\.`/);
+  assert.match(typed, /• `help`, or `help <topic>`/);
+  assert.match(typed, /• A reply in the thread under one of my messages: that acks it \(ack = mark as seen\)\./);
+
+  const sent = blocks[1].text.text;
+  assert.match(sent, /^\*What I send you\* \(automatic; you never type these\)\n• /);
+  assert.match(sent, /• The briefing at `09:00` and the wrap-up at `17:30` on weekdays: one message listing everything\./);
+  assert.match(sent, /• Pings: a separate message about ONE item when it needs you now/);
+  assert.match(sent, /notes#53 Acme deck review: due in 2 days \(Thu 26 Nov\) {2}\[👍 On it\] \[Move date\] \[✅ Done\]/);
+  assert.match(sent, /Each ping has buttons\./);
+
+  const buttons = blocks[2].text.text;
+  assert.match(buttons, /^\*The buttons under a ping\*/);
+  for (const label of ["👍 On it", "✅ Done", "Move date", "+7 days"]) {
+    assert.equal(buttons.split("\n").filter((line) => line.includes(`*${label}`)).length, 1, `one line for ${label}`);
   }
-  assert.equal(
-    blocks.at(-1)?.text.text,
-    "Reply `help <topic>` for details: `briefing`, `pings`, `buttons`, `note`, `updates`.",
-  );
+
+  assert.equal(blocks.at(-1)?.text.text, "More: `help pings`, `help buttons`, `help note`, `help updates`, `help today`");
+});
+
+test("the manual never names `briefing`, and `help briefing` is the today page", () => {
+  const text = overviewText(DEFAULTS, true);
+  assert.doesNotMatch(text, /`briefing`/, "the old command name is never shown");
+  assert.match(text, /More: .*`help today`$/);
+
+  assert.equal(helpReply(DEFAULTS, true, "briefing").text, helpReply(DEFAULTS, true, "today").text);
+  assert.match(helpReply(DEFAULTS, true, "  Briefing ").text, /^\*Today\*/, "matched however it is typed, and silently");
+  assert.doesNotMatch(helpReply(DEFAULTS, true, "briefing").text, /No topic/);
 });
 
 test("every overview section and every page fits the Block Kit limits", () => {
@@ -57,16 +78,18 @@ test("every overview section and every page fits the Block Kit limits", () => {
     fits(reply.blocks);
     assert.ok(reply.blocks.length >= 2, `${topic.topic} is a page, not a header`);
   }
-  for (const asked of ["horoscope", "BRIEFING "]) fits(helpReply(DEFAULTS, true, asked).blocks);
+  for (const asked of ["horoscope", "TODAY "]) fits(helpReply(DEFAULTS, true, asked).blocks);
 });
 
-test("the note topic is only there when the scribe is on", () => {
-  assert.deepEqual(topics().map((topic) => topic.topic), ["briefing", "pings", "buttons", "note", "updates"]);
-  assert.deepEqual(manualTopics(DEFAULTS, false).map((topic) => topic.topic), ["briefing", "pings", "buttons", "updates"]);
+test("the note line and the note topic are only there when the scribe is on", () => {
+  assert.deepEqual(topics().map((topic) => topic.topic), ["today", "pings", "buttons", "note", "updates"]);
+  assert.deepEqual(manualTopics(DEFAULTS, false).map((topic) => topic.topic), ["today", "pings", "buttons", "updates"]);
 
   const bare = overviewText(BARE, false);
-  assert.doesNotMatch(bare, /note/i, "the scribe is off: nothing of notes is promised");
-  assert.match(overviewText(DEFAULTS, true), /\*Notes\*/);
+  assert.doesNotMatch(bare, /`note:|`help note`/, "the scribe is off: nothing of notes is promised");
+  assert.match(bare, /More: `help pings`, `help buttons`, `help updates`, `help today`$/);
+  assert.match(overviewText(DEFAULTS, true), /`note: <text>`/);
+  assert.match(overviewText(DEFAULTS, true), /`help note`/);
 });
 
 test("the notes-commit ack is only mentioned when NOTES_REPO is set", () => {
@@ -74,10 +97,8 @@ test("the notes-commit ack is only mentioned when NOTES_REPO is set", () => {
   const without = helpReply(BARE, true, "updates").text;
 
   assert.match(withRepo, /a commit to the notes repo under `Accounts\/<the item's Account>\/`/);
-  assert.match(overviewText(DEFAULTS, true), /A commit under `Accounts\/<Account>\/` in the notes repo does the same\./);
   assert.doesNotMatch(without, /notes repo/);
   assert.doesNotMatch(without, /Accounts\//);
-  assert.doesNotMatch(overviewText(BARE, true), /Accounts\//);
 
   const acks = without.split("\n").filter((line) => line.startsWith("• "));
   assert.equal(acks.length, 3, "a button, a reply, the board item");
@@ -96,26 +117,42 @@ test("the policy the bot runs with is what the manual quotes", () => {
   };
   const settings: ManualSettings = { ...DEFAULTS, briefTime: "08:15", eodTime: "18:45", policy };
 
-  assert.match(overviewText(settings, true), /at `08:15`/);
-  assert.match(overviewText(settings, true), /at `18:45`/);
+  const overview = overviewText(settings, true);
+  assert.match(overview, /at `08:15`/);
+  assert.match(overview, /at `18:45`/);
+  assert.match(overview, /a deadline close \(Target date due in 2 days or fewer\) or already passed/);
+  assert.match(overview, /a Waiting item nobody moved for 11 days/);
+  assert.doesNotMatch(overview, /Workshop|T-14/, "nothing of the default policy survives");
 
   const pings = helpReply(settings, true, "pings").text;
   assert.match(pings, /Target date T-2 to T-0/);
-  assert.match(overviewText(settings, true), /A Target date pings from T-2 down to T-0/);
   assert.match(pings, /9 days/);
   assert.match(pings, /POC at T-10 and T-3/);
   assert.match(pings, /11 days/);
   assert.match(pings, /at `18:45`/);
   assert.doesNotMatch(pings, /T-14|T-7\b|Workshop/, "nothing of the default policy survives");
 
-  const briefing = helpReply(settings, true, "briefing").text;
-  assert.match(briefing, /\*Coming up\*: Target dates 5–6 days away, 10 days out for a POC/);
-  assert.match(briefing, /limit of 7/);
-  assert.match(briefing, /30 days/);
+  const today = helpReply(settings, true, "today").text;
+  assert.match(today, /\*Coming up\*: Target dates 5–6 days away, 10 days out for a POC/);
+  assert.match(today, /limit of 7/);
+  assert.match(today, /30 days/);
+});
 
-  const page = overviewText(settings, true);
-  assert.match(page, /at `08:15`/);
-  assert.match(page, /7 days/);
+test("the today page is the briefing page: when it goes out, what it holds, and the command", () => {
+  const page = helpReply(DEFAULTS, true, "today").text;
+
+  assert.match(page, /^\*Today\*/);
+  assert.match(page, /\*When\*: weekdays only, Asia\/Singapore/);
+  assert.match(page, /The morning briefing goes out once at `09:00`, the wrap-up once at `17:30`/);
+  assert.match(page, /What the morning briefing holds/);
+  assert.match(page, /`today` in a DM sends the plan for today as it would go out right now/);
+  assert.doesNotMatch(page, /`briefing`/);
+});
+
+test("the pings page opens by saying that pings are not typed", () => {
+  const page = helpReply(DEFAULTS, true, "pings").text;
+
+  assert.match(page, /^\*Pings\*\n\nPings are messages I send you; you don't type them\.\n\n\*When a direct ping goes out\*/);
 });
 
 test("an unknown topic is the overview with the miss on top", () => {
@@ -125,7 +162,7 @@ test("an unknown topic is the overview with the miss on top", () => {
 
   const page = helpReply(DEFAULTS, true, "  Buttons ");
   assert.equal(page.blocks[0].text.text, "*Buttons*", "the topic is matched however it is typed");
-  assert.match(page.text, /\[\]|Status/, "the page, not the overview");
+  assert.match(page.text, /On it|Status/, "the page, not the overview");
 });
 
 test("help buttons says what each button does, not more and not less", () => {

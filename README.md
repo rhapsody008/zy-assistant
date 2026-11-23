@@ -36,44 +36,35 @@ the notes repo and replies with the link (see **The scribe**).
 
 ## Using the bot
 
-DM the bot `help` (or `?`, or `manual`) and it answers with the manual below;
-`help <topic>` opens one topic, and an unknown topic answers the overview with
-`No topic <x>.` on top. Any other DM that is no command gets a one-line hint.
-The text is rendered from `src/manual.ts` with the live policy and slot times
-(`WAITING_CHASE_DAYS`, `STAGE_STALE_DAYS`, the lead times, the WIP limit), so the
-topic pages say what this deployment does. The `note` topic is left out when the
-scribe is off, and the notes-repo ack below when `NOTES_REPO` is unset. With the
-defaults, `help` sends exactly this:
+DM the bot `help` (or `?`, or `manual`) and it answers with the manual below,
+which separates what you type from what the bot sends on its own. `today`
+previews the morning plan, `help <topic>` opens one topic, and an unknown topic
+answers the overview with `No topic <x>.` on top. Any other DM that is no command
+gets a one-line hint. The text is rendered from `src/manual.ts` with the live
+policy and slot times (`WAITING_CHASE_DAYS`, `STAGE_STALE_DAYS`, the lead times,
+the WIP limit), so the pages say what this deployment does. The `note:` line and
+the `note` topic are left out when the scribe is off, and the notes-repo ack
+below when `NOTES_REPO` is unset. With the defaults, `help` sends exactly this:
 
 ```
-*Briefing*
-• Two DMs a day on weekdays (Asia/Singapore): the morning briefing at `09:00` and the end-of-day sweep at `17:30`.
-• The morning one: Today, Coming up, Stale dates, a ⚠ line per unanswered re-ping, and the In-progress count.
-• Friday adds Pipeline and Learning. `briefing` in a DM previews the morning plan.
+*What you can type*
+• `today`: the plan for today, the same view as the morning briefing.
+• `note: <text>`: `note: Acme call, they want a POC in January. I send the sizing by Friday.` and I save it to the notes repo.
+• `help`, or `help <topic>`: this manual, or the page behind one topic.
+• A reply in the thread under one of my messages: that acks it (ack = mark as seen).
 
-*Pings*
-• A ping is one DM about one item: its link, why it is due, and its buttons.
-• A Target date pings from T-3 down to T-0, then daily while it is overdue (14 days).
-• Also: Workshop at T-14 and T-7, POC at T-14 and T-7; a Next touch that is due; a Waiting item nobody moved for 5 days.
-• What is still unanswered at 17:30 is re-pinged, and shows as ⚠ the next morning.
+*What I send you* (automatic; you never type these)
+• The briefing at `09:00` and the wrap-up at `17:30` on weekdays: one message listing everything.
+• Pings: a separate message about ONE item when it needs you now: a deadline close (Target date due in 3 days or fewer) or already passed, a Next touch due, or someone to chase (a Waiting item nobody moved for 5 days). Each ping has buttons.
+• A ping looks like this: `notes#53 Acme deck review: due in 2 days (Thu 26 Nov)  [👍 On it] [Move date] [✅ Done]`
 
-*Buttons*
-• Every ping has buttons under it. Only your clicks count, and a click is the approval: I write to the board at once.
-• *👍 On it* changes nothing on the board; it only marks the ping handled. *✅ Done* sets Status to Done.
-• *Tomorrow* and *+7 days* move Next touch. *Move date* sets Target date and comments why.
-• A plain reply in the ping's thread acks it too.
+*The buttons under a ping*
+• *👍 On it*: nothing on the board changes; the ping is only marked handled.
+• *✅ Done*: sets the item's Status to `Done`.
+• *Move date*: asks for the new date and a reason, sets Target date, and posts the reason on the issue.
+• *Tomorrow* and *+7 days*: move Next touch, rolled off the weekend. The Target date stays.
 
-*Notes*
-• `note: <text>` in a DM, or in a ping's thread, and I turn it into a note.
-• It lands at the top of the log in `<folder>/README.md` of the notes repo, and I reply with the commit link.
-• No folder fits, or the model fails? I ask where it goes. Nothing dictated is ever lost.
-
-*Updates*
-• An ack is what stops a re-ping: a button, a reply, or progress on the board.
-• The board item changing after the ping acks it, so editing it on GitHub is enough.
-• A commit under `Accounts/<Account>/` in the notes repo does the same.
-
-Reply `help <topic>` for details: `briefing`, `pings`, `buttons`, `note`, `updates`.
+More: `help pings`, `help buttons`, `help note`, `help updates`, `help today`
 ```
 
 Every successful action is one log line with ids only, never a note's text or

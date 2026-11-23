@@ -139,8 +139,15 @@ const LABELS: Record<ActionId, string> = {
 /** Slack rejects a select with more than 100 options. */
 const MAX_SELECT_OPTIONS = 100;
 
-/** A DM that is no command at all: one line, so a stray message is not read as a feature. */
-const UNKNOWN_DM = "I didn't catch that. Reply `help` for what I can do.";
+/**
+ * What a DM that is no command gets. One function, because 0.5.0 answers such a DM
+ * with questions instead of this hint. `note:` is only offered when the scribe is on.
+ */
+export function unknownDmHint(scribe: boolean): string {
+  return scribe
+    ? "I didn't catch that. Type `today`, `note: …`, or `help`."
+    : "I didn't catch that. Type `today` or `help`.";
+}
 
 /**
  * What a DM asks the manual for: "" for the overview, the topic word for a page,
@@ -150,6 +157,15 @@ export function helpRequest(text: string): string | null {
   const match = /^(?:help|\?|manual)(?:\s+([\s\S]+))?$/i.exec(text.trim());
   if (!match) return null;
   return (match[1] ?? "").trim();
+}
+
+/**
+ * True for the command that previews today's plan: `today`, or `briefing`, the
+ * name it had before 0.4.2. Case and spacing do not matter.
+ */
+export function isTodayCommand(text: string): boolean {
+  const word = text.trim().toLowerCase();
+  return word === "today" || word === "briefing";
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
@@ -366,12 +382,8 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
     }
   }
 
-  if (message.text.trim().toLowerCase() === "briefing") {
-    const board = await deps.board.fetchBoard(deps.owner, deps.number);
-    const today = localNow(deps.now(), TZ).date;
-    const preview = plan(board.items, today, "M", []);
-    await postMessage(deps, { channel: message.channel, text: ["(preview)", preview.briefing ?? ""].join("\n\n").trim() });
-    for (const ping of preview.pings) await postMessage(deps, { channel: message.channel, text: ping.text });
+  if (isTodayCommand(message.text)) {
+    await sendToday(deps, message.channel);
     return;
   }
 
@@ -384,7 +396,19 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
     return;
   }
 
-  await postMessage(deps, { channel: message.channel, text: UNKNOWN_DM });
+  await postMessage(deps, { channel: message.channel, text: unknownDmHint(scribeOn(deps)) });
+}
+
+/**
+ * "today": the morning plan as it would go out right now, the briefing first and
+ * then each ping it comes with. It writes nothing to the board and records nothing.
+ */
+async function sendToday(deps: HandlerDeps, channel: string): Promise<void> {
+  const board = await deps.board.fetchBoard(deps.owner, deps.number);
+  const today = localNow(deps.now(), TZ).date;
+  const preview = plan(board.items, today, "M", []);
+  await postMessage(deps, { channel, text: ["(preview)", preview.briefing ?? ""].join("\n\n").trim() });
+  for (const ping of preview.pings) await postMessage(deps, { channel, text: ping.text });
 }
 
 /**

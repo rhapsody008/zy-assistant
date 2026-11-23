@@ -10,6 +10,7 @@ import {
   dictationText,
   handleAction,
   helpRequest,
+  isTodayCommand,
   selectFolders,
   handleMessage,
   handleMoveSubmit,
@@ -571,16 +572,44 @@ test("a note: from anyone but ZY does nothing at all", async () => {
   assert.deepEqual(client.posts, []);
 });
 
-test("a DM that is no command gets one line pointing at help", async () => {
+test("a DM that is no command gets one hint naming today and help", async () => {
   const { deps, client } = harness();
 
+  // With no scribe, "note:" is no dictation either: it gets the same hint.
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "note: ten nodes" });
-  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "hello?" });
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "ping:" });
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.4", threadTs: null, text: "how does the Acme deck look?" });
 
   assert.deepEqual(client.posts.map((post) => post.text), [
-    "I didn't catch that. Reply `help` for what I can do.",
-    "I didn't catch that. Reply `help` for what I can do.",
+    "I didn't catch that. Type `today` or `help`.",
+    "I didn't catch that. Type `today` or `help`.",
+    "I didn't catch that. Type `today` or `help`.",
   ]);
+});
+
+test("with the scribe on, the unknown-DM hint offers note: too", async () => {
+  const { deps, client } = harness();
+  deps.scribe = async () => {};
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "ping" });
+
+  assert.deepEqual(client.posts.map((post) => post.text), ["I didn't catch that. Type `today`, `note: …`, or `help`."]);
+});
+
+test("today sends the morning preview, and briefing still does the same", async () => {
+  const { deps, client, board, logs } = harness();
+
+  for (const text of ["today", "  TODAY ", "briefing", "Briefing"]) {
+    await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text });
+  }
+
+  assert.equal(board.reads, 4, "each command reads the board");
+  assert.equal(client.posts.length, 4);
+  for (const post of client.posts) {
+    assert.match(post.text, /^\(preview\)\n\n\*Morning briefing, Fri 27 Nov\*/);
+    assert.equal(post.blocks, undefined, "the preview is plain text, not the manual");
+  }
+  assert.deepEqual(logs, [], "neither command is logged: nothing was asked of the manual");
 });
 
 test("help, ? and manual all answer the overview, and with the scribe off it never mentions notes", async () => {
@@ -593,7 +622,7 @@ test("help, ? and manual all answer the overview, and with the scribe off it nev
   assert.equal(client.posts.length, 4);
   for (const post of client.posts) {
     assert.ok(post.blocks !== undefined && post.blocks.length > 1, `${post.text} is a manual, not a line`);
-    assert.match(post.text, /Reply `help <topic>` for details: `briefing`, `pings`, `buttons`, `updates`\./);
+    assert.match(post.text, /More: `help pings`, `help buttons`, `help updates`, `help today`$/);
     assert.doesNotMatch(post.text, /note:|`note`/);
   }
 });
@@ -605,11 +634,11 @@ test("help <topic> answers that page, and an unknown topic keeps the overview wi
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "help Pings" });
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.4", threadTs: null, text: "help horoscope" });
 
-  assert.match(client.posts[0].text, /^\*Buttons\*\n\n.*On it/, "the page, not the overview");
-  assert.doesNotMatch(client.posts[0].text, /Reply `help <topic>`/);
+  assert.match(client.posts[0].text, /^\*Buttons\*\n\nEvery ping has buttons under it/, "the page, not the overview");
+  assert.doesNotMatch(client.posts[0].text, /More: `help pings`/);
   assert.match(client.posts[1].text, /^\*Pings\*/, "the topic is matched however it is typed");
   assert.match(client.posts[2].text, /^No topic `horoscope`\. Here is the overview\./);
-  assert.match(client.posts[2].text, /Reply `help <topic>` for details/);
+  assert.match(client.posts[2].text, /More: `help pings`/);
   assert.deepEqual(logs, ["help buttons", "help Pings", "help horoscope"], "ids only: what was asked for");
 });
 
@@ -621,7 +650,8 @@ test("a help request is read from the command words alone", () => {
   assert.equal(helpRequest("help buttons"), "buttons");
   assert.equal(helpRequest("Help   Pings "), "Pings");
   assert.equal(helpRequest("helpful"), null);
-  assert.equal(helpRequest("briefing"), null, "briefing is its own command");
+  assert.equal(helpRequest("today"), null, "today is its own command");
+  assert.equal(helpRequest("briefing"), null, "and so is its old name");
   assert.equal(helpRequest("note: ten nodes"), null);
   assert.equal(helpRequest(""), null);
 });
@@ -633,8 +663,8 @@ test("with the scribe on, the manual has the note topic and its page says how to
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "help" });
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "help note" });
 
-  assert.match(client.posts[0].text, /\*Notes\*/);
-  assert.match(client.posts[0].text, /`note: <text>` in a DM/);
+  assert.match(client.posts[0].text, /`note: <text>`: `note: Acme call/);
+  assert.match(client.posts[0].text, /`help note`/);
   assert.match(client.posts[1].text, /^\*Notes\*/);
   assert.match(client.posts[1].text, /`note:` and then the dictation/);
 });

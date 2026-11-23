@@ -1,11 +1,13 @@
 // The user manual: what the bot does, in the words it answers "help" with.
 //
-// One data structure, two renders: the overview has a section per topic, and
-// "help <topic>" opens the page behind it. Every number a topic quotes is taken
-// from the settings it is built with (the live policy and the two slot times), so
-// the manual cannot drift from what the bot does. The note topic exists only when
-// the scribe is on, and the notes-repo line in "updates" only when NOTES_REPO is
-// set: the manual describes this deployment, not every deployment.
+// The overview has two parts, "What you can type" and "What I send you", because
+// the 0.4.1 overview listed the automatic messages next to the commands and ZY
+// tried to type a ping. Then "help <topic>" opens the page behind a topic. Every
+// number the text quotes is taken from the settings it is built with (the live
+// policy and the two slot times), so the manual cannot drift from what the bot
+// does. The note line and the note topic exist only when the scribe is on, and
+// the notes-repo ack line in "updates" only when NOTES_REPO is set: the manual
+// describes this deployment, not every deployment.
 
 import type { Policy } from "./rules.ts";
 import { TZ } from "./time.ts";
@@ -21,11 +23,9 @@ export interface ManualSettings {
 export interface ManualTopic {
   /** The word `help <topic>` asks for. */
   topic: string;
-  /** The overview's header for it. */
+  /** The page's header, above its details. */
   title: string;
-  /** The overview: 2 to 4 lines. */
-  summary: string[];
-  /** `help <topic>`: the page, one paragraph (or list) per string. */
+  /** `help <topic>`: one paragraph (or list) per string. */
   details: string[];
 }
 
@@ -63,21 +63,16 @@ function leadNote(policy: Policy): string | null {
   return `${heads.join("/")} days out for a ${words(leads.map(([type]) => type))}`;
 }
 
-function briefingTopic(settings: ManualSettings): ManualTopic {
+function todayTopic(settings: ManualSettings): ManualTopic {
   const policy = settings.policy;
   const [low, high] = policy.soonDays;
   const lead = leadNote(policy);
   const comingUp = `Target dates ${low}–${high} days away${lead === null ? "" : `, ${lead}`}, and a Next touch due tomorrow`;
   return {
-    topic: "briefing",
-    title: "Briefing",
-    summary: [
-      `Two DMs a day on weekdays (${TZ}): the morning briefing at \`${settings.briefTime}\` and the end-of-day sweep at \`${settings.eodTime}\`.`,
-      "The morning one: Today, Coming up, Stale dates, a ⚠ line per unanswered re-ping, and the In-progress count.",
-      "Friday adds Pipeline and Learning. `briefing` in a DM previews the morning plan.",
-    ],
+    topic: "today",
+    title: "Today",
     details: [
-      `*When*: weekdays only, ${TZ}. The morning briefing goes out once at \`${settings.briefTime}\`, the end-of-day sweep once at \`${settings.eodTime}\`. A slot runs at most once a day; one that fails is retried on the next minute tick, and after three failures I close the slot and DM you the error.`,
+      `*When*: weekdays only, ${TZ}. The morning briefing goes out once at \`${settings.briefTime}\`, the wrap-up once at \`${settings.eodTime}\`. A slot runs at most once a day; one that fails is retried on the next minute tick, and after three failures I close the slot and DM you the error.`,
       [
         "*What the morning briefing holds*, in this order:",
         `• *Today*: an item whose Target date is today, due within ${plural(policy.pingDays, "day")} or already overdue, whose Next touch is due or past, or that is at a milestone. With nothing due it reads "Nothing due. 🎉".`,
@@ -88,7 +83,7 @@ function briefingTopic(settings: ManualSettings): ManualTopic {
         "• A ⚠ line at the very top for a ping from the previous workday that never got an answer (see `help pings`).",
       ].join("\n"),
       `A ${policy.waiting} item shows up in Today like any other, and the chase rule that repeats the ask after ${plural(policy.waitingChaseDays, "day")} is in \`help pings\`.`,
-      "`briefing` in a DM sends the morning plan as it would go out right now: the briefing first, then each ping it comes with. It writes nothing to the board and records nothing.",
+      "`today` in a DM sends the plan for today as it would go out right now: the briefing first, then each ping it comes with. It writes nothing to the board and records nothing.",
     ],
   };
 }
@@ -98,13 +93,8 @@ function pingsTopic(settings: ManualSettings): ManualTopic {
   return {
     topic: "pings",
     title: "Pings",
-    summary: [
-      "A ping is one DM about one item: its link, why it is due, and its buttons.",
-      `A Target date pings from T-${policy.pingDays} down to T-0, then daily while it is overdue (${plural(policy.staleDays, "day")}).`,
-      `Also: ${milestones(policy)}; a Next touch that is due; a ${policy.waiting} item nobody moved for ${plural(policy.waitingChaseDays, "day")}.`,
-      `What is still unanswered at ${settings.eodTime} is re-pinged, and shows as ⚠ the next morning.`,
-    ],
     details: [
+      "Pings are messages I send you; you don't type them.",
       `*When a direct ping goes out*: in the morning, for an item that is ${policy.inProgress} or ${policy.waiting}, on any of these:`,
       [
         `• Target date T-${policy.pingDays} to T-0: due in ${plural(policy.pingDays, "day")} or fewer, and daily until the date, including the day it is due.`,
@@ -125,13 +115,8 @@ function buttonsTopic(settings: ManualSettings): ManualTopic {
   return {
     topic: "buttons",
     title: "Buttons",
-    summary: [
-      "Every ping has buttons under it. Only your clicks count, and a click is the approval: I write to the board at once.",
-      "*👍 On it* changes nothing on the board; it only marks the ping handled. *✅ Done* sets Status to Done.",
-      "*Tomorrow* and *+7 days* move Next touch. *Move date* sets Target date and comments why.",
-      "A plain reply in the ping's thread acks it too.",
-    ],
     details: [
+      "Every ping has buttons under it: one message about ONE item, with its link, why it is due, and the buttons. Only your clicks count, and a click is the approval: I write to the board at once.",
       [
         `• *👍 On it*: nothing on the board changes. The ping is marked handled and the buttons are replaced by "→ acked". That is all it does.`,
         `• *✅ Done*: sets the item's Status to \`${policy.done}\`, then closes the ping.`,
@@ -155,11 +140,6 @@ function noteTopic(settings: ManualSettings): ManualTopic {
   return {
     topic: "note",
     title: "Notes",
-    summary: [
-      "`note: <text>` in a DM, or in a ping's thread, and I turn it into a note.",
-      "It lands at the top of the log in `<folder>/README.md` of the notes repo, and I reply with the commit link.",
-      "No folder fits, or the model fails? I ask where it goes. Nothing dictated is ever lost.",
-    ],
     details: [
       "Type `note:` and then the dictation, as a DM or as a reply in a ping's thread. Dictated under a ping, the item's title goes to the model as context, and the note does not ack the ping.",
       [
@@ -186,13 +166,8 @@ function updatesTopic(settings: ManualSettings): ManualTopic {
   return {
     topic: "updates",
     title: "Updates",
-    summary: [
-      "An ack is what stops a re-ping: a button, a reply, or progress on the board.",
-      "The board item changing after the ping acks it, so editing it on GitHub is enough.",
-      ...(settings.notesRepo === null ? [] : ["A commit under `Accounts/<Account>/` in the notes repo does the same."]),
-    ],
     details: [
-      "A ping stops being re-pinged as soon as it is acked. A ping is acked by any of these:",
+      "A ping stops being re-pinged as soon as it is acked (ack = mark as seen). A ping is acked by any of these:",
       acks.join("\n"),
       "The clock is the part that matters: only a change after the ping counts, so an item touched last week does not silence this morning's ping. A board change or a notes commit is read as an update on the item itself, however small.",
     ],
@@ -201,7 +176,7 @@ function updatesTopic(settings: ManualSettings): ManualTopic {
 
 /** The topics this deployment has, in manual order: "note" only with the scribe on. */
 export function manualTopics(settings: ManualSettings, scribe: boolean): ManualTopic[] {
-  const topics = [briefingTopic(settings), pingsTopic(settings), buttonsTopic(settings)];
+  const topics = [todayTopic(settings), pingsTopic(settings), buttonsTopic(settings)];
   if (scribe) topics.push(noteTopic(settings));
   topics.push(updatesTopic(settings));
   return topics;
@@ -209,20 +184,55 @@ export function manualTopics(settings: ManualSettings, scribe: boolean): ManualT
 
 const section = (text: string): ManualBlock => ({ type: "section", text: { type: "mrkdwn", text } });
 
-/** One topic as the overview's section: its header, then its lines. */
-function overviewSection(topic: ManualTopic): ManualBlock {
-  return section([`*${topic.title}*`, ...topic.summary.map((line) => `• ${line}`)].join("\n"));
+/** The overview's first part: the few things you type, one line each. */
+function typedBlock(scribe: boolean): ManualBlock {
+  return section(
+    [
+      "*What you can type*",
+      "• `today`: the plan for today, the same view as the morning briefing.",
+      ...(scribe ? ["• `note: <text>`: `note: Acme call, they want a POC in January. I send the sizing by Friday.` and I save it to the notes repo."] : []),
+      "• `help`, or `help <topic>`: this manual, or the page behind one topic.",
+      "• A reply in the thread under one of my messages: that acks it (ack = mark as seen).",
+    ].join("\n"),
+  );
 }
 
-/** The last line of the overview: how to open a page, and every topic there is. */
-function hintBlock(topics: ManualTopic[]): ManualBlock {
-  return section(`Reply \`help <topic>\` for details: ${topics.map((topic) => `\`${topic.topic}\``).join(", ")}.`);
+/** The overview's second part: what arrives on its own. Nothing here is a command. */
+function sentBlock(settings: ManualSettings): ManualBlock {
+  const policy = settings.policy;
+  return section(
+    [
+      "*What I send you* (automatic; you never type these)",
+      `• The briefing at \`${settings.briefTime}\` and the wrap-up at \`${settings.eodTime}\` on weekdays: one message listing everything.`,
+      `• Pings: a separate message about ONE item when it needs you now: a deadline close (Target date due in ${plural(policy.pingDays, "day")} or fewer) or already passed, a Next touch due, or someone to chase (a ${policy.waiting} item nobody moved for ${plural(policy.waitingChaseDays, "day")}). Each ping has buttons.`,
+      "• A ping looks like this: `notes#53 Acme deck review: due in 2 days (Thu 26 Nov)  [👍 On it] [Move date] [✅ Done]`",
+    ].join("\n"),
+  );
 }
 
-/** The overview: one section per topic, then how to go deeper. Pure. */
+/** The buttons, one line each on what they change on the board. */
+function buttonBlock(policy: Policy): ManualBlock {
+  return section(
+    [
+      "*The buttons under a ping*",
+      "• *👍 On it*: nothing on the board changes; the ping is only marked handled.",
+      `• *✅ Done*: sets the item's Status to \`${policy.done}\`.`,
+      "• *Move date*: asks for the new date and a reason, sets Target date, and posts the reason on the issue.",
+      "• *Tomorrow* and *+7 days*: move Next touch, rolled off the weekend. The Target date stays.",
+    ].join("\n"),
+  );
+}
+
+/** The last line of the overview: where each page is. */
+function moreBlock(topics: ManualTopic[]): ManualBlock {
+  const has = (topic: string): boolean => topics.some((t) => t.topic === topic);
+  const pages = ["pings", "buttons", ...(has("note") ? ["note"] : []), "updates", "today"];
+  return section(`More: ${pages.map((topic) => `\`help ${topic}\``).join(", ")}`);
+}
+
+/** The overview: what you type, what I send you, the buttons, then where the pages are. Pure. */
 export function overviewBlocks(settings: ManualSettings, scribe: boolean): ManualBlock[] {
-  const topics = manualTopics(settings, scribe);
-  return [...topics.map(overviewSection), hintBlock(topics)];
+  return [typedBlock(scribe), sentBlock(settings), buttonBlock(settings.policy), moreBlock(manualTopics(settings, scribe))];
 }
 
 /** The overview as plain text: what a README or a log prints. The same words. */
@@ -233,12 +243,21 @@ export function overviewText(settings: ManualSettings, scribe: boolean): string 
 }
 
 /**
+ * The topic a `help <topic>` names, or null. `briefing` is what the `today` page
+ * was called before 0.4.2: it still opens it, and the manual never names it.
+ */
+function findTopic(topics: ManualTopic[], asked: string): ManualTopic | null {
+  const word = asked.trim().toLowerCase();
+  return topics.find((topic) => topic.topic === (word === "briefing" ? "today" : word)) ?? null;
+}
+
+/**
  * What "help", "?" or "manual" answers, with a topic or without one. A topic the
  * bot does not have is the overview with the miss said on top, not an error.
  */
 export function helpReply(settings: ManualSettings, scribe: boolean, asked: string | null): ManualReply {
   const topics = manualTopics(settings, scribe);
-  const wanted = asked === null ? null : (topics.find((topic) => topic.topic === asked.trim().toLowerCase()) ?? null);
+  const wanted = asked === null ? null : findTopic(topics, asked);
   const blocks =
     wanted === null
       ? [...(asked === null ? [] : [section(`No topic \`${asked}\`. Here is the overview.`)]), ...overviewBlocks(settings, scribe)]
