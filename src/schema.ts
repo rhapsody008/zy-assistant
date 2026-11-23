@@ -42,7 +42,7 @@ export const REQUIRED_FIELDS: readonly FieldSpec[] = [
 
 /** Carried on the Item, not read by the rules yet: a board without them is fine. */
 export const OPTIONAL_FIELDS: readonly FieldSpec[] = [
-  { name: "Type", item: "type", kind: "any" },
+  { name: "Work type", item: "type", kind: "any" },
   { name: "Stage", item: "stage", kind: "any" },
   { name: "Track", item: "track", kind: "any" },
   { name: "Account", item: "account", kind: "any" },

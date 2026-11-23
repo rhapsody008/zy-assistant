@@ -9,7 +9,7 @@ import { requiredProblems, validateSchema } from "../src/schema.ts";
 const field = (names: string[], options: string[] = []): Board["fields"] =>
   new Map(names.map((name, i) => [name, { id: `F_${i}`, options: options.length > 0 ? new Map(options.map((o) => [o, `O_${o}`])) : undefined }]));
 
-const ALL_NAMES = ["Status", "Target date", "Next touch", "Next action", "Waiting on", "Type", "Stage", "Track", "Account", "Cadence"];
+const ALL_NAMES = ["Status", "Target date", "Next touch", "Next action", "Waiting on", "Work type", "Stage", "Track", "Account", "Cadence"];
 
 test("a board with every field and option reports nothing", () => {
   const report = validateSchema({ fields: field(ALL_NAMES, ["In progress", "Done"]) });
