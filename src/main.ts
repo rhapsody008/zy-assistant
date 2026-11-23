@@ -1,6 +1,7 @@
 // Entry point: `check`, `dry-run` and `run`. Modes are described in README.md.
 
 import { loadConfig } from "./config.ts";
+import { errMessage } from "./errors.ts";
 import { createBoardClient, type BoardSource } from "./github.ts";
 import { Health } from "./health.ts";
 import { plan, type Slot } from "./rules.ts";
@@ -11,8 +12,6 @@ import { openStore } from "./store.ts";
 import { addDays, localNow, TZ } from "./time.ts";
 
 const now = (): Date => new Date();
-
-const reason = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
 function log(line: string): void {
   console.log(`${now().toISOString()} ${line}`);
@@ -78,7 +77,7 @@ async function reportSchema(board: BoardSource, owner: string, number: number, s
     const problems = requiredProblems(report);
     if (problems.length > 0) await sender.sendDm(`zy-assistant: board schema problem: ${problems.join("; ")}`);
   } catch (err) {
-    log(`board schema check failed: ${reason(err)}`);
+    log(`board schema check failed: ${errMessage(err)}`);
   }
 }
 
@@ -133,7 +132,7 @@ async function dryRun(args: string[]): Promise<void> {
   }
 
   for (const run of runs) {
-    const result = plan(project.items, run.date, run.slot, []);
+    const result = plan(project.items, run.date, run.slot, [], { policy: config.policy });
     console.log(`== ${run.date} ${run.slot}`);
     if (result.briefing) console.log(`${result.briefing}\n`);
     if (result.pings.length === 0) console.log("(no pings)\n");
@@ -184,12 +183,12 @@ async function run(): Promise<void> {
       try {
         await health?.close();
       } catch (err) {
-        log(`health stop failed: ${reason(err)}`);
+        log(`health stop failed: ${errMessage(err)}`);
       }
       try {
         await bot.stop();
       } catch (err) {
-        log(`slack stop failed: ${reason(err)}`);
+        log(`slack stop failed: ${errMessage(err)}`);
       }
       store.close();
       log("stopped");
@@ -218,6 +217,6 @@ try {
       process.exitCode = 2;
   }
 } catch (err) {
-  console.error(`zy-assistant: ${reason(err)}`);
+  console.error(`zy-assistant: ${errMessage(err)}`);
   process.exitCode = 1;
 }

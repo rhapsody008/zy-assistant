@@ -7,6 +7,9 @@ the result at two slots on weekdays (Asia/Singapore):
 
 - **M**, `BRIEF_TIME` (09:00): one morning briefing, then a ping per In-progress
   item that needs action (Target date within 3 days, overdue, or Next touch due).
+  A Workshop or a POC is pinged two weeks and one week out too, and a Waiting item
+  nobody touched for a few days is chased. Friday adds a Pipeline and a Learning
+  section to the briefing.
 - **E**, `EOD_TIME` (17:30): a ping for every item whose Target date is today, and
   a re-ping for every morning ping that was never acked.
 
@@ -14,14 +17,19 @@ A slot runs at most once. If Slack fails half way through, the next minute tick
 retries and sends only what never went out (the morning briefing included), and
 after three failures it closes the slot and DMs the error.
 
-A ping is acked by pressing a button, replying in its Slack thread, or updating
-the item on the board. Buttons write to the board (ZY's click is the approval):
-👍 On it (ack), ✅ Done (Status = Done), Tomorrow / +7 days (Next touch, rolled
-off the weekend).
+A ping is acked by pressing a button, replying in its Slack thread, updating the
+item on the board, or committing to `Accounts/<Account>` in the notes repo.
+Buttons write to the board (ZY's click is the approval): 👍 On it (ack),
+Move date (a modal: a new date and a reason, which becomes a comment on the
+issue), ✅ Done (Status = Done), Tomorrow / +7 days (Next touch, rolled off the
+weekend).
 
 The board is mapped by field **name**: `Status` (single select), `Target date`,
 `Next touch` (dates), `Next action`, `Waiting on` (text). Closed or merged
-content counts as `Done`.
+content counts as `Done`. The optional fields `Work type`, `Stage`, `Track`,
+`Account` and `Cadence` are read when the board has them: Work type sets the lead
+time, Stage and Track feed the Friday sections, Cadence is what the Learning
+section reports, and Account is where the notes-repo activity is looked up.
 
 ## Env
 
@@ -37,6 +45,9 @@ content counts as `Done`.
 | `EOD_TIME` | | `17:30` |
 | `DB_PATH` | | `./data/state.db` |
 | `ASSISTANT_TZ` | | `Asia/Singapore` |
+| `NOTES_REPO` | | – (owner/repo: a commit under `Accounts/<Account>` acks that Account's items; unset turns the lookup off) |
+| `WAITING_CHASE_DAYS` | | `5` (a Waiting item with no update for longer is chased) |
+| `STAGE_STALE_DAYS` | | `21` (a pipeline item with no update for longer is nagged on Friday) |
 
 No token is ever logged or written to the database.
 

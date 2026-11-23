@@ -4,6 +4,7 @@
 
 import type { Item } from "./rules.ts";
 import { ALL_FIELDS, STATUS, type FieldSpec, type ItemField } from "./schema.ts";
+import { latestIso } from "./time.ts";
 
 export interface BoardField {
   id: string;
@@ -21,6 +22,8 @@ export interface BoardSource {
   fetchBoard(owner: string, number: number): Promise<Board>;
   setDate(projectId: string, itemId: string, fieldId: string, date: string): Promise<void>;
   setSingleSelect(projectId: string, itemId: string, fieldId: string, optionId: string): Promise<void>;
+  /** Comments on an issue: subjectId is the Issue node id (Item.contentId). */
+  addComment(subjectId: string, body: string): Promise<void>;
 }
 
 const API_URL = "https://api.github.com/graphql";
@@ -56,7 +59,7 @@ query Board($owner: String!, $number: Int!, $cursor: String) {
           }
           content {
             __typename
-            ... on Issue { number title url state updatedAt repository { name } parent { url } }
+            ... on Issue { id number title url state updatedAt repository { name } parent { url } }
             ... on PullRequest { number title url state updatedAt repository { name } }
             ... on DraftIssue { title updatedAt }
           }
@@ -80,6 +83,13 @@ mutation SetSingleSelect($project: ID!, $item: ID!, $field: ID!, $option: String
   }
 }`;
 
+const ADD_COMMENT = `
+mutation AddComment($subject: ID!, $body: String!) {
+  addComment(input: { subjectId: $subject, body: $body }) {
+    commentEdge { node { id } }
+  }
+}`;
+
 interface RawField {
   __typename?: string;
   id?: string;
@@ -97,6 +107,7 @@ interface RawValue {
 
 interface RawContent {
   __typename?: string;
+  id?: string;
   number?: number;
   title?: string;
   url?: string;
@@ -131,12 +142,6 @@ interface GraphQLResponse<T> {
 
 const projectUrl = (owner: string, number: number): string => `https://github.com/users/${owner}/projects/${number}`;
 
-function latest(a: string | undefined, b: string | undefined): string {
-  if (!a) return b ?? "";
-  if (!b) return a;
-  return Date.parse(b) > Date.parse(a) ? b : a;
-}
-
 function mapItem(raw: RawItem, fallbackUrl: string): Item | null {
   const content = raw.content;
   if (!content) return null;
@@ -167,7 +172,9 @@ function mapItem(raw: RawItem, fallbackUrl: string): Item | null {
     account: values.account ?? null,
     cadence: values.cadence ?? null,
     parentUrl: content.parent?.url ?? null,
-    updatedAt: latest(raw.updatedAt, content.updatedAt),
+    // Only an Issue is a comment subject: a pull request or a draft has none.
+    contentId: content.__typename === "Issue" ? content.id ?? null : null,
+    updatedAt: latestIso(raw.updatedAt, content.updatedAt) ?? "",
   };
 }
 
@@ -247,5 +254,9 @@ export function createBoardClient(token: string, fetchFn: FetchLike = fetch): Bo
     await graphql(SET_SINGLE_SELECT, { project: projectId, item: itemId, field: fieldId, option: optionId });
   }
 
-  return { fetchBoard, setDate, setSingleSelect };
+  async function addComment(subjectId: string, body: string): Promise<void> {
+    await graphql(ADD_COMMENT, { subject: subjectId, body });
+  }
+
+  return { fetchBoard, setDate, setSingleSelect, addComment };
 }

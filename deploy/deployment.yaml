@@ -46,6 +46,8 @@ spec:
               value: "17:30"
             - name: ASSISTANT_TZ
               value: "Asia/Singapore"
+            - name: NOTES_REPO
+              value: "rhapsody008/notes"
             - name: DB_PATH
               value: "/data/state.db"
             - name: HTTP_PORT

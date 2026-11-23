@@ -29,7 +29,13 @@ export interface FieldSpec {
 }
 
 /** The Status option names the bot reads and writes. One source of truth. */
-export const STATUS = { inProgress: "In progress", done: "Done" } as const;
+export const STATUS = { inProgress: "In progress", waiting: "Waiting", done: "Done" } as const;
+
+/** The Stage options that make an item part of the open pipeline (rules 3 and 5). */
+export const PIPELINE_STAGES = ["Discovery", "Workshop/Demo", "POC", "Proposal"] as const;
+
+/** The Track option whose cadence is reported every Friday. */
+export const TRACK = { learn: "Learn" } as const;
 
 /** Without these the bot cannot plan or write back. */
 export const REQUIRED_FIELDS: readonly FieldSpec[] = [

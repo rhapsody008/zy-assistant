@@ -1,8 +1,10 @@
 // The clock. Every minute the scheduler asks: is a slot open right now, and has
 // it already run? Slots are weekdays only, and a slot runs at most once.
 
-import type { BoardSource } from "./github.ts";
-import { plan, type Slot } from "./rules.ts";
+import { fetchActivity } from "./activity.ts";
+import { errMessage } from "./errors.ts";
+import type { BoardSource, FetchLike } from "./github.ts";
+import { DEFAULT_POLICY, plan, type Policy, type Slot } from "./rules.ts";
 import type { Sender } from "./slack.ts";
 import type { PingStore } from "./store.ts";
 import { addDays, isWeekend, localNow, parseHHMM } from "./time.ts";
@@ -10,8 +12,13 @@ import { addDays, isWeekend, localNow, parseHHMM } from "./time.ts";
 export interface SchedulerConfig {
   projectOwner: string;
   projectNumber: number;
+  githubToken: string; // the notes-repo activity calls use the same token
   briefTime: string; // HH:MM, ASSISTANT_TZ
   eodTime: string; // HH:MM, ASSISTANT_TZ
+  /** owner/repo of the notes, or null: no notes activity at all. */
+  notesRepo: string | null;
+  /** The policy knobs the env may override: the rest is DEFAULT_POLICY. */
+  policy: Partial<Policy>;
 }
 
 export interface SchedulerDeps {
@@ -21,6 +28,8 @@ export interface SchedulerDeps {
   sender: Sender;
   now: () => Date;
   log: (line: string) => void;
+  /** The notes-repo calls, injectable so tests never touch the network. */
+  fetchFn?: FetchLike;
   /** After every tick, how it ended, for the health endpoint. */
   onTick?: (report: TickReport) => void;
 }
@@ -32,6 +41,9 @@ export interface TickReport {
 
 /** A slot stays open for two hours; a later tick treats it as missed. */
 const SLOT_WINDOW_MINUTES = 120;
+
+/** How far back the plan's history reaches at least. */
+const HISTORY_DAYS = 7;
 
 /** After this many failed attempts a slot is given up on, with one last DM. */
 export const MAX_SLOT_ATTEMPTS = 3;
@@ -48,8 +60,6 @@ function dailySlots(config: SchedulerConfig): OpenSlot[] {
   ];
 }
 
-const reason = (err: unknown): string => (err instanceof Error ? err.message : String(err));
-
 /** Never rejects: a scheduler that throws would kill the interval. */
 export async function tick(now: Date, deps: SchedulerDeps): Promise<void> {
   try {
@@ -62,7 +72,7 @@ export async function tick(now: Date, deps: SchedulerDeps): Promise<void> {
       }
     }
   } catch (err) {
-    deps.log(`tick failed: ${reason(err)}`);
+    deps.log(`tick failed: ${errMessage(err)}`);
   }
   // The work is done: this is when the tick finished, and what the health
   // endpoint judges for freshness. A slow board or Slack makes it later.
@@ -79,9 +89,22 @@ async function runSlot(date: string, slot: Slot, now: Date, deps: SchedulerDeps)
   const { config, store, sender, log } = deps;
   try {
     const board = await deps.board.fetchBoard(config.projectOwner, config.projectNumber);
-    const history = store.historySince(addDays(date, -7));
+    // The chase rule looks back waitingChaseDays for a ping of the same item, so
+    // the window has to cover that many days.
+    const historyDays = Math.max(HISTORY_DAYS, config.policy.waitingChaseDays ?? DEFAULT_POLICY.waitingChaseDays);
+    const history = store.historySince(addDays(date, -historyDays));
     const alreadySent = new Set(history.map((p) => p.key));
-    const result = plan(board.items, date, slot, history);
+    const activity = config.notesRepo
+      ? await fetchActivity({
+          token: config.githubToken,
+          repo: config.notesRepo,
+          items: board.items,
+          history,
+          log,
+          fetchFn: deps.fetchFn,
+        })
+      : undefined;
+    const result = plan(board.items, date, slot, history, { policy: config.policy, activity });
 
     if (slot === "M" && result.briefing && !store.briefingSent(date, slot)) {
       await sender.sendDm(result.briefing);
@@ -89,9 +112,10 @@ async function runSlot(date: string, slot: Slot, now: Date, deps: SchedulerDeps)
     }
 
     let sent = 0;
+    const targets = new Map(board.items.map((i) => [i.id, i.target]));
     for (const ping of result.pings) {
       if (alreadySent.has(ping.key)) continue;
-      const message = await sender.sendPing(ping);
+      const message = await sender.sendPing(ping, targets.get(ping.itemId) ?? null);
       store.recordPing({
         key: ping.key,
         itemId: ping.itemId,
@@ -108,7 +132,7 @@ async function runSlot(date: string, slot: Slot, now: Date, deps: SchedulerDeps)
     store.markSlotRan(date, slot, now.toISOString());
     log(`${slot} ${date}: ${summary(sent, result.briefing !== null && slot === "M")}`);
   } catch (err) {
-    const message = reason(err);
+    const message = errMessage(err);
     const attempts = store.recordSlotFailure(date, slot, message);
     if (attempts < MAX_SLOT_ATTEMPTS) {
       log(`${slot} ${date} failed (attempt ${attempts} of ${MAX_SLOT_ATTEMPTS}), will retry on the next tick: ${message}`);
@@ -119,7 +143,7 @@ async function runSlot(date: string, slot: Slot, now: Date, deps: SchedulerDeps)
     try {
       await sender.sendDm(`zy-assistant: ${slot} ${date} failed ${attempts} times: ${message}`);
     } catch (dmErr) {
-      log(`could not report the ${slot} ${date} failure: ${reason(dmErr)}`);
+      log(`could not report the ${slot} ${date} failure: ${errMessage(dmErr)}`);
     }
   }
 }

@@ -1,6 +1,7 @@
 // Environment. Every process env variable is read here, so a missing one fails
 // loudly at startup and names itself. No tokens are ever logged.
 
+import { DEFAULT_POLICY, type Policy } from "./rules.ts";
 import { parseHHMM } from "./time.ts";
 
 export type Mode = "check" | "dry-run" | "run";
@@ -17,12 +18,19 @@ export interface Config {
   projectNumber: number;
   briefTime: string; // HH:MM, ASSISTANT_TZ
   eodTime: string; // HH:MM, ASSISTANT_TZ
+  /** owner/repo whose Accounts/<Account> commits count as activity, or null. */
+  notesRepo: string | null;
+  /** The rule knobs the env can override; the rest is DEFAULT_POLICY. */
+  policy: Pick<Policy, "waitingChaseDays" | "stageStaleDays">;
   dbPath: string;
   httpPort: number | null; // null: no health endpoint
   slack: SlackConfig | null;
 }
 
 const SLACK_VARS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_USER_ID"];
+
+/** "owner/repo", the shape the notes-repo REST calls are built from. */
+const NOTES_REPO_RE = /^[\w.-]+\/[\w.-]+$/;
 
 function fail(mode: Mode, names: string[], hint = ""): never {
   throw new Error(`${mode}: missing env ${names.join(", ")}${hint}`);
@@ -59,12 +67,31 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
     throw new Error(`${mode}: HTTP_PORT must be a port number, got ${httpPort}`);
   }
 
+  /** A positive whole number of days, or the default when unset. */
+  const days = (name: string, fallback: number): number => {
+    const raw = get(name);
+    if (raw === "") return fallback;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 1) throw new Error(`${mode}: ${name} must be a positive whole number of days, got ${raw}`);
+    return n;
+  };
+
+  const notesRepo = get("NOTES_REPO");
+  if (notesRepo !== "" && !NOTES_REPO_RE.test(notesRepo)) {
+    throw new Error(`${mode}: NOTES_REPO must be owner/repo, got ${notesRepo}`);
+  }
+
   return {
     githubToken: get("GITHUB_TOKEN"),
     projectOwner: get("PROJECT_OWNER") || "rhapsody008",
     projectNumber: number,
     briefTime,
     eodTime,
+    notesRepo: notesRepo === "" ? null : notesRepo,
+    policy: {
+      waitingChaseDays: days("WAITING_CHASE_DAYS", DEFAULT_POLICY.waitingChaseDays),
+      stageStaleDays: days("STAGE_STALE_DAYS", DEFAULT_POLICY.stageStaleDays),
+    },
     dbPath: get("DB_PATH") || "./data/state.db",
     httpPort: httpPort === "" ? null : Number(httpPort),
     slack,

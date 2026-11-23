@@ -27,6 +27,7 @@ const ISSUE = {
   },
   content: {
     __typename: "Issue",
+    id: "I_12",
     number: 12,
     title: "An issue",
     url: "https://github.com/rhapsody008/notes/issues/12",
@@ -45,6 +46,7 @@ const CLOSED_PULL_REQUEST = {
   },
   content: {
     __typename: "PullRequest",
+    id: "I_7",
     number: 7,
     title: "A pull request",
     url: "https://github.com/rhapsody008/notes/pull/7",
@@ -148,12 +150,14 @@ test("maps field names, item content and the closed rule", async () => {
     account: "Acme",
     cadence: "weekly",
     parentUrl: "https://github.com/rhapsody008/notes/issues/9",
+    contentId: "I_12", // the Issue node id a comment can go to
     updatedAt: "2026-11-21T10:00:00Z", // the content is newer than the item
   });
 
   assert.equal(merged.ref, "notes#7");
   assert.equal(merged.status, "Done", "a merged pull request counts as Done");
   assert.equal(merged.updatedAt, "2026-11-19T00:00:00Z"); // the item is newer than the content
+  assert.equal(merged.contentId, null, "only an Issue is a comment subject");
 
   assert.equal(draft.ref, "draft");
   assert.equal(draft.url, "https://github.com/users/rhapsody008/projects/1");
@@ -162,11 +166,12 @@ test("maps field names, item content and the closed rule", async () => {
   assert.equal(draft.updatedAt, "2026-11-17T00:00:00Z");
 
   assert.equal(draft.parentUrl, null, "a draft has no parent issue");
+  assert.equal(draft.contentId, null, "a draft has nothing to comment on");
   assert.equal(draft.type, null);
   assert.equal(merged.parentUrl, null, "a pull request has no parent issue");
 });
 
-test("the board query asks for 50 field values, the parent issue and names inside the union", async () => {
+test("the board query asks for 50 field values, the parent issue, the issue id and names inside the union", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   await createBoardClient("test-token", fakeFetch(calls)).fetchBoard("rhapsody008", 1);
   const body = JSON.parse(String(calls[0].init.body)) as { query: string };
@@ -175,7 +180,37 @@ test("the board query asks for 50 field values, the parent issue and names insid
   // extra ones are dropped silently.
   assert.ok(body.query.includes("fieldValues(first: 50)"), "50 field values");
   assert.ok(body.query.includes("parent { url }"), "the parent issue of an Issue");
+  // The Issue node id is what a comment is posted to.
+  assert.ok(body.query.includes("... on Issue { id number title"), "the issue id, inside its fragment");
   // A field selection on a union must sit inside an inline fragment on the
   // shared type, or the whole query fails.
   assert.ok(body.query.includes("... on ProjectV2FieldCommon { name }"), "field name inside the fragment");
+});
+
+test("addComment posts the issue's node id and the body to the addComment mutation", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const board = createBoardClient("test-token", async (url, init) => {
+    calls.push({ url, init });
+    return new Response(JSON.stringify({ data: { addComment: { commentEdge: { node: { id: "IC_1" } } } } }), { status: 200 });
+  });
+
+  await board.addComment("I_12", "Target date moved 2026-11-25 → 2026-12-02 by zy-assistant: the workshop moved");
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.github.com/graphql");
+  assert.equal((calls[0].init.headers as Record<string, string>).authorization, "Bearer test-token");
+  const body = JSON.parse(String(calls[0].init.body)) as { query: string; variables: Record<string, unknown> };
+  assert.match(body.query, /mutation AddComment\(\$subject: ID!, \$body: String!\)/);
+  assert.match(body.query, /addComment\(input: \{ subjectId: \$subject, body: \$body \}\)/);
+  assert.deepEqual(body.variables, {
+    subject: "I_12",
+    body: "Target date moved 2026-11-25 → 2026-12-02 by zy-assistant: the workshop moved",
+  });
+});
+
+test("a failed addComment is an error, not a silent drop", async () => {
+  const board = createBoardClient("test-token", async () =>
+    new Response(JSON.stringify({ errors: [{ message: "Could not resolve to a node" }] }), { status: 200 }),
+  );
+  await assert.rejects(() => board.addComment("I_12", "body"), /GitHub GraphQL: Could not resolve to a node/);
 });

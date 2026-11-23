@@ -24,6 +24,7 @@ function item(fields: Partial<Item> & Pick<Item, "id">): Item {
     account: null,
     cadence: null,
     parentUrl: null,
+    contentId: null,
     updatedAt: UPDATED,
     ...fields,
   };
@@ -223,24 +224,237 @@ test("an item already due tomorrow has no duplicate touch-tomorrow line", () => 
   assert.match(briefing, /notes#60[^\n]*due in 1 day/);
 });
 
-test("a Type with a lead time replaces pingDays for that item only", () => {
-  // Wednesday, 2026-11-25. Alpha is due in 6 days: past the default 3, inside a
-  // Feature's 7. Delta is due in the same 6 days and has no Type.
-  const feature = item({ id: "70", type: "Feature", target: "2026-12-01" });
-  const plain = item({ id: "71", target: "2026-12-01" });
-  const board = [feature, plain];
+test("a Work type's heads stretch the Coming up line, in place of the default T-7", () => {
+  // Wednesday 2026-11-25. The POC is 6 days out: too far for the default
+  // soonDays (4..7 is by days-left, so 6 is inside) but the item that has no
+  // type at all stays inside it too. Eight days out separates them.
+  const poc = item({ id: "70", type: "POC", target: "2026-12-03" }); // 8 days
+  const plain = item({ id: "71", target: "2026-12-03" });
+  const result = pings([poc, plain], "2026-11-25", "M");
 
-  assert.deepEqual(pings(board, "2026-11-25", "M").pings, [], "the default policy has no per-type lead time");
-  assert.deepEqual(plan(board, "2026-11-25", "M", [], { policy: { leadDaysByType: {} } }).pings, []);
-
-  const withFeature = plan(board, "2026-11-25", "M", [], { policy: { leadDaysByType: { Feature: 7 } } });
-  assert.deepEqual(withFeature.pings.map((p) => p.itemId), [feature.id]);
-  assert.match(withFeature.pings[0].text, /due in 6 days/);
+  assert.deepEqual(result.pings, [], "T-8 is not a ping for either");
+  const soon = (result.briefing ?? "").split("\n").filter((line) => line.includes("due Thu 3 Dec"));
+  assert.equal(soon.length, 1, "only the POC reaches T-14");
+  assert.match(soon[0], /notes#70/);
 });
 
-test("a Type the policy does not know keeps pingDays", () => {
-  const other = item({ id: "72", type: "Chore", target: "2026-11-30" }); // 5 days out
-  assert.deepEqual(plan([other], "2026-11-25", "M", [], { policy: { leadDaysByType: { Feature: 7 } } }).pings, []);
+test("a Work type the policy does not know keeps soonDays and has no milestone", () => {
+  const chore = item({ id: "72", type: "Chore", target: "2026-12-03" }); // 8 days, outside 4..7
+  assert.ok(!(pings([chore], "2026-11-25", "M").briefing ?? "").includes("Coming up"));
+
+  const soon = item({ id: "73", type: "Chore", target: "2026-11-30" }); // 5 days, inside
+  assert.match(pings([soon], "2026-11-25", "M").briefing ?? "", /notes#73[^\n]*due Mon 30 Nov/);
+});
+
+test("a Workshop is pinged on its milestone days, at T-14 and T-7", () => {
+  const workshop = item({ id: "80", type: "Workshop", target: "2026-12-07" }); // 14 days
+  const result = pings([workshop], "2026-11-23", "M");
+
+  assert.deepEqual(result.pings.map((p) => p.itemId), [workshop.id]);
+  assert.match(result.pings[0].text, /Work 80: Workshop in 14 days \(Mon 7 Dec\)/);
+  assert.deepEqual(result.pings[0].actions, ["ack", "move"], "ack, then move the date");
+  assert.match(result.briefing ?? "", /\*Today\*[\s\S]*Workshop in 14 days/);
+  assert.ok(!(result.briefing ?? "").includes("Coming up"), "the ping says it: no second line");
+
+  // T-13 is neither a milestone nor a ping; it is a Coming up line.
+  const dayBefore = pings([{ ...workshop, target: "2026-12-06" }], "2026-11-23", "M");
+  assert.deepEqual(dayBefore.pings, []);
+  assert.match(dayBefore.briefing ?? "", /Coming up[\s\S]*notes#80[^\n]*due Sun 6 Dec/);
+
+  // T-7 is the second milestone.
+  const weekOut = pings([{ ...workshop, target: "2026-11-30" }], "2026-11-23", "M");
+  assert.match(byItem(weekOut, workshop.id).text, /Workshop in 7 days \(Mon 30 Nov\)/);
+});
+
+test("a milestone pings whatever the status, and only in the morning", () => {
+  const next = item({ id: "81", type: "POC", status: "Next", target: "2026-11-30" }); // T-7
+  assert.deepEqual(pings([next], "2026-11-23", "M").pings.map((p) => p.itemId), [next.id]);
+  assert.deepEqual(pings([next], "2026-11-23", "E").pings, [], "the evening sweep has its own rules");
+});
+
+test("inside the deadline ladder a Workshop is still an ordinary due-in ping", () => {
+  const workshop = item({ id: "82", type: "Workshop", target: "2026-11-25" }); // T-2
+  const ping = byItem(pings([workshop], "2026-11-23", "M"), workshop.id);
+  assert.match(ping.text, /due in 2 days \(Wed 25 Nov\)/);
+  assert.deepEqual(ping.actions, ["ack", "move", "done"], "move comes after ack");
+});
+
+test("the lead time is Policy data, not a constant", () => {
+  const workshop = item({ id: "83", type: "Workshop", target: "2026-12-14" }); // 21 days
+  assert.deepEqual(pings([workshop], "2026-11-23", "M").pings, []);
+
+  const custom = plan([workshop], "2026-11-23", "M", [], {
+    policy: { leadByType: { Workshop: { heads: 21, milestones: [21] } } },
+  });
+  assert.deepEqual(custom.pings.map((p) => p.itemId), [workshop.id]);
+  assert.match(custom.pings[0].text, /Workshop in 21 days \(Mon 14 Dec\)/);
+});
+
+test("an overdue Target date ping offers to move the date, after the ack", () => {
+  const overdue = item({ id: "84", target: "2026-11-20" });
+  assert.deepEqual(byItem(pings([overdue], "2026-11-23", "M"), overdue.id).actions, ["ack", "move", "done"]);
+});
+
+test("a Waiting item nobody touched for more than waitingChaseDays is chased", () => {
+  const waiting = item({ id: "90", status: "Waiting", waitingOn: "Acme", updatedAt: "2026-11-19T00:00:00.000Z" }); // 6 days
+  const ping = byItem(pings([waiting], "2026-11-25", "M"), waiting.id);
+
+  assert.match(ping.text, /Work 90: chase Acme\?/);
+  assert.deepEqual(ping.actions, ["ack", "touch1", "touch7", "done"]);
+});
+
+test("a Waiting item with nothing to name is chased anyway, and only in the morning", () => {
+  const waiting = item({ id: "91", status: "Waiting", updatedAt: "2026-11-01T00:00:00.000Z" });
+  assert.match(byItem(pings([waiting], "2026-11-25", "M"), waiting.id).text, /chase them\?/);
+  assert.deepEqual(pings([waiting], "2026-11-25", "E").pings, []);
+});
+
+test("a Waiting item inside waitingChaseDays is not chased", () => {
+  const fresh = item({ id: "92", status: "Waiting", updatedAt: "2026-11-20T00:00:00.000Z" }); // exactly 5 days
+  assert.deepEqual(pings([fresh], "2026-11-25", "M").pings, []);
+});
+
+test("a Waiting item whose Next touch is due is pinged as a touch, not a chase", () => {
+  const due = item({ id: "93", status: "Waiting", waitingOn: "Acme", nextTouch: "2026-11-25", updatedAt: "2026-11-01T00:00:00.000Z" });
+  const result = pings([due], "2026-11-25", "M");
+  assert.equal(result.pings.length, 1);
+  const ping = byItem(result, due.id);
+  assert.match(ping.text, /touch today/);
+  assert.ok(!ping.text.includes("chase"));
+  assert.deepEqual(ping.actions, ["ack", "touch1", "touch7", "done"]);
+});
+
+test("a Waiting item with a future Next touch is left alone until then", () => {
+  const later = item({ id: "94", status: "Waiting", waitingOn: "Globex", nextTouch: "2026-11-30", updatedAt: "2026-11-01T00:00:00.000Z" });
+  assert.deepEqual(pings([later], "2026-11-25", "M").pings, []);
+});
+
+test("Friday briefs the Pipeline: an open Stage nobody touched for stageStaleDays", () => {
+  const stale = item({ id: "95", stage: "POC", updatedAt: "2026-10-28T00:00:00.000Z" }); // 30 days
+  const result = pings([stale], "2026-11-27", "M");
+
+  assert.deepEqual(result.pings, [], "the Pipeline nags, it does not ping");
+  assert.match(result.briefing ?? "", /\*Pipeline\*\n• notes#95 Work 95: in POC, no update for 30 days/);
+});
+
+test("the Pipeline section is Friday's, and only for the open stages", () => {
+  const stale = item({ id: "96", stage: "Discovery", updatedAt: "2026-10-28T00:00:00.000Z" }); // 30 days
+  assert.match(pings([stale], "2026-11-27", "M").briefing ?? "", /Pipeline/, "Friday, and stale enough");
+  assert.ok(!(pings([stale], "2026-11-26", "M").briefing ?? "").includes("Pipeline"), "not on a Thursday");
+
+  const exactly = item({ id: "97", stage: "Discovery", updatedAt: "2026-11-06T00:00:00.000Z" }); // 21 days
+  assert.ok(!(pings([exactly], "2026-11-27", "M").briefing ?? "").includes("Pipeline"), "21 is not more than 21");
+
+  const closed = item({ id: "98", stage: "Won", updatedAt: "2026-10-01T00:00:00.000Z" });
+  const bare = item({ id: "99", updatedAt: "2026-10-01T00:00:00.000Z" });
+  assert.ok(!(pings([closed, bare], "2026-11-27", "M").briefing ?? "").includes("Pipeline"), "Won is not the pipeline, and an item without a Stage is not either");
+});
+
+test("a Done item never reaches the Pipeline, however stale", () => {
+  const done = item({ id: "99", status: "Done", stage: "POC", updatedAt: "2026-01-01T00:00:00.000Z" });
+  assert.ok(!(pings([done], "2026-11-27", "M").briefing ?? "").includes("Pipeline"));
+});
+
+test("the Pipeline honours stageStaleDays and pipelineStages from the policy", () => {
+  const stale = item({ id: "A1", stage: "Proposal", updatedAt: "2026-11-10T00:00:00.000Z" }); // 17 days
+  assert.ok(!(pings([stale], "2026-11-27", "M").briefing ?? "").includes("Pipeline"), "17 days is inside the default 21");
+
+  const strict = plan([stale], "2026-11-27", "M", [], { policy: { stageStaleDays: 14 } });
+  assert.match(strict.briefing ?? "", /in Proposal, no update for 17 days/);
+
+  const onlyPoc = plan([stale], "2026-11-27", "M", [], { policy: { pipelineStages: ["POC"] } });
+  assert.ok(!(onlyPoc.briefing ?? "").includes("Pipeline"));
+});
+
+test("a Waiting item that was pinged within waitingChaseDays is not chased again", () => {
+  const waiting = item({ id: "99", status: "Waiting", waitingOn: "Acme", updatedAt: "2026-11-10T00:00:00.000Z" });
+  const sent = (date: string, sentAt: string): SentPing => ({
+    key: pingKey(date, "M", waiting.id),
+    itemId: waiting.id,
+    date,
+    slot: "M",
+    kind: "ping",
+    sentAt,
+    ackedAt: null,
+  });
+
+  const monday = sent("2026-11-23", "2026-11-23T01:00:00.000Z");
+  assert.deepEqual(pings([waiting], "2026-11-25", "M", [monday]).pings, [], "pinged on Monday, quiet on Wednesday");
+
+  const lastWeek = sent("2026-11-19", "2026-11-19T01:00:00.000Z"); // 6 days: outside the window
+  assert.match(byItem(pings([waiting], "2026-11-25", "M", [lastWeek]), waiting.id).text, /chase Acme\?/);
+});
+
+test("Friday briefs the Learning cadence, with the age of the last update", () => {
+  const quiet = item({ id: "B1", track: "Learn", cadence: "2/week", updatedAt: "2026-11-24T00:00:00.000Z" });
+  const old = item({ id: "B2", track: "Learn", cadence: "1/week", updatedAt: "2026-11-19T00:00:00.000Z" });
+  const briefing = pings([quiet, old], "2026-11-27", "M").briefing ?? "";
+
+  assert.match(briefing, /\*Learning\*\n• notes#B1 Work B1: cadence 2\/week, last update Tue 24 Nov \(this week\)/);
+  assert.match(briefing, /• notes#B2 Work B2: cadence 1\/week, last update Thu 19 Nov \(8 days ago\)/);
+});
+
+test("Learning is Friday's, needs a cadence, and is not paged for other tracks", () => {
+  const learn = item({ id: "B3", track: "Learn", cadence: "daily", updatedAt: "2026-11-20T00:00:00.000Z" });
+  assert.ok(!(pings([learn], "2026-11-26", "M").briefing ?? "").includes("Learning"));
+
+  const build = item({ id: "B4", track: "Build", cadence: "daily", updatedAt: "2026-11-20T00:00:00.000Z" });
+  const noCadence = item({ id: "B5", track: "Learn", updatedAt: "2026-11-20T00:00:00.000Z" });
+  assert.ok(!(pings([build, noCadence], "2026-11-27", "M").briefing ?? "").includes("Learning"));
+});
+
+test("the Learning line ages the item's own update, not a notes commit", () => {
+  const learn = item({ id: "B6", track: "Learn", cadence: "2/week", updatedAt: "2026-11-02T00:00:00.000Z" });
+  const activity = new Map([[learn.id, "2026-11-26T10:00:00.000Z"]]);
+  const briefing = plan([learn], "2026-11-27", "M", [], { activity }).briefing ?? "";
+
+  assert.match(briefing, /notes#B6[^\n]*last update Mon 2 Nov \(25 days ago\)/, "the board's date, not the notes'");
+});
+
+test("over the WIP limit the briefing names the items in flight", () => {
+  const board = [item({ id: "C1" }), item({ id: "C2" }), item({ id: "C3" }), item({ id: "C4" })];
+  assert.match(pings(board, "2026-11-23", "M").briefing ?? "", /In progress: 4 \(over the limit of 3: what are you dropping\?\)\nnotes#C1, notes#C2, notes#C3, notes#C4/);
+
+  const three = pings(board.slice(0, 3), "2026-11-23", "M").briefing ?? "";
+  assert.match(three, /In progress: 3$/);
+  assert.ok(!three.includes("notes#C1"), "under the limit there is nothing to drop");
+});
+
+test("activity after the ping acks it, like a board update", () => {
+  const morning: SentPing = {
+    key: pingKey("2026-11-26", "M", B.id),
+    itemId: B.id,
+    date: "2026-11-26",
+    slot: "M",
+    kind: "ping",
+    sentAt: "2026-11-26T01:00:00.000Z",
+    ackedAt: null,
+  };
+  const board = [{ ...B, account: "Acme" }];
+
+  assert.equal(plan(board, "2026-11-26", "E", [morning]).pings[0].kind, "reping", "nothing acked it yet");
+
+  const activity = new Map([[B.id, "2026-11-26T05:00:00.000Z"]]);
+  const ping = plan(board, "2026-11-26", "E", [morning], { activity }).pings[0];
+  assert.equal(ping.kind, "ping");
+  assert.ok(!ping.text.includes("no update since this morning"));
+
+  const early = new Map([[B.id, "2026-11-25T05:00:00.000Z"]]);
+  assert.equal(plan(board, "2026-11-26", "E", [morning], { activity: early }).pings[0].kind, "reping", "an older commit acks nothing");
+});
+
+test("activity after yesterday's reping clears the warning line", () => {
+  const reping: SentPing = {
+    key: pingKey("2026-11-26", "E", B.id),
+    itemId: B.id,
+    date: "2026-11-26",
+    slot: "E",
+    kind: "reping",
+    sentAt: "2026-11-26T09:30:00.000Z",
+    ackedAt: null,
+  };
+  const activity = new Map([[B.id, "2026-11-26T12:00:00.000Z"]]);
+  assert.ok(!(plan([B], "2026-11-27", "M", [reping], { activity }).briefing ?? "").includes("⚠"));
 });
 
 test("Policy overrides the status names, the day windows and the WIP limit", () => {

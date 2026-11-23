@@ -35,6 +35,7 @@ interface FixtureItem {
   account?: string | null;
   cadence?: string | null;
   parentUrl?: string | null;
+  contentId?: string | null;
   updatedAt: string;
 }
 
@@ -68,6 +69,7 @@ const toItem = (f: FixtureItem): Item => ({
   account: f.account ?? null,
   cadence: f.cadence ?? null,
   parentUrl: f.parentUrl ?? null,
+  contentId: f.contentId ?? null,
   updatedAt: f.updatedAt,
 });
 

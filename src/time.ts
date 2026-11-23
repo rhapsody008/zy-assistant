@@ -24,6 +24,13 @@ export function localNow(d: Date, tz: string = TZ): LocalNow {
 const DAY = 86_400_000;
 const ms = (date: string) => Date.parse(`${date}T00:00:00Z`);
 
+/** The later of two ISO timestamps, or null when neither is there. */
+export function latestIso(a: string | undefined, b: string | undefined): string | null {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  return Date.parse(b) > Date.parse(a) ? b : a;
+}
+
 /** a - b in whole days. */
 export function dayDiff(a: string, b: string): number {
   return Math.round((ms(a) - ms(b)) / DAY);
@@ -33,9 +40,24 @@ export function addDays(date: string, n: number): string {
   return new Date(ms(date) + n * DAY).toISOString().slice(0, 10);
 }
 
+/** 0 = Sunday .. 6 = Saturday. A date is a calendar date, so this is UTC. */
+export function weekday(date: string): number {
+  return new Date(ms(date)).getUTCDay();
+}
+
 export function isWeekend(date: string): boolean {
-  const wd = new Date(ms(date)).getUTCDay();
+  const wd = weekday(date);
   return wd === 0 || wd === 6;
+}
+
+export function isFriday(date: string): boolean {
+  return weekday(date) === 5;
+}
+
+/** The Monday of the week a date falls in. */
+export function weekStart(date: string): string {
+  const wd = weekday(date);
+  return addDays(date, -(wd === 0 ? 6 : wd - 1));
 }
 
 export function prevWorkday(date: string): string {

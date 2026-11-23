@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Board } from "../src/github.ts";
 import type { Item } from "../src/rules.ts";
-import { createTicker, tick, type SchedulerDeps } from "../src/scheduler.ts";
+import { createTicker, tick, type SchedulerConfig, type SchedulerDeps } from "../src/scheduler.ts";
 import { FakeSender, FakeStore, Gate } from "./fakes.ts";
 
 const UPDATED = "2026-11-20T00:00:00.000Z";
@@ -27,6 +27,7 @@ function item(id: string, fields: Partial<Item> = {}): Item {
     account: null,
     cadence: null,
     parentUrl: null,
+    contentId: null,
     updatedAt: UPDATED,
     ...fields,
   };
@@ -48,18 +49,29 @@ const ELEVEN = "2026-11-23T03:00:00Z";
 const SEVENTEEN_THIRTY = "2026-11-23T09:30:00Z";
 const SATURDAY_NINE = "2026-11-28T01:00:00Z";
 
-function harness(items: Item[]) {
+const CONFIG: SchedulerConfig = {
+  projectOwner: "rhapsody008",
+  projectNumber: 1,
+  githubToken: "test-token",
+  briefTime: "09:00",
+  eodTime: "17:30",
+  notesRepo: null,
+  policy: {},
+};
+
+function harness(items: Item[], overrides: Partial<SchedulerDeps> = {}) {
   const store = new FakeStore();
   const sender = new FakeSender();
   const logs: string[] = [];
   const board: Board = { projectId: "PVT_1", title: "Board", fields: new Map(), items };
   const deps: SchedulerDeps = {
-    config: { projectOwner: "rhapsody008", projectNumber: 1, briefTime: "09:00", eodTime: "17:30" },
+    config: CONFIG,
     board: { fetchBoard: async () => board },
     store,
     sender,
     now: () => new Date(NINE),
     log: (line) => logs.push(line),
+    ...overrides,
   };
   return { deps, store, sender, logs };
 }
@@ -207,4 +219,101 @@ test("every tick reports when it finished, quiet ticks included", async () => {
     finishes.map((at) => ({ at: new Date(at) })),
     "the report time is the clock after the work, and the report carries nothing else",
   );
+});
+
+test("notes activity is read before the plan and an ack clears the evening re-ping", async () => {
+  const due = item("9", { target: "2026-11-23", account: "Acme" });
+  const urls: string[] = [];
+  const { deps, sender } = harness([due], {
+    config: { ...CONFIG, notesRepo: "acme/notes" },
+    fetchFn: async (url) => {
+      urls.push(url);
+      return new Response(JSON.stringify([{ commit: { committer: { date: "2026-11-23T03:00:00Z" } } }]), { status: 200 });
+    },
+  });
+
+  await at(deps, NINE); // the morning ping goes out at 01:00Z, nothing is unacked yet
+  assert.deepEqual(urls, [], "no unacked ping, no notes call");
+
+  await at(deps, SEVENTEEN_THIRTY);
+  assert.equal(urls.length, 1);
+  assert.equal(
+    urls[0],
+    "https://api.github.com/repos/acme/notes/commits?path=Accounts/Acme&since=2026-11-23T01%3A00%3A00.000Z&per_page=20",
+  );
+  assert.deepEqual(sender.sent.map((p) => p.kind), ["ping", "ping"], "the commit acked the morning ping");
+});
+
+test("a broken notes repo is logged and the slot still runs", async () => {
+  const due = item("9", { target: "2026-11-23", account: "Acme" });
+  const { deps, sender, store, logs } = harness([due], {
+    config: { ...CONFIG, notesRepo: "acme/notes" },
+    fetchFn: async () => {
+      throw new Error("getaddrinfo ENOTFOUND");
+    },
+  });
+  store.recordPing({
+    key: "2026-11-23:M:9",
+    itemId: "9",
+    date: "2026-11-23",
+    slot: "M",
+    kind: "ping",
+    sentAt: NINE,
+    channel: "DM",
+    ts: "ts-old",
+  });
+
+  await at(deps, SEVENTEEN_THIRTY);
+  assert.equal(sender.sent.length, 1, "the evening ping still went out");
+  assert.match(logs.join("\n"), /notes activity for Acme failed, ignored: getaddrinfo ENOTFOUND/);
+});
+
+test("a rejected notes repo is logged and the slot still runs", async () => {
+  const due = item("9", { target: "2026-11-23", account: "Acme" });
+  const { deps, sender, store, logs } = harness([due], {
+    config: { ...CONFIG, notesRepo: "acme/notes" },
+    fetchFn: async () => new Response("nope", { status: 404 }),
+  });
+  store.recordPing({
+    key: "2026-11-23:M:9",
+    itemId: "9",
+    date: "2026-11-23",
+    slot: "M",
+    kind: "ping",
+    sentAt: NINE,
+    channel: "DM",
+    ts: "ts-old",
+  });
+
+  await at(deps, SEVENTEEN_THIRTY);
+  assert.equal(sender.sent.length, 1);
+  assert.match(logs.join("\n"), /notes activity for Acme: GitHub API 404, ignored/);
+});
+
+test("the env's policy knobs reach the rules", async () => {
+  const waiting = item("9", { status: "Waiting", updatedAt: "2026-11-21T00:00:00.000Z" }); // 2 days
+  const { deps, sender } = harness([waiting], { config: { ...CONFIG, policy: { waitingChaseDays: 1 } } });
+
+  await at(deps, NINE);
+  assert.match(sender.sent[0].text, /chase them\?/);
+});
+
+test("the history window covers waitingChaseDays, so a chase already made is seen", async () => {
+  // 10 days: wider than the seven days the other rules need. The ping below is
+  // 9 days old, so only the widened window can see it.
+  const waiting = item("9", { status: "Waiting", waitingOn: "Acme", updatedAt: "2026-11-01T00:00:00.000Z" });
+  const { deps, sender, store } = harness([waiting], { config: { ...CONFIG, policy: { waitingChaseDays: 10 } } });
+  store.recordPing({
+    key: "2026-11-14:M:9",
+    itemId: "9",
+    date: "2026-11-14",
+    slot: "M",
+    kind: "ping",
+    sentAt: "2026-11-14T01:00:00.000Z",
+    channel: "DM",
+    ts: "ts-old",
+  });
+
+  await at(deps, NINE);
+  assert.deepEqual(sender.sent, [], "pinged 9 days ago: not chased again this morning");
 });
