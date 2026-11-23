@@ -2,25 +2,30 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: zy-assistant
-  labels: { app.kubernetes.io/name: zy-assistant }
+  labels:
+    app.kubernetes.io/name: zy-assistant
 spec:
   # One replica and it must stay one: the scheduler's SQLite state (what was
   # pinged, what ran) is per process, and Slack would get every ping twice.
   # Recreate so two pods never overlap on the ReadWriteOnce volume.
   replicas: 1
-  strategy: { type: Recreate }
+  strategy:
+    type: Recreate
   selector:
-    matchLabels: { app.kubernetes.io/name: zy-assistant }
+    matchLabels:
+      app.kubernetes.io/name: zy-assistant
   template:
     metadata:
-      labels: { app.kubernetes.io/name: zy-assistant }
+      labels:
+        app.kubernetes.io/name: zy-assistant
     spec:
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
-        seccompProfile: { type: RuntimeDefault }
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: app
           # Tag pinned in kustomization.yaml (images:).
@@ -28,29 +33,44 @@ spec:
           envFrom:
             # Created outside this repo: GITHUB_TOKEN, SLACK_BOT_TOKEN,
             # SLACK_APP_TOKEN, SLACK_USER_ID.
-            - secretRef: { name: zy-assistant-secrets }
+            - secretRef:
+                name: zy-assistant-secrets
           env:
-            - { name: PROJECT_OWNER, value: "rhapsody008" }
-            - { name: PROJECT_NUMBER, value: "1" }
-            - { name: BRIEF_TIME, value: "09:00" }
-            - { name: EOD_TIME, value: "17:30" }
-            - { name: ASSISTANT_TZ, value: "Asia/Singapore" }
-            - { name: DB_PATH, value: "/data/state.db" }
+            - name: PROJECT_OWNER
+              value: "rhapsody008"
+            - name: PROJECT_NUMBER
+              value: "1"
+            - name: BRIEF_TIME
+              value: "09:00"
+            - name: EOD_TIME
+              value: "17:30"
+            - name: ASSISTANT_TZ
+              value: "Asia/Singapore"
+            - name: DB_PATH
+              value: "/data/state.db"
           resources:
-            requests: { cpu: 50m, memory: 128Mi }
-            limits: { memory: 512Mi }
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
-            capabilities: { drop: [ALL] }
+            capabilities:
+              drop:
+                - ALL
           volumeMounts:
-            - { name: data, mountPath: /data }
+            - name: data
+              mountPath: /data
             # Node and SQLite want a writable /tmp; the root filesystem does not.
-            - { name: tmp, mountPath: /tmp }
+            - name: tmp
+              mountPath: /tmp
           # No probe: this is a socket-mode worker with no port. A crash exits
           # the process and the kubelet restarts the container.
       volumes:
         - name: data
-          persistentVolumeClaim: { claimName: zy-assistant-data }
+          persistentVolumeClaim:
+            claimName: zy-assistant-data
         - name: tmp
           emptyDir: {}
