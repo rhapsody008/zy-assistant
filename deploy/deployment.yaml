@@ -29,7 +29,7 @@ spec:
       containers:
         - name: app
           # Tag pinned in kustomization.yaml (images:).
-          image: ghcr.io/rhapsody008/zy-assistant:0.8.0
+          image: ghcr.io/rhapsody008/zy-assistant:0.9.0
           envFrom:
             # Created outside this repo: GITHUB_TOKEN, SLACK_BOT_TOKEN,
             # SLACK_APP_TOKEN, SLACK_USER_ID.
@@ -54,6 +54,9 @@ spec:
             # A committed note's actions become one card of board items.
             - name: NOTE_ITEMS
               value: "on"
+            # The Mac's calendar snapshot, pushed as a ConfigMap every 15 minutes.
+            - name: CALENDAR_FILE
+              value: "/calendar/snapshot.json"
             - name: LLM_BASE_URL
               value: "https://nai.yolocal.cloud/enterpriseai/gateway/v1"
             - name: LLM_MODEL
@@ -94,9 +97,21 @@ spec:
             # Node and SQLite want a writable /tmp; the root filesystem does not.
             - name: tmp
               mountPath: /tmp
+            # The Mac writes this ConfigMap out of band: optional, so the pod
+            # starts and stays up whether or not a snapshot exists yet.
+            - name: calendar
+              mountPath: /calendar
+              readOnly: true
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: zy-assistant-data
         - name: tmp
           emptyDir: {}
+        - name: calendar
+          configMap:
+            name: zy-calendar
+            # The Mac writes this ConfigMap out of band, so it is not in deploy/:
+            # Flux must not own or prune it, and optional keeps a pod starting on
+            # a cluster where the Mac has never pushed.
+            optional: true
