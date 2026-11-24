@@ -6,6 +6,12 @@ Calendar.app with EventKit, prints a small JSON snapshot for today and tomorrow
 it as one ConfigMap through the kubeconfig you already have. The bot mounts that
 ConfigMap as a file and reads it on its own tick.
 
+It pushes **twice a day**, at 07:30 and 18:30 local time, plus once at login.
+A calendar does not change much between two runs, and either snapshot starts at
+today's midnight, so both cover today and tomorrow: 07:30 is there for the 09:00
+briefing, 18:30 keeps tomorrow's answer right in the evening. A sleeping Mac runs
+the missed slot when it wakes. To push on demand, `launchctl kickstart -k` below.
+
 ## Once
 
 ```sh
@@ -28,7 +34,7 @@ scoped to that patch is the known follow-up.
 ## Check it
 
 ```sh
-tail -f ~/Library/Logs/zy-assistant-calendar.log        # 'pushed: N bytes' every 15 min
+tail -f ~/Library/Logs/zy-assistant-calendar.log        # 'pushed: N bytes' at each slot
 launchctl kickstart -k gui/$(id -u)/com.zy.assistant.calendar   # run it now
 kubectl exec deploy/zy-assistant -n zy-assistant -- node src/main.ts calendar
 ```

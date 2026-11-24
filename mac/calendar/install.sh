@@ -58,10 +58,17 @@ cat > "$AGENT" <<EOF
     <string>--exec</string>
     <string>$PUSH_XML</string>
   </array>
-  <!-- Fifteen minutes is the cycle the assistant's follow-ups are written for.
-       RunAtLoad and no KeepAlive: one run after wake, and a failure waits for
-       the next interval instead of spinning. -->
-  <key>StartInterval</key><integer>900</integer>
+  <!-- Twice a day, not more: a calendar barely changes between two runs, and
+       either snapshot still starts at today's midnight, so it covers today and
+       tomorrow whichever one the pod reads. 07:30 lands before the 09:00
+       briefing; 18:30 keeps tomorrow's answer current in the evening. RunAtLoad
+       and no KeepAlive: a login pushes once, a failure waits for the next slot
+       instead of spinning. A sleeping Mac runs the missed slot on wake. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>$LOG_XML</string>
   <key>StandardErrorPath</key><string>$LOG_XML</string>

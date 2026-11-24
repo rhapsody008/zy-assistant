@@ -392,7 +392,8 @@ startup error that names what is missing. Off, the flag changes nothing at all.
 ## The calendar
 
 With `CALENDAR_FILE` set, the bot reads a calendar snapshot that the Mac pushes
-into a ConfigMap roughly every fifteen minutes, and holds it in memory.
+into a ConfigMap twice a day (07:30 and 18:30 local, and once at login), and
+holds it in memory.
 
 *Why the Mac pushes.* The cluster has no route to a laptop, and giving it one
 would mean an ingress path, a token and a certificate to pin. The Mac already
@@ -414,9 +415,10 @@ in the snapshot — the follow-up after a meeting needs that.
 
 *Fresh, stale, expired.* Fresh while `generatedAt` is under 45 minutes old. Past
 that it is **stale** and still used: a sleeping Mac is a normal state, not an
-error. Expired once now is past the snapshot's own window, and only then does the
-bot behave as if there were no calendar. A duplicate push is a silent no-op; an
-older snapshot is refused; a snapshot whose `generatedAt` is more than five
+error, and with two pushes a day the snapshot is correctly named stale for most
+of them. Expired once now is past the snapshot's own window, and only then does
+the bot behave as if there were no calendar. A duplicate push is a silent no-op;
+an older snapshot is refused; a snapshot whose `generatedAt` is more than five
 minutes in the future (a Mac clock running ahead) is refused too.
 
 *Nothing is trusted.* The whole snapshot is rejected, never half of it, and the
