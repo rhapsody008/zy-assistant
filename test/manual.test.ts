@@ -14,9 +14,13 @@ const DEFAULTS: ManualSettings = {
   briefTime: "09:00",
   eodTime: "17:30",
   notesRepo: "demo/notes",
+  addRepo: null,
   ask: true,
   policy: DEFAULT_POLICY,
 };
+
+/** The same, with a board repo to create an `add:` item in: the largest deployment. */
+const ADDING: ManualSettings = { ...DEFAULTS, addRepo: "demo/board" };
 
 /** The same, with the scribe off and no notes repo: the smallest deployment. */
 const BARE: ManualSettings = { ...DEFAULTS, notesRepo: null, ask: false };
@@ -252,6 +256,60 @@ test("the ask line and the ask page are only there when a model is set", () => {
   assert.doesNotMatch(overviewText(BARE, false), /Ask me anything/, "no model, no promise to answer questions");
   assert.match(helpReply(BARE, false, "ask").text, /^No topic `ask`\. Here is the overview\./);
   assert.equal(manualTopics(BARE, false).some((topic) => topic.topic === "ask"), false);
+});
+
+test("the add line and the add page are only there when ADD_REPO is set", () => {
+  assert.match(
+    overviewText(ADDING, true),
+    /• `add: <text>`: `add: call Dana about the renewal on 8 Dec` and I draft a board item for you to approve, with its account, dates and parent engagement\./,
+  );
+  assert.doesNotMatch(overviewText(DEFAULTS, true), /`add:/, "no repo, no promise to draft an item");
+
+  assert.deepEqual(topics(ADDING).map((topic) => topic.topic), ["today", "pings", "buttons", "note", "add", "ask", "updates"]);
+  assert.equal(topics(DEFAULTS).some((topic) => topic.topic === "add"), false);
+  assert.match(helpReply(ADDING, true, "add").text, /^\*Adding items\*/);
+  assert.match(helpReply(ADDING, true, "  Add ").text, /^\*Adding items\*/, "matched however it is typed");
+
+  fits(overviewBlocks(ADDING, true));
+  fits(helpReply(ADDING, true, "add").blocks);
+});
+
+test("with no ADD_REPO, `help add` is the miss on top of the overview", () => {
+  assert.match(helpReply(DEFAULTS, true, "add").text, /^No topic `add`\. Here is the overview\./);
+  assert.match(helpReply(BARE, false, "add").text, /^No topic `add`\. Here is the overview\./);
+});
+
+test("the add page names the repo it creates in, and says that nothing is written until Create", () => {
+  const page = helpReply(ADDING, true, "add").text;
+
+  assert.match(page, /`✍️ drafting…`, and that same message is edited into a card/);
+  assert.match(page, /Top to bottom, twelve things/);
+  assert.match(page, /the buttons: \*Create\*, \*Edit\*, \*Cancel\*/);
+  assert.match(page, /nothing is written until \*Create\*, and your click on it is the approval/);
+  assert.match(page, /\*Edit\* opens a form over the card with all nine fields/);
+  assert.match(page, /Saving it redraws the card with what you changed/);
+
+  assert.match(page, /an issue in `demo\/board` whose body is your sentence quoted/);
+  assert.doesNotMatch(page, /demo\/notes/, "the notes repo is not where an item goes");
+  assert.match(page, /that issue onto the board, the item's fields \(Account, Track, Work type, Status, Target date, Next touch, Next action\), and the new issue as a sub-issue of its engagement/);
+  assert.match(page, /offers \*Retry\* instead of a second \*Create\*: the retry carries on from the step that failed, and no second issue is ever made/);
+
+  assert.match(page, /the Next touch is a follow-up you name for yourself/);
+  assert.match(page, /"this Friday" is the coming Friday, and "next Friday" is the Friday of the following week/);
+  assert.match(page, /`⚠ No engagement matched`/);
+  assert.match(page, /`⚠ No parent, no account`/);
+  assert.match(page, /the title is your sentence exactly as typed/);
+  assert.match(page, /a task starts with a verb and names the result/);
+  assert.match(page, /an engagement is `<Name> · <what it's about>`/);
+
+  assert.match(page, /read wherever the DM holds it, in a new message or in a thread/);
+  assert.match(page, /under an evening ping the ping's item goes to the model as a hint, and the `add:` does not mark the ping seen/);
+});
+
+test("the pages line lists add only when the topic is there", () => {
+  assert.match(helpReply(ADDING, true, null).text, /More: `help pings`, `help buttons`, `help note`, `help add`, `help ask`, `help updates`, `help today`$/);
+  assert.match(helpReply(DEFAULTS, true, null).text, /More: `help pings`, `help buttons`, `help note`, `help ask`, `help updates`, `help today`$/);
+  assert.doesNotMatch(overviewText(DEFAULTS, true), /`help add`/);
 });
 
 test("the README quotes the overview the bot sends", () => {

@@ -5,12 +5,25 @@
 // store, the board), so they can be tested without Bolt and without network.
 
 import { App, LogLevel } from "@slack/bolt";
+import { addHandler, addSpec, proposalId, type AddDeps, type AddInput, type AddUi } from "./add-handler.ts";
 import { askQuestion, type AskDeps, type AskInput, type AskUi } from "./ask.ts";
 import { errMessage } from "./errors.ts";
 import type { BoardSource } from "./github.ts";
 import { helpReply, type ManualSettings } from "./manual.ts";
-import { plan, type ActionId, type Briefing, type Ping } from "./rules.ts";
-import { STATUS } from "./schema.ts";
+import {
+  cardText,
+  parseProposalValue,
+  proposalClick,
+  proposalEdited,
+  proposalValue,
+  type Card,
+  type EditField,
+  type ProposalButton,
+  type ProposalDeps,
+  type ProposalUi,
+} from "./proposals.ts";
+import { plan, type ActionId, type Briefing, type Item, type Ping } from "./rules.ts";
+import { FIELD, STATUS } from "./schema.ts";
 import {
   FOLDER_BLOCK_PREFIX,
   parseScribeChoice,
@@ -71,6 +84,7 @@ interface ButtonElement {
   action_id: string;
   text: { type: "plain_text"; text: string };
   value: string;
+  style?: "primary" | "danger";
 }
 
 interface SelectElement {
@@ -126,20 +140,26 @@ export interface ViewsOpenArgs {
   };
 }
 
-/** The only two blocks the move modal needs, spelled out for the Slack types. */
-type ModalBlock =
-  | {
-      type: "input";
-      block_id: string;
-      label: { type: "plain_text"; text: string };
-      element: { type: "datepicker"; action_id: string; initial_date?: string };
-    }
-  | {
-      type: "input";
-      block_id: string;
-      label: { type: "plain_text"; text: string };
-      element: { type: "plain_text_input"; action_id: string };
-    };
+/** One option of a modal's select: the words a person reads, and what the submit carries. */
+interface ModalOption {
+  text: { type: "plain_text"; text: string };
+  value: string;
+}
+
+/** The three elements a modal input can hold: a date, a line of text, or one of a list. */
+type ModalElement =
+  | { type: "datepicker"; action_id: string; initial_date?: string }
+  | { type: "plain_text_input"; action_id: string; initial_value?: string; max_length?: number }
+  | { type: "static_select"; action_id: string; options: ModalOption[]; initial_option?: ModalOption };
+
+/** The block a modal is built from: a label, whether it may be left empty, and its element. */
+type ModalBlock = {
+  type: "input";
+  block_id: string;
+  label: { type: "plain_text"; text: string };
+  optional?: boolean;
+  element: ModalElement;
+};
 
 /** Slack rejects a section block over 3000 characters. */
 const MAX_SECTION_TEXT = 2900;
@@ -161,8 +181,24 @@ const MAX_BLOCKS = 50;
  */
 const MAX_MENU_ROWS = 30;
 
-/** The callback_id of the move-date modal. */
+/** The callback_id of the move-date modal, and of a proposal's Edit modal. */
 const MOVE_CALLBACK = "zy_move";
+const PROP_EDIT_VIEW = "zy_prop_edit_view";
+
+/** A card's actions block is zy_prop:<proposal id>; its buttons are zy_prop_<button>. */
+const PROP_PREFIX = "zy_prop:";
+const PROP_ACTION_PREFIX = "zy_prop_";
+
+/** The order a card's buttons are drawn in, and the words they carry. */
+const PROPOSAL_LABELS: Record<ProposalButton, string> = {
+  create: "Create",
+  edit: "Edit",
+  cancel: "Cancel",
+  retry: "Retry",
+};
+
+/** The buttons that are the approval: they are the ones drawn as the card's primary action. */
+const PROPOSAL_PRIMARY: ProposalButton[] = ["create", "retry"];
 
 const LABELS: Record<ActionId, string> = {
   ack: "👍 On it",
@@ -191,9 +227,15 @@ const MAX_SELECT_OPTIONS = 100;
 
 /**
  * What a DM that is no command gets when there is no model to ask: the ask takes
- * such a DM whenever the LLM is set. `note:` is only offered when the scribe is on.
+ * such a DM whenever the LLM is set. `note:` is only offered when the scribe is
+ * on, and `add:` only when ADD_REPO and the model are both set.
  */
-export function unknownDmHint(scribe: boolean): string {
+export function unknownDmHint(scribe: boolean, add = false): string {
+  if (add) {
+    return scribe
+      ? "I didn't catch that. Type `today`, `add: …`, `note: …`, or `help`."
+      : "I didn't catch that. Type `today`, `add: …`, or `help`.";
+  }
   return scribe
     ? "I didn't catch that. Type `today`, `note: …`, or `help`."
     : "I didn't catch that. Type `today` or `help`.";
@@ -311,6 +353,30 @@ export function rowBlock(text: string, blockId: string, options: readonly RowOpt
  */
 export function rowOptions(actionIds: readonly ActionId[], target: string | null): RowOption[] {
   return actionIds.map((id) => ({ label: ROW_LABELS[id], value: id === "move" ? `move|${target ?? ""}` : id }));
+}
+
+/**
+ * A proposal card: the head and the thing it is about in one section, its one
+ * line of context, and the buttons the row still offers. The block_id names the
+ * proposal so a click finds it, and the rev rides in every button's value: a
+ * click on a card that has moved on is the rev's business, not the renderer's.
+ */
+export function cardBlocks(id: string, rev: number, card: Card): Block[] {
+  const blocks: Block[] = [section([card.head, ...card.lines].join("\n")), context(card.context)];
+  if (card.buttons.length === 0) return blocks;
+  blocks.push({
+    type: "actions",
+    block_id: `${PROP_PREFIX}${id}`,
+    elements: card.buttons.map((button) => ({
+      type: "button",
+      action_id: `${PROP_ACTION_PREFIX}${button}`,
+      text: { type: "plain_text", text: PROPOSAL_LABELS[button] },
+      value: proposalValue(id, rev),
+      // The approval is the one a person is meant to reach for.
+      ...(PROPOSAL_PRIMARY.includes(button) ? { style: "primary" as const } : {}),
+    })),
+  });
+  return blocks;
 }
 
 /**
@@ -445,6 +511,10 @@ export interface HandlerDeps {
   scribe?: ScribeDispatch | null;
   /** The ask, when the LLM is set: null answers a question with the hint again. */
   ask?: AskDispatch | null;
+  /** The add: pipeline, when ADD_REPO and the model are set: null answers like any other DM. */
+  add?: AddDispatch | null;
+  /** The proposal machinery the cards route into: absent means no card can be clicked. */
+  proposals?: ProposalDeps | null;
 }
 
 /**
@@ -472,6 +542,9 @@ export type ScribeDispatch = (dictation: ScribeDictation, ui: ScribeUi) => Promi
 
 /** The ask, called without being awaited for the same reason. */
 export type AskDispatch = (input: AskInput, ui: AskUi) => Promise<void>;
+
+/** The add: pipeline, called without being awaited: a model draft takes a while. */
+export type AddDispatch = (input: AddInput, ui: AddUi) => Promise<void>;
 
 export interface ActionClick {
   actionId: string; // raw action_id, e.g. "zy_done"
@@ -502,6 +575,9 @@ const askOn = (deps: HandlerDeps): boolean => deps.ask !== null && deps.ask !== 
 
 /** True when a dictation would be scribed: the note topic and the note: line. */
 const scribeOn = (deps: HandlerDeps): boolean => deps.scribe !== null && deps.scribe !== undefined;
+
+/** True when a sentence would be drafted into an item: ADD_REPO and the model are both set. */
+const addOn = (deps: HandlerDeps): boolean => deps.add !== null && deps.add !== undefined;
 
 /**
  * What a click has in common with a menu pick once it is parsed: the action and
@@ -773,10 +849,19 @@ export function dictationText(text: string): string | null {
   return body === "" ? null : body; // a bare "note:" is not a dictation
 }
 
+/** "add: call Dana about the renewal" -> the sentence; else null. */
+export function addText(text: string): string | null {
+  const match = /^add\s*:\s*([\s\S]*)$/i.exec(text.trim());
+  if (!match) return null;
+  const body = match[1].trim();
+  return body === "" ? null : body; // a bare "add:" is not an add
+}
+
 /**
- * A DM from ZY, in this order: a dictation is scribed; a reply under an evening ping acks
- * that ping; `today` and the manual answer; anything else is a question when a
- * model is set, and the one-line hint when it is not.
+ * A DM from ZY, in this order: a dictation is scribed and a sentence is drafted into
+ * an item; a reply under an evening ping acks that ping; `today` and the manual
+ * answer; anything else is a question when a model is set, and the one-line hint
+ * when it is not.
  */
 export async function handleMessage(deps: HandlerDeps, message: DmMessage): Promise<void> {
   if (message.userId !== deps.userId) return;
@@ -785,6 +870,14 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
   const note = dictationText(message.text);
   if (note !== null && deps.scribe) {
     void runScribe(deps, message, note);
+    return;
+  }
+
+  // An add: is the same way round, and for the same reason: typed under a ping it
+  // drafts an item about that ping, says so itself, and never acks the ping.
+  const add = addText(message.text);
+  if (add !== null && addOn(deps)) {
+    void runAdd(deps, message, add);
     return;
   }
 
@@ -822,7 +915,7 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
     return;
   }
 
-  await postMessage(deps, { channel: message.channel, text: unknownDmHint(scribeOn(deps)) });
+  await postMessage(deps, { channel: message.channel, text: unknownDmHint(scribeOn(deps), addOn(deps)) });
 }
 
 /**
@@ -879,19 +972,64 @@ async function runScribe(deps: HandlerDeps, message: DmMessage, text: string): P
 
 /** A note dictated under a ping is about that ping's item: its title is the hint. */
 async function pingHint(deps: HandlerDeps, message: DmMessage): Promise<string | null> {
+  return (await threadItem(deps, message))?.title ?? null;
+}
+
+/**
+ * The item whose evening ping the message is a reply under, read from the board,
+ * or null: this is the one board read both the scribe's hint and the add: hint are.
+ * Only an evening ping's thread names one item: every row of a briefing is
+ * recorded on the briefing's own ts, so that thread names no item in particular.
+ */
+async function threadItem(deps: HandlerDeps, message: DmMessage): Promise<Item | null> {
   if (!message.threadTs) return null;
   const parent = deps.store.findByMessage(message.channel, message.threadTs);
-  // Only an evening ping's thread names one item: every row of a briefing is
-  // recorded on the briefing's own ts, so that thread names no item in particular.
   if (!parent || parent.slot !== "E") return null;
   try {
     const board = await deps.board.fetchBoard(deps.owner, deps.number);
-    return board.items.find((item) => item.id === parent.itemId)?.title ?? null;
+    return board.items.find((item) => item.id === parent.itemId) ?? null;
   } catch (err) {
-    // The hint is a nicety: a board the bot cannot read must not stop the note.
-    deps.log(`scribe ${message.ts}: no hint, the board read failed: ${errMessage(err)}`);
+    // The hint is a nicety: a board the bot cannot read must not stop the note or the add.
+    deps.log(`hint ${message.ts}: none, the board read failed: ${errMessage(err)}`);
     return null;
   }
+}
+
+/**
+ * The add: pipeline's work, off the handler's path like the scribe's: a model
+ * draft takes longer than Slack would wait. Every error ends in the thread.
+ */
+async function runAdd(deps: HandlerDeps, message: DmMessage, text: string): Promise<void> {
+  const ui = addUi(deps.client, message);
+  try {
+    const item = await threadItem(deps, message);
+    const hint = item === null ? null : { ref: item.ref, title: item.title };
+    await deps.add?.({ ts: message.ts, text, hint }, ui);
+  } catch (err) {
+    deps.log(`add ${message.ts} failed: ${errMessage(err)}`);
+    try {
+      await ui.reply(`⚠️ could not draft the item: ${errMessage(err)}`);
+    } catch (replyErr) {
+      deps.log(`add ${message.ts}: the error reply failed too: ${errMessage(replyErr)}`);
+    }
+  }
+}
+
+/** The add: pipeline's Slack side: the drafting reply, its failure, and the card on it. */
+function addUi(client: SlackClient, message: DmMessage): AddUi {
+  return {
+    async reply(text: string): Promise<Sent> {
+      const res = await client.chat.postMessage({ channel: message.channel, text, thread_ts: message.ts });
+      if (!res.ts) throw new Error("chat.postMessage returned no ts");
+      return { channel: message.channel, ts: res.ts };
+    },
+    async edit(channel: string, ts: string, text: string): Promise<void> {
+      await client.chat.update({ channel, ts, text });
+    },
+    async card(channel: string, ts: string, card: Card, rev: number): Promise<void> {
+      await client.chat.update({ channel, ts, text: cardText(card), blocks: cardBlocks(proposalId(message.ts), rev, card) });
+    },
+  };
 }
 
 /** The bot's Slack side of one thread: the replies, edits and questions of the
@@ -1055,6 +1193,96 @@ export function moveView(meta: MoveMetadata, target: string | null): ViewsOpenAr
   };
 }
 
+/**
+ * One input of a proposal's Edit modal. Slack refuses a view whose initial_option
+ * is not one of the select's options, so a value that is not there opens on
+ * nothing: the field still holds its own option list.
+ */
+function editBlock(field: EditField): ModalBlock {
+  const label = { type: "plain_text" as const, text: field.label };
+  if (field.kind === "text") {
+    return {
+      type: "input",
+      block_id: field.name,
+      label,
+      ...(field.required ? {} : { optional: true }),
+      element: {
+        type: "plain_text_input",
+        action_id: "v",
+        max_length: field.maxLength,
+        ...(field.value === null ? {} : { initial_value: field.value }),
+      },
+    };
+  }
+  if (field.kind === "date") {
+    return {
+      type: "input",
+      block_id: field.name,
+      label,
+      optional: true,
+      element: { type: "datepicker", action_id: "v", ...(field.value === null ? {} : { initial_date: field.value }) },
+    };
+  }
+  const options: ModalOption[] = field.options.map((option) => ({
+    text: { type: "plain_text", text: option.label },
+    value: option.value,
+  }));
+  // The same object from the list, never a copy: Slack compares an initial_option
+  // with the options by value, and this is what the list itself holds.
+  const chosen = field.value === null ? undefined : options.find((option) => option.value === field.value);
+  return {
+    type: "input",
+    block_id: field.name,
+    label,
+    optional: true,
+    element: {
+      type: "static_select",
+      action_id: "v",
+      options,
+      ...(chosen === undefined ? {} : { initial_option: chosen }),
+    },
+  };
+}
+
+/**
+ * The Edit modal of a proposal: the kind's fields, one input each, in the order
+ * the card reads them. The metadata carries the id and the rev alone: the values
+ * come back from SQLite, so a modal held open for an hour still edits the draft.
+ */
+export function editView(id: string, rev: number, fields: readonly EditField[]): ViewsOpenArgs["view"] {
+  return {
+    type: "modal",
+    callback_id: PROP_EDIT_VIEW,
+    private_metadata: JSON.stringify({ id, rev }),
+    title: { type: "plain_text", text: "Edit the new item" },
+    submit: { type: "plain_text", text: "Save" },
+    close: { type: "plain_text", text: "Cancel" },
+    // Slack takes 100 blocks in a view and a proposal has 9 inputs: nothing here
+    // has to be split, and a tenth field is still well inside the limit.
+    blocks: fields.map(editBlock),
+  };
+}
+
+/** One input's answer, whichever of the three elements it came from. */
+interface ModalValue {
+  value?: string | null;
+  selected_date?: string | null;
+  selected_option?: { value: string } | null;
+}
+
+/**
+ * The modal's answers by block_id: a datepicker and a select each answer under
+ * their own key, and a field nobody touched is null, which is the empty value.
+ */
+export function editValues(state: Record<string, Record<string, ModalValue>>): Record<string, string | null> {
+  const values: Record<string, string | null> = {};
+  for (const [name, inputs] of Object.entries(state)) {
+    const input: ModalValue = inputs.v ?? {};
+    values[name] = input.selected_date ?? input.selected_option?.value ?? input.value ?? null;
+  }
+  return values;
+}
+
 function parseMetadata(raw: string | null): MoveMetadata | null {
   if (!raw) return null;
   let parsed: unknown;
@@ -1138,8 +1366,8 @@ export async function handleMoveSubmit(deps: HandlerDeps, submit: MoveSubmit): P
   let contentId: string | null;
   try {
     const board = await deps.board.fetchBoard(deps.owner, deps.number);
-    const field = board.fields.get("Target date");
-    if (!field) throw new Error('the board has no "Target date" field');
+    const field = board.fields.get(FIELD.target);
+    if (!field) throw new Error(`the board has no "${FIELD.target}" field`);
     const item = board.items.find((i) => i.id === ping.itemId);
     old = item?.target ?? null;
     contentId = item?.contentId ?? null;
@@ -1181,19 +1409,217 @@ export async function handleMoveSubmit(deps: HandlerDeps, submit: MoveSubmit): P
   await updateMessage(deps, meta.channel, meta.ts, `${meta.text}\n→ ${line}`, [section(meta.text), context(`→ ${line}`)]);
 }
 
+/** A click on one of a card's buttons. The ack is the caller's job: a write follows. */
+export interface ProposalActionClick {
+  actionId: string; // "zy_prop_create" | "zy_prop_edit" | "zy_prop_cancel" | "zy_prop_retry"
+  value: string | null; // proposalValue(id, rev)
+  userId: string;
+  channel: string | null;
+  ts: string | null; // the card's message
+  triggerId: string | null;
+}
+
+/** What the Edit modal posts back. The values are the inputs, by block_id. */
+export interface ProposalEditSubmit {
+  userId: string;
+  metadata: string | null; // the modal's private_metadata
+  values: Record<string, string | null>;
+}
+
+/** Where a card is and what can be done to it: everything a ProposalUi is built from. */
+interface CardAt {
+  proposals: ProposalDeps;
+  id: string;
+  channel: string;
+  ts: string;
+  triggerId: string | null;
+}
+
+/**
+ * A proposal's Slack side: the card is edited where it stands, and posted afresh
+ * in its own thread when Slack will not take the edit (an old message cannot be
+ * edited any more), which is the one the store then remembers.
+ */
+function proposalUi(deps: HandlerDeps, at: CardAt): ProposalUi {
+  const { channel, ts } = at;
+  return {
+    async redraw(card: Card, rev: number): Promise<void> {
+      await deps.client.chat.update({ channel, ts, text: cardText(card), blocks: cardBlocks(at.id, rev, card) });
+    },
+    async repost(card: Card, rev: number): Promise<void> {
+      const res = await deps.client.chat.postMessage({
+        channel,
+        text: cardText(card),
+        blocks: cardBlocks(at.id, rev, card),
+        thread_ts: ts,
+      });
+      if (!res.ts) throw new Error("chat.postMessage returned no ts");
+      // The new card is the one later clicks and edits find.
+      at.proposals.store.updateProposal(at.id, { channel, messageTs: res.ts });
+    },
+    async reply(text: string): Promise<void> {
+      await deps.client.chat.postMessage({ channel, text, thread_ts: ts });
+    },
+    async openEdit(id: string, rev: number, fields: EditField[]): Promise<void> {
+      if (at.triggerId === null) {
+        deps.log(`proposal ${id}: the click carries no trigger_id, the modal cannot open`);
+        return;
+      }
+      await deps.client.views.open({ trigger_id: at.triggerId, view: editView(id, rev, fields) });
+    },
+  };
+}
+
+/** "zy_prop_create" -> create; anything else -> null. */
+function parseProposalAction(actionId: string): ProposalButton | null {
+  if (!actionId.startsWith(PROP_ACTION_PREFIX)) return null;
+  const word = actionId.slice(PROP_ACTION_PREFIX.length);
+  return Object.prototype.hasOwnProperty.call(PROPOSAL_LABELS, word) ? (word as ProposalButton) : null;
+}
+
+/**
+ * A click on a card's buttons: the approval, the edit, the cancel or the retry.
+ * The writes behind Create are longer than Slack's three seconds, so the caller
+ * acks first; everything after that is the proposal machinery's.
+ */
+export async function handleProposalAction(deps: HandlerDeps, click: ProposalActionClick): Promise<void> {
+  const proposals = deps.proposals;
+  if (proposals === null || proposals === undefined) {
+    deps.log(`proposal click ${click.actionId}: no proposals are set up, this click does nothing`);
+    return;
+  }
+  const action = parseProposalAction(click.actionId);
+  const target = parseProposalValue(click.value);
+  const { channel, ts } = click;
+  if (action === null || target === null || !channel || !ts) {
+    deps.log(`proposal click ${click.actionId}: its value names no card, this click does nothing`);
+    return;
+  }
+  await proposalClick(proposals, {
+    action,
+    id: target.id,
+    rev: target.rev,
+    userId: click.userId,
+    triggerId: click.triggerId,
+    ui: proposalUi(deps, { proposals, id: target.id, channel, ts, triggerId: click.triggerId }),
+  });
+}
+
+/** The Edit modal's metadata: the proposal and the rev it was opened on, and nothing else. */
+function parseEditMetadata(raw: string | null): { id: string; rev: number } | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null; // a metadata we cannot read is a proposal we cannot edit
+  }
+  if (!isRecord(parsed)) return null;
+  const { id, rev } = parsed;
+  if (typeof id !== "string" || typeof rev !== "number" || !Number.isInteger(rev) || rev < 0) return null;
+  return { id, rev };
+}
+
+/**
+ * The Edit modal's submit: the spec turns the values into a payload and the store
+ * takes it. The card is redrawn where the row says it is, never where the modal
+ * says: a modal carries no channel, and its rev is the card's own.
+ */
+export async function handleProposalEdit(deps: HandlerDeps, submit: ProposalEditSubmit): Promise<void> {
+  const proposals = deps.proposals;
+  if (proposals === null || proposals === undefined) {
+    deps.log("proposal edit: no proposals are set up, this edit does nothing");
+    return;
+  }
+  const meta = parseEditMetadata(submit.metadata);
+  if (meta === null) {
+    deps.log("proposal edit: private_metadata holds no proposal");
+    return;
+  }
+  const row = proposals.store.findProposal(meta.id);
+  if (row === null || row.channel === null || row.messageTs === null) {
+    deps.log(`proposal ${meta.id}: no card to redraw, this edit does nothing`);
+    return;
+  }
+  const ui = proposalUi(deps, { proposals, id: meta.id, channel: row.channel, ts: row.messageTs, triggerId: null });
+  await proposalEdited(proposals, {
+    id: meta.id,
+    rev: meta.rev,
+    userId: submit.userId,
+    values: submit.values,
+    // A submit opens nothing: there is no trigger_id in a view submission.
+    ui: { ...ui, openEdit: async () => {} },
+  });
+}
+
+/**
+ * A card the process was restarted out from under: redrawn where the store says
+ * it is, so its buttons come back (or, for a cancelled draft, so it says what
+ * stopped it) instead of lying there in `creating…`. A failure is a log line:
+ * nobody clicked, and there is no thread to say it in.
+ */
+export async function redrawProposalCard(deps: HandlerDeps, id: string): Promise<void> {
+  const proposals = deps.proposals;
+  if (proposals === null || proposals === undefined) {
+    deps.log(`proposal ${id}: no proposals are set up, there is no card to redraw`);
+    return;
+  }
+  const row = proposals.store.findProposal(id);
+  if (row === null) {
+    deps.log(`proposal ${id}: unknown, there is no card to redraw`);
+    return;
+  }
+  const spec = proposals.specs[row.kind];
+  if (spec === undefined) {
+    deps.log(`proposal ${row.id}: kind ${row.kind} is not one this bot applies, there is no card to redraw`);
+    return;
+  }
+  if (row.channel === null || row.messageTs === null) {
+    deps.log(`proposal ${row.id}: the row names no card, there is nothing to redraw`);
+    return;
+  }
+  const ui = proposalUi(deps, { proposals, id: row.id, channel: row.channel, ts: row.messageTs, triggerId: null });
+  try {
+    await ui.redraw(spec.card(row), row.rev);
+  } catch (err) {
+    deps.log(`proposal ${row.id}: the redraw failed: ${errMessage(err)}`);
+  }
+}
+
+/**
+ * A click or a submit that threw: the log line, and the thread, where a click's
+ * failure belongs. Never thrown out: an unhandled rejection is a socket that dies
+ * on a message nobody is watching.
+ */
+async function reportClickFailure(
+  deps: HandlerDeps,
+  channel: string | null,
+  ts: string | null,
+  what: string,
+  err: unknown,
+): Promise<void> {
+  deps.log(`${what} failed: ${errMessage(err)}`);
+  if (channel === null || ts === null) return;
+  try {
+    await deps.client.chat.postMessage({ channel, text: `⚠️ ${what} failed: ${errMessage(err)}`, thread_ts: ts });
+  } catch (replyErr) {
+    deps.log(`${what}: the error reply failed too: ${errMessage(replyErr)}`);
+  }
+}
+
 /** Performs the board write behind a button and returns the result line. */
 async function applyAction(deps: HandlerDeps, actionId: Exclude<ActionId, "move">, ping: PingRecord): Promise<string> {
   if (actionId === "ack") return "acked";
   const board = await deps.board.fetchBoard(deps.owner, deps.number);
   if (actionId === "done") {
-    const field = board.fields.get("Status");
+    const field = board.fields.get(FIELD.status);
     const option = field?.options?.get(STATUS.done);
-    if (!field || !option) throw new Error(`the board has no "Status" field with a "${STATUS.done}" option`);
+    if (!field || !option) throw new Error(`the board has no "${FIELD.status}" field with a "${STATUS.done}" option`);
     await deps.board.setSingleSelect(board.projectId, ping.itemId, field.id, option);
     return `marked ${STATUS.done} on the board`;
   }
-  const field = board.fields.get("Next touch");
-  if (!field) throw new Error('the board has no "Next touch" field');
+  const field = board.fields.get(FIELD.nextTouch);
+  if (!field) throw new Error(`the board has no "${FIELD.nextTouch}" field`);
   const date = touchDate(localNow(deps.now(), TZ).date, actionId);
   await deps.board.setDate(board.projectId, ping.itemId, field.id, date);
   return `next touch ${fmtDate(date)}`;
@@ -1215,6 +1641,8 @@ export interface SlackBotOptions {
   scribe?: ScribeDeps | null;
   /** The ask, or null: without it a question gets the hint instead of an answer. */
   ask?: AskDeps | null;
+  /** The add: pipeline, or null: without it "add: ..." is answered like any other DM. */
+  add?: AddDeps | null;
 }
 
 /** Slack's "the blocks you sent are no good", as Bolt throws it. */
@@ -1231,6 +1659,7 @@ export class SlackBot implements Sender {
     this.#userId = options.userId;
     const scribe = options.scribe ?? null;
     const ask = options.ask ?? null;
+    const add = options.add ?? null;
     this.#scribe = scribe;
     this.#rows = rowEdits();
     this.#deps = {
@@ -1245,6 +1674,12 @@ export class SlackBot implements Sender {
       rows: this.#rows,
       scribe: scribe === null ? null : (dictation, ui) => scribeHandler(scribe, dictation, ui),
       ask: ask === null ? null : (input, ui) => askQuestion(ask, input, ui),
+      add: add === null ? null : (input, ui) => addHandler(add, input, ui),
+      // The cards are only clickable when there is a pipeline behind them.
+      proposals:
+        add === null
+          ? null
+          : { store: add.proposals, specs: { add: addSpec(add) }, userId: options.userId, now: options.now, log: options.log },
     };
     this.app = new App({
       token: options.botToken,
@@ -1301,6 +1736,27 @@ export class SlackBot implements Sender {
         );
         return;
       }
+      const actionId = action.action_id;
+      if (actionId.startsWith(PROP_ACTION_PREFIX)) {
+        // A card's button: Create writes GitHub, so it is not awaited here.
+        const channel = body.channel?.id ?? null;
+        const ts = body.message?.ts ?? null;
+        void handleProposalAction(
+          { ...this.#deps, client },
+          {
+            actionId,
+            value: "value" in action && typeof action.value === "string" ? action.value : null,
+            userId: body.user.id,
+            channel,
+            ts,
+            triggerId: body.trigger_id ?? null,
+          },
+        ).catch((err: unknown) => {
+          // A click's failure ends in the card's thread, never in a rejection.
+          void reportClickFailure({ ...this.#deps, client }, channel, ts, `proposal click ${actionId}`, err);
+        });
+        return;
+      }
       await handleAction(
         { ...this.#deps, client },
         {
@@ -1330,6 +1786,22 @@ export class SlackBot implements Sender {
           reason: values.reason?.reason?.value ?? null,
         },
       );
+    });
+
+    // A proposal's Edit modal: acked first, then saved. The card it redraws is
+    // found in the store, so nothing here waits on a board read either.
+    this.app.view(PROP_EDIT_VIEW, async ({ ack, body, view, client }) => {
+      await ack();
+      void handleProposalEdit(
+        { ...this.#deps, client },
+        {
+          userId: body.user.id,
+          metadata: view.private_metadata ?? null,
+          values: editValues(view.state.values),
+        },
+      ).catch((err: unknown) => {
+        void reportClickFailure({ ...this.#deps, client }, null, null, "proposal edit", err);
+      });
     });
 
     this.app.message(async ({ message, client }) => {
@@ -1371,6 +1843,14 @@ export class SlackBot implements Sender {
     await this.app.init();
     const res = await this.app.client.auth.test();
     return { user: res.user, team: res.team };
+  }
+
+  /**
+   * A card a restart interrupted: redrawn through this bot's own Slack wiring, so
+   * the row that names a channel and a ts gets the card it should be showing.
+   */
+  async redrawCard(id: string): Promise<void> {
+    await redrawProposalCard({ ...this.#deps, client: this.app.client }, id);
   }
 
   async sendDm(text: string): Promise<Sent> {

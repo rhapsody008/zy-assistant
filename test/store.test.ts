@@ -159,6 +159,159 @@ test("a dictation left writing by a dead process can be claimed again after a re
   assert.equal(second.claimDictation("1.1", ["failed"]), true);
 });
 
+test("a proposal is stored as it was typed, and a redelivery does not overwrite it", () => {
+  const store = openStore(":memory:");
+  const first = { id: "add:1700.1", kind: "add", source: "Acme pilots the VPC in January", createdAt: "2026-11-29T01:00:00.000Z" };
+  assert.equal(store.recordProposal(first), true);
+  assert.equal(store.recordProposal({ ...first, source: "other words", createdAt: "2026-11-29T01:05:00.000Z" }), false, "the id is the dedupe");
+
+  assert.deepEqual(store.findProposal("add:1700.1"), {
+    id: "add:1700.1",
+    kind: "add",
+    status: "drafting",
+    source: "Acme pilots the VPC in January",
+    payload: null,
+    context: null,
+    progress: null,
+    rev: 0,
+    channel: null,
+    messageTs: null,
+    createdAt: "2026-11-29T01:00:00.000Z",
+    error: null,
+  });
+  assert.equal(store.findProposal("add:nope"), null);
+  store.close();
+});
+
+test("a proposal is claimed once: a second click, or a second delivery, gets false", () => {
+  const store = openStore(":memory:");
+  store.recordProposal({ id: "add:1700.1", kind: "add", source: "ten nodes", createdAt: "2026-11-29T01:00:00.000Z" });
+
+  assert.equal(store.claimProposal("add:1700.1", ["open"], "applying"), false, "a draft has no card to click yet");
+  assert.equal(store.claimProposal("add:1700.1", ["drafting"], "open"), true, "the card is drawn once");
+  assert.equal(store.findProposal("add:1700.1")?.status, "open");
+  assert.equal(store.claimProposal("add:1700.1", ["drafting"], "open"), false, "a redelivery does not draw a second card");
+
+  assert.equal(store.claimProposal("add:1700.1", ["open"], "applying"), true, "Create takes it");
+  assert.equal(store.findProposal("add:1700.1")?.status, "applying");
+  assert.equal(store.claimProposal("add:1700.1", ["open"], "applying"), false, "the second click of a double click loses");
+  assert.equal(store.claimProposal("add:1700.1", ["open"], "cancelled"), false, "a cancel racing a Create loses too");
+
+  assert.equal(store.claimProposal("add:nope", ["open"], "applying"), false);
+  assert.equal(store.claimProposal("add:1700.1", [], "applying"), false);
+  store.close();
+});
+
+test("a proposal is patched field by field, and what is not patched stays", () => {
+  const store = openStore(":memory:");
+  store.recordProposal({ id: "add:1700.1", kind: "add", source: "ten nodes", createdAt: "2026-11-29T01:00:00.000Z" });
+
+  store.updateProposal("add:1700.1", { payload: '{"title":"Acme VPC"}', context: '{"items":[]}' });
+  assert.equal(store.findProposal("add:1700.1")?.payload, '{"title":"Acme VPC"}');
+  assert.equal(store.findProposal("add:1700.1")?.context, '{"items":[]}');
+  assert.equal(store.findProposal("add:1700.1")?.status, "drafting", "a patch leaves the status where it was");
+  assert.equal(store.findProposal("add:1700.1")?.source, "ten nodes");
+
+  store.updateProposal("add:1700.1", { status: "open", channel: "D123", messageTs: "1700.5" });
+  const row = store.findProposal("add:1700.1");
+  assert.equal(row?.status, "open");
+  assert.equal(row?.channel, "D123");
+  assert.equal(row?.messageTs, "1700.5");
+  assert.equal(row?.payload, '{"title":"Acme VPC"}', "the card's payload survives the status change");
+
+  store.updateProposal("add:1700.1", { progress: '{"written":[1]}' });
+  assert.equal(store.findProposal("add:1700.1")?.progress, '{"written":[1]}');
+  store.updateProposal("add:1700.1", { progress: null });
+  assert.equal(store.findProposal("add:1700.1")?.progress, null, "a null in the patch clears the field");
+
+  store.updateProposal("add:1700.1", {});
+  assert.equal(store.findProposal("add:1700.1")?.status, "open", "an empty patch changes nothing");
+  assert.equal(store.findProposal("add:1700.1")?.rev, 0, "and a patch never moves the rev");
+  store.close();
+});
+
+test("an edit bumps the rev, and one on a card that has moved on is refused", () => {
+  const store = openStore(":memory:");
+  const id = "add:1700.1";
+  store.recordProposal({ id, kind: "add", source: "ten nodes", createdAt: "2026-11-29T01:00:00.000Z" });
+
+  assert.equal(store.editProposal(id, 0, '{"title":"x"}'), false, "a draft has no card to edit");
+  store.claimProposal(id, ["drafting"], "open");
+  assert.equal(store.editProposal(id, 0, '{"title":"Acme VPC"}'), true);
+  assert.equal(store.findProposal(id)?.rev, 1);
+  assert.equal(store.findProposal(id)?.payload, '{"title":"Acme VPC"}');
+
+  assert.equal(store.editProposal(id, 0, '{"title":"stale"}'), false, "a stale rev is a card that has moved on");
+  assert.equal(store.findProposal(id)?.payload, '{"title":"Acme VPC"}', "a refused edit writes nothing");
+  assert.equal(store.editProposal(id, 1, '{"title":"Globex VPC"}'), true);
+  assert.equal(store.findProposal(id)?.rev, 2);
+
+  store.updateProposal(id, { progress: '{"written":[0]}' });
+  assert.equal(store.editProposal(id, 2, '{"title":"mid-apply"}'), false, "the writes have started");
+  store.updateProposal(id, { progress: null });
+
+  store.updateProposal(id, { status: "cancelled" });
+  assert.equal(store.editProposal(id, 2, '{"title":"after cancel"}'), false, "a cancelled card is not edited");
+  assert.equal(store.findProposal(id)?.payload, '{"title":"Globex VPC"}');
+  store.close();
+});
+
+test("a proposal left mid-life by a dead process comes back after a restart", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { openStore } = await import("../src/store.ts");
+  const path = join(mkdtempSync(join(tmpdir(), "zya-")), "s.db");
+  const first = openStore(path);
+  first.recordProposal({ id: "add:1.1", kind: "add", source: "x", createdAt: "2026-11-29T00:00:00.000Z" });
+  assert.equal(first.claimProposal("add:1.1", ["drafting"], "open"), true);
+  assert.equal(first.claimProposal("add:1.1", ["open"], "applying"), true);
+  first.updateProposal("add:1.1", { progress: '{"written":[1]}' });
+  first.recordProposal({ id: "add:2.2", kind: "add", source: "y", createdAt: "2026-11-29T00:01:00.000Z" });
+  first.close?.();
+
+  const second = openStore(path);
+  const applying = second.findProposal("add:1.1");
+  assert.equal(applying?.status, "open", "the card is still on screen");
+  assert.equal(applying?.error, "interrupted by a restart");
+  assert.equal(applying?.progress, '{"written":[1]}', "the writes already done are kept, so the retry resumes");
+  assert.equal(second.claimProposal("add:1.1", ["open"], "applying"), true, "and the next click takes it again");
+
+  const drafting = second.findProposal("add:2.2");
+  assert.equal(drafting?.status, "cancelled", "no card was ever drawn, so there is nothing to come back to");
+  assert.equal(drafting?.error, "interrupted by a restart");
+  assert.equal(second.claimProposal("add:2.2", ["drafting"], "open"), false, "and a late draft does not revive it");
+});
+
+test("a restart hands back the rows it reset, in the order it reset them, once", async () => {
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const path = join(mkdtempSync(join(tmpdir(), "zya-")), "s.db");
+  const first = openStore(path);
+  // A draft that never reached a card, an apply that was in flight, and one that was over.
+  first.recordProposal({ id: "add:d", kind: "add", source: "x", createdAt: "2026-11-29T00:00:00.000Z" });
+  first.recordProposal({ id: "add:a", kind: "add", source: "y", createdAt: "2026-11-29T00:01:00.000Z" });
+  assert.equal(first.claimProposal("add:a", ["drafting"], "open"), true);
+  assert.equal(first.claimProposal("add:a", ["open"], "applying"), true);
+  first.recordProposal({ id: "add:done", kind: "add", source: "z", createdAt: "2026-11-29T00:02:00.000Z" });
+  assert.equal(first.claimProposal("add:done", ["drafting"], "done"), true);
+  first.close();
+
+  const second = openStore(path);
+
+  assert.deepEqual(
+    second.interrupted().map((row) => [row.id, row.status, row.error]),
+    [
+      ["add:a", "open", "interrupted by a restart"],
+      ["add:d", "cancelled", "interrupted by a restart"],
+    ],
+    "the applies it reopened, then the drafts it cancelled, and nothing that was over",
+  );
+  assert.deepEqual(second.interrupted(), [], "the list is handed back once");
+  second.close();
+});
+
 test("an answered question comes back for the thread it was asked in, oldest first", () => {
   const store = openStore(":memory:");
   store.recordAsk({ ts: "a1", threadTs: "q1", question: "how is Acme?", answer: "On track.", createdAt: "2026-11-27T01:00:00.000Z" });

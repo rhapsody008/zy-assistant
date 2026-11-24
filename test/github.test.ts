@@ -1,5 +1,6 @@
 // GraphQL mapping: field names, refs, the closed -> Done rule, the draft item,
-// the optional fields, the parent issue and the max updatedAt. One fake page, no
+// the optional fields, the parent issue and the max updatedAt; then the writes a
+// proposal's Apply makes, the one REST create included. One fake page, no
 // network. Synthetic board: "Acme" and the repo "demo".
 
 import assert from "node:assert/strict";
@@ -213,4 +214,205 @@ test("a failed addComment is an error, not a silent drop", async () => {
     new Response(JSON.stringify({ errors: [{ message: "Could not resolve to a node" }] }), { status: 200 }),
   );
   await assert.rejects(() => board.addComment("I_12", "body"), /GitHub GraphQL: Could not resolve to a node/);
+});
+
+interface WriteCall {
+  url: string;
+  init: RequestInit;
+}
+
+/** A fake GitHub answering every call with one canned response. */
+function fakeAnswer(status: number, body: unknown): { calls: WriteCall[]; fetchFn: FetchLike } {
+  const calls: WriteCall[] = [];
+  const fetchFn: FetchLike = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(typeof body === "string" ? body : JSON.stringify(body), { status });
+  };
+  return { calls, fetchFn };
+}
+
+/** The query and variables of a write call, as the client sent them. */
+function sentGraphQL(call: WriteCall): { query: string; variables: Record<string, unknown> } {
+  return JSON.parse(String(call.init.body)) as { query: string; variables: Record<string, unknown> };
+}
+
+test("createIssue posts the title and the body to the repo's issues and returns the node id, the number and the url", async () => {
+  const { calls, fetchFn } = fakeAnswer(201, {
+    node_id: "I_31",
+    number: 31,
+    html_url: "https://github.com/demo/notes/issues/31",
+  });
+
+  const created = await createBoardClient("test-token", fetchFn).createIssue(
+    "demo/notes",
+    "Chase Acme on the renewal",
+    "Next action: chase Acme by 2026-12-02",
+  );
+
+  assert.deepEqual(created, { id: "I_31", number: 31, url: "https://github.com/demo/notes/issues/31" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.github.com/repos/demo/notes/issues");
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(calls[0].init.headers, {
+    authorization: "Bearer test-token",
+    accept: "application/vnd.github+json",
+    "content-type": "application/json",
+  });
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {
+    title: "Chase Acme on the renewal",
+    body: "Next action: chase Acme by 2026-12-02",
+  });
+  assert.ok(calls[0].init.signal instanceof AbortSignal, "every call carries a timeout");
+});
+
+test("a failed createIssue throws the status and 200 characters of the body, and never the token", async () => {
+  const failure = JSON.stringify({ message: `Resource not accessible by integration ${"x".repeat(300)}` });
+  const { fetchFn } = fakeAnswer(403, failure);
+
+  const error = await createBoardClient("test-token", fetchFn).createIssue("demo/notes", "A title", "A body").then(
+    () => assert.fail("a 403 is not a silent success"),
+    (e: Error) => e,
+  );
+  assert.equal(error.message, `GitHub API 403: ${failure.slice(0, 200)}`, "the card gets the status and the body, cut short");
+  assert.ok(!error.message.includes("test-token"), "the token is in a header only, never in what the card shows");
+});
+
+test("createIssue throws when the response holds no node id", async () => {
+  const { fetchFn } = fakeAnswer(201, { number: 31, html_url: "https://github.com/demo/notes/issues/31" });
+
+  await assert.rejects(
+    () => createBoardClient("test-token", fetchFn).createIssue("demo/notes", "A title", "A body"),
+    /createIssue: the response holds no node_id/,
+  );
+});
+
+test("createIssue refuses a repo that is not owner/repo before any request", async () => {
+  const { calls, fetchFn } = fakeAnswer(201, { node_id: "I_31", number: 31, html_url: "https://github.com/demo/notes/issues/31" });
+
+  await assert.rejects(
+    () => createBoardClient("test-token", fetchFn).createIssue("demo", "A title", "A body"),
+    /createIssue: refusing the repo "demo"/,
+  );
+  assert.equal(calls.length, 0, "a mistyped repo never reaches GitHub");
+});
+
+test("findIssue reads the newest issues of the repo and returns the one whose body carries the marker", async () => {
+  const listed = [
+    { node_id: "I_40", number: 40, html_url: "https://github.com/demo/notes/issues/40", body: "no marker here" },
+    // The issues endpoint lists pull requests too, and one of them is no issue to adopt.
+    { node_id: "I_41", number: 41, html_url: "https://github.com/demo/notes/pull/41", body: "x", pull_request: { url: "u" } },
+    {
+      node_id: "I_42",
+      number: 42,
+      html_url: "https://github.com/demo/notes/issues/42",
+      body: "```text\ncall Dana\n```\n\n_Added by zy-assistant from Slack on 2026-11-25._\n<!-- zy-assistant:add:1700.1 -->",
+    },
+  ];
+  const { calls, fetchFn } = fakeAnswer(200, listed);
+
+  const found = await createBoardClient("test-token", fetchFn).findIssue("demo/notes", "add:1700.1");
+
+  assert.deepEqual(found, { id: "I_42", number: 42, url: "https://github.com/demo/notes/issues/42" });
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].url,
+    "https://api.github.com/repos/demo/notes/issues?state=all&sort=created&direction=desc&per_page=100",
+    "the newest issues first, the ones already in the project included",
+  );
+  assert.equal(calls[0].init.method, undefined, "a read, not a write");
+  assert.deepEqual(calls[0].init.headers, {
+    authorization: "Bearer test-token",
+    accept: "application/vnd.github+json",
+  });
+  assert.ok(calls[0].init.signal instanceof AbortSignal, "a lookup carries the same timeout");
+});
+
+test("findIssue is null when no issue carries the marker or the repo answers 404", async () => {
+  const none = fakeAnswer(200, [
+    { node_id: "I_40", number: 40, html_url: "u", body: "no marker here" },
+    { node_id: "I_41", number: 41, html_url: "u", body: null },
+  ]);
+  assert.equal(await createBoardClient("test-token", none.fetchFn).findIssue("demo/notes", "add:1700.1"), null);
+
+  const missing = fakeAnswer(404, { message: "Not Found" });
+  assert.equal(
+    await createBoardClient("test-token", missing.fetchFn).findIssue("demo/notes", "add:1700.1"),
+    null,
+    "a 404 is a repo with no such issue, not a failure",
+  );
+});
+
+test("findIssue refuses a repo that is not owner/repo before any request", async () => {
+  const { calls, fetchFn } = fakeAnswer(200, []);
+
+  await assert.rejects(
+    () => createBoardClient("test-token", fetchFn).findIssue("demo", "add:1700.1"),
+    /findIssue: refusing the repo "demo"/,
+  );
+  assert.equal(calls.length, 0, "a mistyped repo never reaches GitHub");
+});
+
+test("addToProject sends the project and the content ids to addProjectV2ItemById and returns the item id", async () => {
+  const { calls, fetchFn } = fakeAnswer(200, { data: { addProjectV2ItemById: { item: { id: "ITEM_31" } } } });
+
+  const itemId = await createBoardClient("test-token", fetchFn).addToProject("PVT_1", "I_31");
+
+  assert.equal(itemId, "ITEM_31");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.github.com/graphql");
+  assert.equal((calls[0].init.headers as Record<string, string>).authorization, "Bearer test-token");
+  assert.ok(calls[0].init.signal instanceof AbortSignal, "a mutation that hangs fails the click instead of freezing the card");
+  const body = sentGraphQL(calls[0]);
+  assert.match(body.query, /mutation AddToProject\(\$project: ID!, \$content: ID!\)/);
+  assert.match(body.query, /addProjectV2ItemById\(input: \{ projectId: \$project, contentId: \$content \}\)/);
+  assert.deepEqual(body.variables, { project: "PVT_1", content: "I_31" });
+});
+
+test("setText writes a text field with the SetText mutation", async () => {
+  const { calls, fetchFn } = fakeAnswer(200, { data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "ITEM_31" } } } });
+
+  await createBoardClient("test-token", fetchFn).setText("PVT_1", "ITEM_31", "F_ACTION", "chase Acme");
+
+  assert.equal(calls.length, 1);
+  const body = sentGraphQL(calls[0]);
+  assert.match(body.query, /mutation SetText\(\$project: ID!, \$item: ID!, \$field: ID!, \$text: String!\)/);
+  assert.match(
+    body.query,
+    /updateProjectV2ItemFieldValue\(input: \{ projectId: \$project, itemId: \$item, fieldId: \$field, value: \{ text: \$text \} \}\)/,
+  );
+  assert.deepEqual(body.variables, { project: "PVT_1", item: "ITEM_31", field: "F_ACTION", text: "chase Acme" });
+});
+
+test("addSubIssue links the new issue to its parent engagement issue", async () => {
+  const { calls, fetchFn } = fakeAnswer(200, { data: { addSubIssue: { issue: { id: "I_9" }, subIssue: { id: "I_31" } } } });
+
+  await createBoardClient("test-token", fetchFn).addSubIssue("I_9", "I_31");
+
+  assert.equal(calls.length, 1);
+  const body = sentGraphQL(calls[0]);
+  assert.match(body.query, /mutation AddSubIssue\(\$issue: ID!, \$subIssue: ID!\)/);
+  assert.match(body.query, /addSubIssue\(input: \{ issueId: \$issue, subIssueId: \$subIssue \}\)/);
+  assert.deepEqual(body.variables, { issue: "I_9", subIssue: "I_31" });
+});
+
+test("a write whose response holds no value is an error, not a silent success", async () => {
+  const boardOf = (payload: unknown) => createBoardClient("test-token", fakeAnswer(200, { data: payload }).fetchFn);
+
+  await assert.rejects(
+    () => boardOf({ addProjectV2ItemById: { item: null } }).addToProject("PVT_1", "I_31"),
+    /addProjectV2ItemById: the response holds no item id/,
+  );
+  await assert.rejects(
+    () => boardOf({ addSubIssue: { issue: { id: "I_9" }, subIssue: null } }).addSubIssue("I_9", "I_31"),
+    /addSubIssue: the response holds no subIssue id/,
+  );
+});
+
+test("a GraphQL errors array still throws through a write", async () => {
+  const { fetchFn } = fakeAnswer(200, { errors: [{ message: "Could not resolve to a node with the global id of 'I_31'" }] });
+
+  await assert.rejects(
+    () => createBoardClient("test-token", fetchFn).addToProject("PVT_1", "I_31"),
+    /GitHub GraphQL: Could not resolve to a node/,
+  );
 });

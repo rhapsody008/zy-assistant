@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { loadConfig, SCRIBE_VARS, scribeMissing } from "../src/config.ts";
+import { addMissing, ADD_VARS, loadConfig, SCRIBE_VARS, scribeMissing } from "../src/config.ts";
 
 const BASE = { GITHUB_TOKEN: "test-token" };
 
@@ -129,4 +129,40 @@ test("with no scribe variable set, check has nothing to say about the scribe", (
   // Half-configured is not silence: check names what is missing.
   assert.deepEqual(scribeMissing({ NOTES_REPO: "demo/notes" }), ["LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"]);
   assert.deepEqual(scribeMissing({ ...LLM, NOTES_REPO: "demo/notes" }), []);
+});
+
+const ADD = { ADD_REPO: "demo/notes" };
+
+test("ADD_REPO without the model is an error that names the LLM variables", () => {
+  assert.throws(
+    () => loadConfig("dry-run", { ...BASE, ...ADD }),
+    /missing env LLM_BASE_URL, LLM_API_KEY, LLM_MODEL \(add: needs all of LLM_BASE_URL, LLM_API_KEY, LLM_MODEL\)/,
+  );
+});
+
+test("add: is on with ADD_REPO and the model, and reads the config's own model", () => {
+  const config = loadConfig("dry-run", { ...BASE, ...LLM, ...ADD });
+
+  assert.deepEqual(config.add, { llm: config.llm, repo: "demo/notes" });
+  assert.equal(config.add?.llm, config.llm, "the model is not built twice");
+  assert.equal(config.add?.llm.model, "zy-pi-uep");
+  assert.equal(config.scribe, null, "add: needs no notes repo");
+});
+
+test("add: is off when ADD_REPO is unset, even with the model", () => {
+  assert.equal(loadConfig("dry-run", { ...BASE }).add, null, "nothing set");
+  assert.equal(loadConfig("dry-run", { ...BASE, ...LLM }).add, null, "the model alone is the ask, not add:");
+});
+
+test("ADD_REPO has to be owner/repo", () => {
+  for (const value of ["demo", "a/b/c", "https://github.com/demo/notes", "a/"]) {
+    assert.throws(() => loadConfig("dry-run", { ...BASE, ...LLM, ADD_REPO: value }), /ADD_REPO must be owner\/repo/);
+  }
+});
+
+test("addMissing names what add: lacks, and nothing once it is all set", () => {
+  assert.deepEqual(ADD_VARS, ["LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "ADD_REPO"]);
+  assert.deepEqual(addMissing({}), [...ADD_VARS]);
+  assert.deepEqual(addMissing({ ...ADD }), ["LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"]);
+  assert.deepEqual(addMissing({ ...LLM, ...ADD }), []);
 });

@@ -1,9 +1,10 @@
 // State: one SQLite file. What was pinged (and whether it was acked), which
 // briefings went out, which slots already ran, how often a failing slot has been
-// retried, every dictation the scribe has not finished with yet, and the
-// questions the DM has taken and answered (the claims that dedupe a redelivery,
-// and the answers a follow-up in their thread quotes). `:memory:` is accepted so
-// tests never touch the disk.
+// retried, every dictation the scribe has not finished with yet, the questions
+// the DM has taken and answered (the claims that dedupe a redelivery, and the
+// answers a follow-up in their thread quotes), and the proposals the DM has
+// drafted and is waiting on a click for. `:memory:` is accepted so tests never
+// touch the disk.
 
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -68,6 +69,56 @@ export interface AskRecord {
   question: string;
   answer: string;
   createdAt: string; // ISO
+}
+
+/** Where a proposal is in its life: drafted, waiting for a click, being applied, or over. */
+export type ProposalStatus = "drafting" | "open" | "applying" | "done" | "cancelled";
+
+/** One proposal: what the bot put on a card, and what has been written for it so far. */
+export interface Proposal {
+  id: string; // "<kind>:<source key>", e.g. "add:<slack message ts>": the redelivery dedupe
+  kind: string;
+  status: ProposalStatus;
+  source: string; // the words the proposal came from, verbatim
+  payload: string | null; // JSON: what the card shows, and what Apply writes
+  context: string | null; // JSON: the board facts it was drafted against, for the card and the Edit modal
+  progress: string | null; // JSON: the writes already done, so a retry never writes twice
+  rev: number; // +1 per edit: a click on a card that has moved on is refused
+  channel: string | null; // where the card is, for a redraw after a restart or a modal
+  messageTs: string | null;
+  createdAt: string; // ISO
+  error: string | null;
+}
+
+/** Only the fields being changed: a status stays until something sets it. */
+export interface ProposalPatch {
+  status?: ProposalStatus;
+  payload?: string | null;
+  context?: string | null;
+  progress?: string | null;
+  channel?: string | null;
+  messageTs?: string | null;
+  error?: string | null;
+}
+
+export interface ProposalStore {
+  /** Stores the proposal before anything else; false when that id was stored already (a redelivery). */
+  recordProposal(proposal: { id: string; kind: string; source: string; createdAt: string }): boolean;
+  findProposal(id: string): Proposal | null;
+  /**
+   * Takes the proposal: true only for the call that moved it out of one of `from`.
+   * A second click, a second delivery, or a cancel racing a Create gets false.
+   */
+  claimProposal(id: string, from: ProposalStatus[], to: ProposalStatus): boolean;
+  updateProposal(id: string, patch: ProposalPatch): void;
+  /** An edit of an open proposal at that revision: false when it moved on (stale rev, applied, cancelled). */
+  editProposal(id: string, rev: number, payload: string): boolean;
+  /**
+   * The rows this store's constructor reset, once and in that order: the applies
+   * it reopened, then the drafts it cancelled. Their cards are still on screen
+   * with their buttons on them, so the process that comes up redraws them.
+   */
+  interrupted(): Proposal[];
 }
 
 export interface AskStore {
@@ -152,6 +203,24 @@ CREATE TABLE IF NOT EXISTS dictations (
   created_at TEXT NOT NULL,
   error TEXT
 );
+-- Every proposal, from the moment it is drafted: a card on screen outlives the
+-- process that put it there, and a click must never write the same thing twice.
+-- The id is the kind plus the key of what it came from, so a redelivered Slack
+-- event drafts one card, not two.
+CREATE TABLE IF NOT EXISTS proposals (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  source TEXT NOT NULL,
+  payload TEXT,
+  context TEXT,
+  progress TEXT,
+  rev INTEGER NOT NULL DEFAULT 0,
+  channel TEXT,
+  message_ts TEXT,
+  created_at TEXT NOT NULL,
+  error TEXT
+);
 -- Every question answered in the DM, so a reply in that thread can carry the
 -- conversation it belongs to. Pruned after a month: it is context, not a record.
 CREATE TABLE IF NOT EXISTS asks (
@@ -205,6 +274,23 @@ function toDictation(row: Row): Dictation {
   };
 }
 
+function toProposal(row: Row): Proposal {
+  return {
+    id: text(row.id),
+    kind: text(row.kind),
+    status: text(row.status) as ProposalStatus,
+    source: text(row.source),
+    payload: nullableText(row.payload),
+    context: nullableText(row.context),
+    progress: nullableText(row.progress),
+    rev: Number(row.rev),
+    channel: nullableText(row.channel),
+    messageTs: nullableText(row.message_ts),
+    createdAt: text(row.created_at),
+    error: nullableText(row.error),
+  };
+}
+
 /** `${date}:${slot}:briefing`, the same shape as a ping key. */
 export const briefingKey = (date: string, slot: Slot): string => pingKey(date, slot, "briefing");
 
@@ -218,8 +304,9 @@ function toAsk(row: Row): AskRecord {
   };
 }
 
-export class SqliteStore implements PingStore, DictationStore, AskStore {
+export class SqliteStore implements PingStore, DictationStore, AskStore, ProposalStore {
   #db: DatabaseSync;
+  #interrupted: string[]; // the ids the constructor reset, read out once
 
   constructor(dbPath: string) {
     if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
@@ -227,6 +314,26 @@ export class SqliteStore implements PingStore, DictationStore, AskStore {
     this.#db.exec(SCHEMA);
     // A write the last process never finished: hand it back to the retry button.
     this.#db.exec("UPDATE dictations SET status = 'failed', error = 'interrupted by a restart' WHERE status = 'writing'");
+    // An apply the last process never finished: the card is still there, so the
+    // next click carries on from the writes it recorded rather than repeating them.
+    // The ids are read first: those are the cards the process that starts now has
+    // to redraw, and the order is the order they are reset in.
+    const applying = this.#idsIn("applying");
+    const drafting = this.#idsIn("drafting");
+    this.#db.exec("UPDATE proposals SET status = 'open', error = 'interrupted by a restart' WHERE status = 'applying'");
+    // A draft the process never finished drawing: its ✍️ ack may well be on
+    // screen, and the startup redraw (redrawProposalCard) is what turns that ack
+    // into "interrupted", so nothing here waits for a click that never comes.
+    this.#db.exec("UPDATE proposals SET status = 'cancelled', error = 'interrupted by a restart' WHERE status = 'drafting'");
+    this.#interrupted = [...applying, ...drafting];
+  }
+
+  /** The proposals in one status, oldest first: the order a restart brings them back in. */
+  #idsIn(status: ProposalStatus): string[] {
+    return this.#db
+      .prepare("SELECT id FROM proposals WHERE status = ? ORDER BY created_at, id")
+      .all(status)
+      .map((row) => text(row.id));
   }
 
   recordPing(p: NewPing): void {
@@ -320,6 +427,65 @@ export class SqliteStore implements PingStore, DictationStore, AskStore {
     set("error", patch.error);
     if (columns.length === 0) return;
     this.#db.prepare(`UPDATE dictations SET ${columns.join(", ")} WHERE ts = ?`).run(...values, ts);
+  }
+
+  recordProposal(proposal: { id: string; kind: string; source: string; createdAt: string }): boolean {
+    const result = this.#db
+      .prepare("INSERT INTO proposals (id, kind, status, source, created_at) VALUES (?, ?, 'drafting', ?, ?) ON CONFLICT(id) DO NOTHING")
+      .run(proposal.id, proposal.kind, proposal.source, proposal.createdAt);
+    return Number(result.changes) > 0;
+  }
+
+  findProposal(id: string): Proposal | null {
+    const row = this.#db.prepare("SELECT * FROM proposals WHERE id = ?").get(id);
+    return row ? toProposal(row) : null;
+  }
+
+  claimProposal(id: string, from: ProposalStatus[], to: ProposalStatus): boolean {
+    if (from.length === 0) return false;
+    // One statement, so a cancel racing a Create cannot both win: the loser sees `to`.
+    const marks = from.map(() => "?").join(", ");
+    const result = this.#db
+      .prepare(`UPDATE proposals SET status = ? WHERE id = ? AND status IN (${marks})`)
+      .run(to, id, ...from);
+    return Number(result.changes) === 1;
+  }
+
+  updateProposal(id: string, patch: ProposalPatch): void {
+    const columns: string[] = [];
+    const values: Array<string | null> = [];
+    const set = (column: string, value: string | null | undefined): void => {
+      if (value === undefined) return;
+      columns.push(`${column} = ?`);
+      values.push(value);
+    };
+    set("status", patch.status);
+    set("payload", patch.payload);
+    set("context", patch.context);
+    set("progress", patch.progress);
+    set("channel", patch.channel);
+    set("message_ts", patch.messageTs);
+    set("error", patch.error);
+    if (columns.length === 0) return;
+    this.#db.prepare(`UPDATE proposals SET ${columns.join(", ")} WHERE id = ?`).run(...values, id);
+  }
+
+  editProposal(id: string, rev: number, payload: string): boolean {
+    // The rev is in the WHERE: the click came from the card as it was drawn then.
+    const result = this.#db
+      .prepare("UPDATE proposals SET payload = ?, rev = rev + 1 WHERE id = ? AND rev = ? AND status = 'open' AND progress IS NULL")
+      .run(payload, id, rev);
+    return Number(result.changes) === 1;
+  }
+
+  interrupted(): Proposal[] {
+    const ids = this.#interrupted;
+    this.#interrupted = [];
+    // A row something else has taken back in the meantime is not a card to redraw.
+    return ids.flatMap((id) => {
+      const row = this.findProposal(id);
+      return row === null ? [] : [row];
+    });
   }
 
   claimAsk(ts: string, at: string): boolean {

@@ -3,14 +3,21 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { AddInput, AddUi } from "../src/add-handler.ts";
 import type { Board, BoardSource } from "../src/github.ts";
 import { DEFAULT_POLICY, type ActionId, type Briefing, type Item, type Ping } from "../src/rules.ts";
 import type { AskInput, AskUi } from "../src/ask.ts";
 import {
+  addText,
   askBlocks,
   briefingBlocks,
+  cardBlocks,
   dictationText,
+  editValues,
+  editView,
   handleAction,
+  handleProposalAction,
+  handleProposalEdit,
   handleRowAction,
   menuKeys,
   ROW_LABELS,
@@ -22,11 +29,15 @@ import {
   handleMessage,
   handleMoveSubmit,
   pingBlocks,
+  redrawProposalCard,
   touchDate,
   type ActionClick,
+  type AddDispatch,
   type Block,
   type HandlerDeps,
   type MoveSubmit,
+  type ProposalActionClick,
+  type ProposalEditSubmit,
   type RowClick,
   type AskDispatch,
   type PostMessageArgs,
@@ -36,8 +47,17 @@ import {
   type ViewsOpenArgs,
 } from "../src/slack.ts";
 import type { ManualSettings } from "../src/manual.ts";
+import {
+  cardText,
+  proposalValue,
+  type Card,
+  type EditField,
+  type ProposalDeps,
+  type ProposalSpec,
+} from "../src/proposals.ts";
 import type { ScribeDictation, ScribeUi } from "../src/scribe-handler.ts";
-import { FakeStore } from "./fakes.ts";
+import type { Proposal, ProposalStatus } from "../src/store.ts";
+import { FakeProposals, FakeStore } from "./fakes.ts";
 
 class FakeClient implements SlackClient {
   readonly posts: PostMessageArgs[] = [];
@@ -177,6 +197,7 @@ function harness(item: Item | null = null) {
     briefTime: "09:00",
     eodTime: "17:30",
     notesRepo: null,
+    addRepo: null,
     ask: false,
     policy: DEFAULT_POLICY,
   };
@@ -1312,4 +1333,503 @@ test("today sends the briefing's text alone: no menus, no separate ping", async 
   assert.equal(client.posts.length, 1, "one message, whatever it holds");
   assert.equal(client.posts[0].blocks, undefined);
   assert.match(client.posts[0].text, /• <https:\/\/[^>]*notes#52> A: \*due today\*/);
+});
+
+// ---- the proposal cards: their buttons, the Edit modal, and the routing -----
+
+/** The proposal a card of the DM at 222.2 belongs to: add:<message ts>. */
+const PROP_ID = "add:222.2";
+
+/** The message the card lives on. */
+const CARD_TS = "111.1";
+
+/** An add: pipeline that only records: what it was given, and the ui it got. */
+function recordAdd() {
+  const calls: AddInput[] = [];
+  const uis: AddUi[] = [];
+  let resolve = (): void => {};
+  const settled = new Promise<void>((r) => {
+    resolve = r;
+  });
+  const dispatch: AddDispatch = async (input, ui) => {
+    calls.push(input);
+    uis.push(ui);
+    resolve();
+  };
+  return { calls, uis, settled, dispatch };
+}
+
+/** The card of the fake kind: what it says depends on where the row stands. */
+function cardFor(proposal: Proposal): Card {
+  return {
+    head: "*New board item* · not created yet",
+    lines: ["*Call Dana about the renewal*", "Account: Acme · Track: Customer"],
+    context: `→ proposal is ${proposal.status}`,
+    buttons: proposal.status === "open" ? ["create", "edit", "cancel"] : [],
+  };
+}
+
+/** A kind that records its applies: the click side of the card, without a board. */
+class RecordingSpec implements ProposalSpec {
+  readonly applies: string[] = [];
+
+  card(proposal: Proposal): Card {
+    return cardFor(proposal);
+  }
+
+  editFields(): EditField[] {
+    return [{ kind: "text", name: "title", label: "Title", value: "Call Dana", required: true, maxLength: 120 }];
+  }
+
+  edited(_proposal: Proposal, values: Record<string, string | null>): string {
+    return JSON.stringify(values);
+  }
+
+  async apply(proposal: Proposal, _save: (progress: string) => void): Promise<void> {
+    this.applies.push(proposal.id);
+  }
+}
+
+/** The handler's deps plus a proposal store holding one open card at CARD_TS. */
+function proposalHarness(options: { status?: ProposalStatus; rev?: number } = {}) {
+  const h = harness();
+  const store = new FakeProposals();
+  store.recordProposal({ id: PROP_ID, kind: "add", source: "call Dana about the renewal", createdAt: "2026-11-27T01:00:00.000Z" });
+  const row = store.findProposal(PROP_ID);
+  if (row === null) throw new Error("the harness stored no proposal");
+  row.status = options.status ?? "open";
+  row.rev = options.rev ?? 0;
+  row.channel = "D";
+  row.messageTs = CARD_TS;
+  const spec = new RecordingSpec();
+  const proposals: ProposalDeps = { store, specs: { add: spec }, userId: "U_ZY", now: h.deps.now, log: h.deps.log };
+  h.deps.proposals = proposals;
+  return { ...h, store, spec, proposals, row };
+}
+
+function cardClick(overrides: Partial<ProposalActionClick> = {}): ProposalActionClick {
+  return {
+    actionId: "zy_prop_create",
+    value: proposalValue(PROP_ID, 0),
+    userId: "U_ZY",
+    channel: "D",
+    ts: CARD_TS,
+    triggerId: "TRIGGER_3",
+    ...overrides,
+  };
+}
+
+function cardSubmit(overrides: Partial<ProposalEditSubmit> = {}): ProposalEditSubmit {
+  return {
+    userId: "U_ZY",
+    metadata: JSON.stringify({ id: PROP_ID, rev: 0 }),
+    values: { title: "Call Dana about the renewal on 8 Dec" },
+    ...overrides,
+  };
+}
+
+/** The card's blocks as Slack receives them: what the routing tests read. */
+const sentBlocks = (blocks: Block[] | undefined): Array<Record<string, any>> => JSON.parse(JSON.stringify(blocks ?? [])) as Array<Record<string, any>>;
+
+const OPEN_CARD: Card = {
+  head: "*New board item* · not created yet",
+  lines: ["*Call Dana about the renewal*", "Account: Acme · Track: Customer"],
+  context: "Create opens an issue in `demo/notes`.",
+  buttons: ["create", "edit", "cancel"],
+};
+
+const NINE_FIELDS: EditField[] = [
+  { kind: "text", name: "title", label: "Title", value: "Call Dana about the renewal", required: true, maxLength: 120 },
+  {
+    kind: "select",
+    name: "parent",
+    label: "Parent engagement",
+    value: "ENG_1",
+    options: [
+      { label: "ENG_1 Acme renewal", value: "ENG_1" },
+      { label: "ENG_2 Globex pilot", value: "ENG_2" },
+    ],
+  },
+  { kind: "select", name: "account", label: "Account", value: "Globex", options: [{ label: "Acme", value: "Acme" }] },
+  { kind: "select", name: "track", label: "Track", value: null, options: [{ label: "Customer", value: "Customer" }] },
+  { kind: "select", name: "workType", label: "Work type", value: "Demo", options: [{ label: "Demo", value: "Demo" }] },
+  { kind: "select", name: "status", label: "Status", value: null, options: [{ label: "Next", value: "Next" }] },
+  { kind: "date", name: "targetDate", label: "Target date", value: "2026-12-08" },
+  { kind: "date", name: "nextTouch", label: "Next touch", value: null },
+  { kind: "text", name: "nextAction", label: "Next action", value: null, required: false, maxLength: 300 },
+];
+
+test("only a message that starts with add: is a sentence to draft", () => {
+  assert.equal(addText("add: call Dana"), "call Dana");
+  assert.equal(addText("ADD:call Dana"), "call Dana");
+  assert.equal(addText("  add :  call Dana  "), "call Dana");
+  assert.equal(addText("add: call Dana\nand Globex"), "call Dana\nand Globex", "a sentence may run on");
+  assert.equal(addText("add:"), null, "a bare add: is not an add");
+  assert.equal(addText("add:   "), null);
+  assert.equal(addText("address: 12 Demo Street"), null);
+  assert.equal(addText("note: ten nodes"), null);
+  assert.equal(addText("please add: call Dana"), null, "the prefix is the first thing in the message");
+});
+
+test("an add: DM reaches the pipeline in the background, and is never a question", async () => {
+  const { deps, client } = harness();
+  const add = recordAdd();
+  const ask = recordAsk();
+  deps.add = add.dispatch;
+  deps.ask = ask.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "  Add:  call Dana about the renewal on 8 Dec  " });
+  await add.settled;
+
+  assert.deepEqual(add.calls, [{ ts: "222.2", text: "call Dana about the renewal on 8 Dec", hint: null }], "the sentence, without the prefix");
+  assert.deepEqual(ask.calls, [], "an add: is a command, not a question");
+  assert.deepEqual(client.posts, [], "the handler returns at once: the pipeline does the talking");
+});
+
+test("an add: in an evening ping's thread drafts under that item, and acks nothing", async () => {
+  const { deps, store } = harness(boardItem({ title: "Acme VPC sizing" }));
+  const add = recordAdd();
+  deps.add = add.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.4", threadTs: "111.1", text: "add: chase the Acme quote" });
+  await add.settled;
+
+  assert.deepEqual(add.calls, [{ ts: "222.4", text: "chase the Acme quote", hint: { ref: "notes#52", title: "Acme VPC sizing" } }]);
+  assert.equal(store.findByKey(KEY)?.ackedAt, null, "an add: says so in its own message, so the ping stays open");
+});
+
+test("without add:, an add: DM is a question, and the hint names add: only when it is on", async () => {
+  const asking = harness();
+  const ask = recordAsk();
+  asking.deps.ask = ask.dispatch;
+  asking.deps.add = null;
+
+  await handleMessage(asking.deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "add: call Dana" });
+  await ask.settled;
+
+  assert.deepEqual(ask.calls, [{ ts: "222.2", question: "add: call Dana", threadTs: "222.2" }], "with no pipeline it is a plain DM");
+
+  const hinted = harness();
+  hinted.deps.add = null;
+  await handleMessage(hinted.deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "add: call Dana" });
+  assert.deepEqual(hinted.client.posts.map((post) => post.text), ["I didn't catch that. Type `today` or `help`."]);
+
+  const withAdd = harness();
+  withAdd.deps.add = async () => {};
+  await handleMessage(withAdd.deps, { userId: "U_ZY", channel: "D", ts: "222.5", threadTs: null, text: "ping" });
+  assert.deepEqual(withAdd.client.posts.map((post) => post.text), ["I didn't catch that. Type `today`, `add: …`, or `help`."]);
+
+  const withBoth = harness();
+  withBoth.deps.add = async () => {};
+  withBoth.deps.scribe = async () => {};
+  await handleMessage(withBoth.deps, { userId: "U_ZY", channel: "D", ts: "222.6", threadTs: null, text: "ping" });
+  assert.deepEqual(withBoth.client.posts.map((post) => post.text), ["I didn't catch that. Type `today`, `add: …`, `note: …`, or `help`."]);
+});
+
+test("a card is its words and its buttons, and every value carries the rev", () => {
+  const blocks = cardBlocks(PROP_ID, 0, OPEN_CARD);
+
+  assert.equal(blocks.length, 3, "a section, the context, and the buttons");
+  const sent = sentBlocks(blocks);
+  assert.deepEqual(sent[0], {
+    type: "section",
+    text: { type: "mrkdwn", text: "*New board item* · not created yet\n*Call Dana about the renewal*\nAccount: Acme · Track: Customer" },
+  });
+  assert.equal(sent[1].type, "context");
+  assert.equal(sent[1].elements[0].text, "Create opens an issue in `demo/notes`.");
+  assert.equal(sent[2].block_id, `zy_prop:${PROP_ID}`);
+  const cardActions = sent[2].elements as Array<Record<string, any>>;
+  assert.deepEqual(cardActions.map((element) => element.action_id), ["zy_prop_create", "zy_prop_edit", "zy_prop_cancel"]);
+  for (const element of cardActions) assert.equal(element.value, "add:222.2|0", "the id and the rev, in every button");
+  assert.deepEqual(cardActions.map((element) => element.text.text), ["Create", "Edit", "Cancel"]);
+  assert.equal(cardActions[0].style, "primary", "Create is the approval");
+  assert.equal(cardActions[1].style, undefined);
+  assert.equal(cardActions[2].style, undefined);
+
+  const retry = sentBlocks(cardBlocks(PROP_ID, 2, { ...OPEN_CARD, buttons: ["retry", "cancel"] }))[2].elements as Array<Record<string, any>>;
+  assert.deepEqual(retry.map((element) => element.text.text), ["Retry", "Cancel"]);
+  assert.equal(retry[0].style, "primary", "a retry is the approval of a card that failed halfway");
+  assert.equal(retry[0].value, "add:222.2|2");
+
+  const bare = cardBlocks(PROP_ID, 0, { ...OPEN_CARD, buttons: [] });
+  assert.equal(bare.length, 2, "a card that is over has nothing to click");
+  assert.deepEqual(bare.map((block) => block.type), ["section", "context"]);
+
+  assert.equal(
+    cardText(OPEN_CARD),
+    "*New board item* · not created yet\n*Call Dana about the renewal*\nAccount: Acme · Track: Customer\nCreate opens an issue in `demo/notes`.",
+    "the fallback text is the card's own words",
+  );
+
+  const long = cardBlocks(PROP_ID, 0, { ...OPEN_CARD, lines: ["x".repeat(4000)] })[0];
+  assert.ok(long.type === "section" && long.text.text.length <= 2900, "a long card is cut to a section's limit, like every section here");
+});
+
+test("the Edit modal carries the id and the rev alone, and one input per field in order", () => {
+  const view = editView(PROP_ID, 2, NINE_FIELDS);
+  const sent = JSON.parse(JSON.stringify(view)) as Record<string, any>;
+
+  assert.equal(view.callback_id, "zy_prop_edit_view");
+  assert.deepEqual(JSON.parse(view.private_metadata), { id: PROP_ID, rev: 2 }, "ids only: the values come from SQLite");
+  assert.equal(view.title.text, "Edit the new item");
+  assert.ok(view.title.text.length <= 24, "Slack cuts a modal title at 24 characters");
+  assert.equal(view.submit.text, "Save");
+  assert.equal(view.close.text, "Cancel");
+  assert.deepEqual(sent.blocks.map((block: Record<string, any>) => block.block_id), NINE_FIELDS.map((field) => field.name), "nine inputs, in the card's order");
+  for (const block of sent.blocks) assert.equal(block.element.action_id, "v", "one action_id everywhere: the block is what names the field");
+
+  assert.equal(sent.blocks[0].element.type, "plain_text_input");
+  assert.equal(sent.blocks[0].element.max_length, 120);
+  assert.equal(sent.blocks[0].element.initial_value, "Call Dana about the renewal");
+  assert.equal(sent.blocks[0].optional, undefined, "a title is required: Slack refuses the submit without it");
+
+  assert.equal(sent.blocks[8].element.type, "plain_text_input");
+  assert.equal(sent.blocks[8].optional, true, "a next action may be left empty");
+  assert.equal(sent.blocks[8].element.initial_value, undefined, "nothing to fill in");
+
+  assert.equal(sent.blocks[6].element.type, "datepicker");
+  assert.equal(sent.blocks[6].element.initial_date, "2026-12-08");
+  assert.equal(sent.blocks[6].optional, true, "a date may be cleared");
+  assert.equal(sent.blocks[7].element.initial_date, undefined);
+
+  assert.equal(sent.blocks[1].element.type, "static_select");
+  assert.equal(sent.blocks[1].optional, true);
+  assert.deepEqual(sent.blocks[1].element.options[0], { text: { type: "plain_text", text: "ENG_1 Acme renewal" }, value: "ENG_1" });
+  assert.deepEqual(sent.blocks[1].element.initial_option, sent.blocks[1].element.options[0], "the option that is there, as it is there");
+  assert.equal(sent.blocks[2].element.initial_option, undefined, "a value that is not an option opens on nothing: Slack refuses the view otherwise");
+  assert.equal(sent.blocks[3].element.initial_option, undefined, "a null value has nothing to open on");
+  assert.ok(view.blocks.length <= 100, "Slack takes 100 blocks in a view");
+});
+
+test("the modal's initial_option is the very object from its own list", () => {
+  const field = NINE_FIELDS[1];
+  const block = editView(PROP_ID, 0, [field]).blocks[0];
+  if (field.kind !== "select" || block.element.type !== "static_select") throw new Error("the fixture is not a select");
+
+  assert.equal(block.element.initial_option, block.element.options[0], "Slack checks identity, not equality");
+});
+
+test("a modal's answers are read by block_id, and an untouched input is null", () => {
+  assert.deepEqual(
+    editValues({
+      title: { v: { value: "Call Dana" } },
+      parent: { v: { selected_option: { value: "ENG_1" } } },
+      targetDate: { v: { selected_date: "2026-12-08" } },
+      nextAction: { v: { value: null } },
+      nextTouch: { v: { selected_date: null } },
+    }),
+    { title: "Call Dana", parent: "ENG_1", targetDate: "2026-12-08", nextAction: null, nextTouch: null },
+  );
+});
+
+test("a Create click writes the card's item, and the card is redrawn done", async () => {
+  const { deps, client, store, spec } = proposalHarness();
+
+  await handleProposalAction(deps, cardClick());
+
+  assert.deepEqual(spec.applies, [PROP_ID], "the click is the approval: the kind's apply ran");
+  assert.equal(store.findProposal(PROP_ID)?.status, "done");
+  assert.equal(client.updates.length, 2, "the interim card, then the outcome");
+  assert.match(client.updates[0].text, /→ proposal is applying/);
+  assert.equal(client.updates[0].channel, "D");
+  assert.equal(client.updates[0].ts, CARD_TS, "the card's own message");
+  assert.match(client.updates[1].text, /→ proposal is done/);
+  assert.deepEqual(client.updates[1].blocks?.map((block) => block.type), ["section", "context"], "a done card has nothing to click");
+});
+
+test("a card a restart interrupted is redrawn where the row says it is, as the row now reads", async () => {
+  const { deps, client, row, spec } = proposalHarness();
+  // What the store's constructor left: the apply reopened, with its reason on it.
+  row.status = "open";
+  row.error = "interrupted by a restart";
+
+  await redrawProposalCard(deps, PROP_ID);
+
+  assert.deepEqual(spec.applies, [], "a redraw writes nothing at all");
+  assert.deepEqual(
+    client.updates.map((update) => [update.channel, update.ts]),
+    [["D", CARD_TS]],
+    "the row's own channel and message",
+  );
+  assert.match(client.updates[0].text, /→ proposal is open/);
+  assert.deepEqual(client.updates[0].blocks?.map((block) => block.type), ["section", "context", "actions"], "its buttons came back");
+});
+
+test("a row with no card to redraw, or a kind this bot does not apply, is one log line", async () => {
+  const { deps, client, row, logs } = proposalHarness();
+  row.messageTs = null;
+
+  await redrawProposalCard(deps, PROP_ID);
+
+  row.messageTs = CARD_TS;
+  row.kind = "calendar";
+  await redrawProposalCard(deps, PROP_ID);
+
+  assert.deepEqual(client.updates, [], "nothing was drawn");
+  assert.deepEqual(logs, [
+    `proposal ${PROP_ID}: the row names no card, there is nothing to redraw`,
+    `proposal ${PROP_ID}: kind calendar is not one this bot applies, there is no card to redraw`,
+  ]);
+});
+
+test("a redraw Slack refuses is a log line, never a throw", async () => {
+  const { deps, client, logs } = proposalHarness();
+  client.failUpdate = true;
+
+  await redrawProposalCard(deps, PROP_ID);
+
+  assert.deepEqual(logs, [`proposal ${PROP_ID}: the redraw failed: message_not_found`]);
+});
+
+test("a Cancel click writes nothing, and says the card was cancelled", async () => {
+  const { deps, client, store, spec } = proposalHarness();
+
+  await handleProposalAction(deps, cardClick({ actionId: "zy_prop_cancel" }));
+
+  assert.deepEqual(spec.applies, [], "a cancel is no approval");
+  assert.equal(store.findProposal(PROP_ID)?.status, "cancelled");
+  assert.equal(client.updates.length, 1);
+  assert.match(client.updates[0].text, /→ proposal is cancelled/);
+});
+
+test("an Edit click opens the modal on the row's fields, and writes nothing", async () => {
+  const { deps, client, store } = proposalHarness();
+
+  await handleProposalAction(deps, cardClick({ actionId: "zy_prop_edit" }));
+
+  assert.equal(client.modals.length, 1);
+  assert.equal(client.modals[0].trigger_id, "TRIGGER_3");
+  const view = JSON.parse(JSON.stringify(client.modals[0].view)) as Record<string, any>;
+  assert.equal(view.callback_id, "zy_prop_edit_view");
+  assert.deepEqual(JSON.parse(view.private_metadata), { id: PROP_ID, rev: 0 });
+  assert.deepEqual(view.blocks.map((block: Record<string, any>) => block.block_id), ["title"]);
+  assert.deepEqual(client.updates, [], "an edit is not an outcome to draw");
+  assert.equal(store.findProposal(PROP_ID)?.status, "open");
+});
+
+test("a click with no trigger_id opens no modal, and says why", async () => {
+  const { deps, client, logs } = proposalHarness();
+
+  await handleProposalAction(deps, cardClick({ actionId: "zy_prop_edit", triggerId: null }));
+
+  assert.deepEqual(client.modals, []);
+  assert.match(logs.join("\n"), /carries no trigger_id/);
+});
+
+test("a click whose value names no card is logged and writes nothing", async () => {
+  const { deps, client, store, spec, logs } = proposalHarness();
+  const before = { ...store.findProposal(PROP_ID) };
+
+  await handleProposalAction(deps, cardClick({ value: "not a card" }));
+  await handleProposalAction(deps, cardClick({ actionId: "zy_prop_move" }));
+  await handleProposalAction(deps, cardClick({ ts: null }));
+
+  assert.deepEqual(spec.applies, []);
+  assert.deepEqual(client.updates, []);
+  assert.deepEqual(store.findProposal(PROP_ID), before);
+  assert.equal(logs.filter((line) => /names no card/.test(line)).length, 3);
+});
+
+test("a click with no proposals set up is a log line, and nothing else", async () => {
+  const { deps, client, store, logs } = proposalHarness();
+  const before = { ...store.findProposal(PROP_ID) };
+  deps.proposals = null;
+
+  await handleProposalAction(deps, cardClick());
+  await handleProposalEdit(deps, cardSubmit());
+
+  assert.deepEqual(client.updates, []);
+  assert.deepEqual(client.modals, []);
+  assert.deepEqual(store.findProposal(PROP_ID), before);
+  assert.equal(logs.filter((line) => /no proposals are set up/.test(line)).length, 2);
+});
+
+test("an Edit submit stores the payload at the next rev, and redraws the card there", async () => {
+  const { deps, client, store } = proposalHarness();
+
+  await handleProposalEdit(deps, cardSubmit());
+
+  const row = store.findProposal(PROP_ID);
+  assert.equal(row?.payload, JSON.stringify({ title: "Call Dana about the renewal on 8 Dec" }));
+  assert.equal(row?.rev, 1, "an edit is a new revision of the same row");
+  assert.equal(client.updates.length, 1);
+  assert.match(client.updates[0].text, /→ proposal is open/);
+  const actions = sentBlocks(client.updates[0].blocks).at(-1);
+  assert.equal(actions?.elements[0].value, "add:222.2|1", "the card is clickable at the rev it was stored at");
+});
+
+test("an Edit submit redraws the card where the row says it is, not where the modal does", async () => {
+  const { deps, client, row } = proposalHarness();
+  row.channel = "D";
+  row.messageTs = "444.4";
+
+  await handleProposalEdit(deps, cardSubmit());
+
+  assert.equal(client.updates.length, 1);
+  assert.equal(client.updates[0].channel, "D");
+  assert.equal(client.updates[0].ts, "444.4", "the row's own message: a modal carries no channel");
+});
+
+test("an Edit submit whose metadata cannot be read is logged and writes nothing", async () => {
+  const { deps, client, store, logs } = proposalHarness();
+
+  await handleProposalEdit(deps, cardSubmit({ metadata: "not json" }));
+  await handleProposalEdit(deps, cardSubmit({ metadata: JSON.stringify({ id: PROP_ID, rev: "two" }) }));
+
+  assert.equal(store.findProposal(PROP_ID)?.rev, 0);
+  assert.equal(store.findProposal(PROP_ID)?.payload, null);
+  assert.deepEqual(client.updates, []);
+  assert.equal(logs.filter((line) => /private_metadata holds no proposal/.test(line)).length, 2);
+});
+
+test("an Edit submit twice on the same modal stores one payload: the second rev is too late", async () => {
+  const { deps, client, store } = proposalHarness();
+
+  await handleProposalEdit(deps, cardSubmit());
+  await handleProposalEdit(deps, cardSubmit({ values: { title: "a second thought" } }));
+
+  assert.equal(store.findProposal(PROP_ID)?.rev, 1);
+  assert.equal(store.findProposal(PROP_ID)?.payload, JSON.stringify({ title: "Call Dana about the renewal on 8 Dec" }));
+  assert.equal(client.updates.length, 1, "the redraw of the one edit that landed");
+  assert.deepEqual(client.posts.map((post) => post.text), ["this card has moved on: nothing was changed"]);
+  assert.equal(client.posts[0].thread_ts, CARD_TS, "the line lands under the card");
+});
+
+test("an edit whose redraw Slack refuses is reposted in the card's thread, and the row follows it", async () => {
+  const { deps, client, store } = proposalHarness();
+  client.failUpdate = true;
+
+  await handleProposalEdit(deps, cardSubmit());
+
+  assert.equal(store.findProposal(PROP_ID)?.rev, 1, "the edit is stored whatever Slack does");
+  assert.equal(client.posts.length, 1);
+  assert.equal(client.posts[0].thread_ts, CARD_TS, "the fresh card is a reply under the old one");
+  assert.match(client.posts[0].text ?? "", /→ proposal is open/);
+  assert.equal(store.findProposal(PROP_ID)?.messageTs, "ts-1", "and it is the message later clicks and edits find");
+  assert.equal(store.findProposal(PROP_ID)?.channel, "D");
+});
+
+test("a DM's add: draws its card on the drafting reply it posted, at the message's own id", async () => {
+  const { deps, client } = harness();
+  const calls: AddInput[] = [];
+  let drawn = (): void => {};
+  const ready = new Promise<void>((resolve) => {
+    drawn = resolve;
+  });
+  deps.add = async (input, ui) => {
+    calls.push(input);
+    const at = await ui.reply("✍️ drafting…");
+    await ui.card(at.channel, at.ts, OPEN_CARD, 0);
+    drawn();
+  };
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "add: call Dana" });
+  await ready;
+
+  assert.deepEqual(calls, [{ ts: "222.2", text: "call Dana", hint: null }]);
+  assert.deepEqual(client.posts[0], { channel: "D", text: "✍️ drafting…", thread_ts: "222.2" }, "the ack is a reply in the DM's thread");
+  assert.equal(client.updates.length, 1);
+  assert.equal(client.updates[0].ts, "ts-1", "the ack is the message the card replaces");
+  assert.equal(client.updates[0].text, cardText(OPEN_CARD));
+  assert.equal(sentBlocks(client.updates[0].blocks).at(-1)?.elements[0].value, "add:222.2|0", "the card's id is the message it was drafted from");
 });

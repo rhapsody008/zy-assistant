@@ -5,10 +5,10 @@
 // tried to type a ping. Then "help <topic>" opens the page behind a topic. Every
 // number the text quotes is taken from the settings it is built with (the live
 // policy and the two slot times), so the manual cannot drift from what the bot
-// does. The note line and the note topic exist only when the scribe is on, the ask
-// line and the ask topic only when a model is set, and the notes-repo ack line in
-// "updates" only when NOTES_REPO is set: the manual describes this deployment, not
-// every deployment.
+// does. The note line and the note topic exist only when the scribe is on, the add
+// line and the add topic only when ADD_REPO is set, the ask line and the ask topic
+// only when a model is set, and the notes-repo ack line in "updates" only when
+// NOTES_REPO is set: the manual describes this deployment, not every deployment.
 
 import type { Policy } from "./rules.ts";
 import { TZ } from "./time.ts";
@@ -18,6 +18,8 @@ export interface ManualSettings {
   briefTime: string; // HH:MM, BRIEF_TIME
   eodTime: string; // HH:MM, EOD_TIME
   notesRepo: string | null; // NOTES_REPO: where the scribe writes, and what the ask reads
+  /** ADD_REPO: where an `add:` issue is created, and what turns the `add:` line and topic on. */
+  addRepo: string | null;
   /** True when the LLM variables are set: a DM may then hold a question. */
   ask: boolean;
   policy: Policy;
@@ -161,6 +163,29 @@ function noteTopic(settings: ManualSettings): ManualTopic {
   };
 }
 
+/** The `add` page: built only when ADD_REPO is set, so the repo is the setting itself. */
+function addTopic(repo: string): ManualTopic {
+  return {
+    topic: "add",
+    title: "Adding items",
+    details: [
+      "Type `add:` and then the item: `add: call Dana about the renewal on 8 Dec`. I draft ONE board item from that sentence and keep it for you to approve. Like `note:`, it is read wherever the DM holds it, in a new message or in a thread; under an evening ping the ping's item goes to the model as a hint, and the `add:` does not mark the ping seen.",
+      [
+        "*What comes back*: `✍️ drafting…`, and that same message is edited into a card. Top to bottom, twelve things: the header (`*New board item* · not created yet`, which loses the second half once there is an issue to point at), the title, the engagement it goes under, Account, Track, Work type, Status, Target date, Next touch, Next action, the line saying where it stands, and the buttons: *Create*, *Edit*, *Cancel*.",
+        "Nothing is on GitHub while the card is only a card: nothing is written until *Create*, and your click on it is the approval.",
+      ].join("\n"),
+      "*Edit* opens a form over the card with all nine fields in it: the title, the parent engagement, Account, Track, Work type, Status, Target date and Next touch as lists and dates, Next action as a line of text. Saving it redraws the card with what you changed and closes the form; nothing is written then either, so *Create* stays the click that writes, and the card says `Edited.` until it has.",
+      [
+        `*Create* writes four things, in this order: an issue in \`${repo}\` whose body is your sentence quoted, that issue onto the board, the item's fields (Account, Track, Work type, Status, Target date, Next touch, Next action), and the new issue as a sub-issue of its engagement.`,
+        "Each step's result is saved before the next one starts, so a failure after the issue exists offers *Retry* instead of a second *Create*: the retry carries on from the step that failed, and no second issue is ever made. A draft with no engagement links nothing and stands on its own.",
+      ].join("\n"),
+      "Dates: the Target date is the day the thing happens or is due (`on 8 Dec`, `by Friday`), and the Next touch is a follow-up you name for yourself (`chase on Monday`, `next week`). Both are worked out from today, with the rule the notes use: \"this Friday\" is the coming Friday, and \"next Friday\" is the Friday of the following week, 7 days after that one. A sentence with no date gets neither.",
+      "The engagement is matched from the board's own: the open items that already have tasks, or whose title is `<Name> · <what it's about>`. When none of them fits, the card says `⚠ No engagement matched`, and `⚠ No parent, no account` when there is no Account either: *Edit* to set them, or *Create* it as a standalone item. A model that cannot answer at all still leaves a card saying `⚠ The model didn't answer`: the title is your sentence exactly as typed, and the other eight fields are yours to fill in with *Edit*.",
+      "Two title shapes: a task starts with a verb and names the result (`Send Dana the renewal quote`), and never repeats the account, because the engagement and the Account field already say it; an engagement is `<Name> · <what it's about>`, named after the opportunity and not the activity.",
+    ],
+  };
+}
+
 function askTopic(settings: ManualSettings): ManualTopic {
   const reads =
     settings.notesRepo === null
@@ -204,7 +229,7 @@ function updatesTopic(settings: ManualSettings): ManualTopic {
 }
 
 /** The topics this deployment has, in manual order: "note" only with the scribe on,
- * "ask" only with a model to ask.
+ * "add" only with a repo to create in, "ask" only with a model to ask.
  */
 export function manualTopics(settings: ManualSettings, scribe: boolean): ManualTopic[] {
   return [
@@ -212,6 +237,7 @@ export function manualTopics(settings: ManualSettings, scribe: boolean): ManualT
     pingsTopic(settings),
     buttonsTopic(settings),
     ...(scribe ? [noteTopic(settings)] : []),
+    ...(settings.addRepo === null ? [] : [addTopic(settings.addRepo)]),
     ...(settings.ask ? [askTopic(settings)] : []),
     updatesTopic(settings),
   ];
@@ -231,6 +257,11 @@ function typedBlock(settings: ManualSettings, scribe: boolean): ManualBlock {
           ]
         : []),
       ...(scribe ? ["• `note: <text>`: `note: Acme call, they want a POC in January. I send the sizing by Friday.` and I save it to the notes repo."] : []),
+      ...(settings.addRepo === null
+        ? []
+        : [
+            "• `add: <text>`: `add: call Dana about the renewal on 8 Dec` and I draft a board item for you to approve, with its account, dates and parent engagement.",
+          ]),
       "• `help`, or `help <topic>`: this manual, or the page behind one topic.",
       "• Reply under an evening ping: marks it seen.",
       ...(settings.ask ? ["• Anything else you write, in a new message or a thread, is read as a question."] : []),
@@ -269,7 +300,15 @@ function buttonBlock(policy: Policy): ManualBlock {
 /** The last line of the overview: where each page is. */
 function moreBlock(topics: ManualTopic[]): ManualBlock {
   const has = (topic: string): boolean => topics.some((t) => t.topic === topic);
-  const pages = ["pings", "buttons", ...(has("note") ? ["note"] : []), ...(has("ask") ? ["ask"] : []), "updates", "today"];
+  const pages = [
+    "pings",
+    "buttons",
+    ...(has("note") ? ["note"] : []),
+    ...(has("add") ? ["add"] : []),
+    ...(has("ask") ? ["ask"] : []),
+    "updates",
+    "today",
+  ];
   return section(`More: ${pages.map((topic) => `\`help ${topic}\``).join(", ")}`);
 }
 

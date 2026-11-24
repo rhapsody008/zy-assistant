@@ -29,7 +29,7 @@ export interface FieldSpec {
 }
 
 /** The Status option names the bot reads and writes. One source of truth. */
-export const STATUS = { inProgress: "In progress", waiting: "Waiting", done: "Done" } as const;
+export const STATUS = { next: "Next", inProgress: "In progress", waiting: "Waiting", done: "Done" } as const;
 
 /** The Stage options that make an item part of the open pipeline (rules 3 and 5). */
 export const PIPELINE_STAGES = ["Discovery", "Workshop/Demo", "POC", "Proposal"] as const;
@@ -37,22 +37,36 @@ export const PIPELINE_STAGES = ["Discovery", "Workshop/Demo", "POC", "Proposal"]
 /** The Track option whose cadence is reported every Friday. */
 export const TRACK = { learn: "Learn" } as const;
 
+/** The board's field names, by what the bot calls them: the one place they are written. */
+export const FIELD = {
+  status: "Status",
+  target: "Target date",
+  nextTouch: "Next touch",
+  nextAction: "Next action",
+  waitingOn: "Waiting on",
+  type: "Work type",
+  stage: "Stage",
+  track: "Track",
+  account: "Account",
+  cadence: "Cadence",
+} as const;
+
 /** Without these the bot cannot plan or write back. */
 export const REQUIRED_FIELDS: readonly FieldSpec[] = [
-  { name: "Status", item: "status", kind: "singleSelect", options: [STATUS.inProgress, STATUS.done] },
-  { name: "Target date", item: "target", kind: "date" },
-  { name: "Next touch", item: "nextTouch", kind: "date" },
-  { name: "Next action", item: "nextAction", kind: "text" },
-  { name: "Waiting on", item: "waitingOn", kind: "text" },
+  { name: FIELD.status, item: "status", kind: "singleSelect", options: [STATUS.inProgress, STATUS.done] },
+  { name: FIELD.target, item: "target", kind: "date" },
+  { name: FIELD.nextTouch, item: "nextTouch", kind: "date" },
+  { name: FIELD.nextAction, item: "nextAction", kind: "text" },
+  { name: FIELD.waitingOn, item: "waitingOn", kind: "text" },
 ];
 
 /** Carried on the Item, not read by the rules yet: a board without them is fine. */
 export const OPTIONAL_FIELDS: readonly FieldSpec[] = [
-  { name: "Work type", item: "type", kind: "any" },
-  { name: "Stage", item: "stage", kind: "any" },
-  { name: "Track", item: "track", kind: "any" },
-  { name: "Account", item: "account", kind: "any" },
-  { name: "Cadence", item: "cadence", kind: "any" },
+  { name: FIELD.type, item: "type", kind: "any" },
+  { name: FIELD.stage, item: "stage", kind: "any" },
+  { name: FIELD.track, item: "track", kind: "any" },
+  { name: FIELD.account, item: "account", kind: "any" },
+  { name: FIELD.cadence, item: "cadence", kind: "any" },
 ];
 
 export const ALL_FIELDS: readonly FieldSpec[] = [...REQUIRED_FIELDS, ...OPTIONAL_FIELDS];

@@ -1,10 +1,11 @@
 // Shared test doubles. No network, no disk, no real timers.
 
+import type { Board, BoardField, BoardSource, IssueWriter } from "../src/github.ts";
 import type { Llm, LlmRequest } from "../src/llm.ts";
 import { ShaConflict, type NotesClient, type NotesFile } from "../src/notes.ts";
-import type { Ping, SentPing, Slot, Briefing } from "../src/rules.ts";
+import type { Item, Ping, SentPing, Slot, Briefing } from "../src/rules.ts";
 import type { Sent, Sender, BriefingSent } from "../src/slack.ts";
-import type { AskRecord, AskStore, Dictation, DictationPatch, DictationStatus, DictationStore, NewPing, PingRecord, PingStore } from "../src/store.ts";
+import type { AskRecord, AskStore, Dictation, DictationPatch, DictationStatus, DictationStore, NewPing, PingRecord, PingStore, Proposal, ProposalPatch, ProposalStatus, ProposalStore } from "../src/store.ts";
 
 export class FakeStore implements PingStore {
   readonly pings = new Map<string, PingRecord>();
@@ -136,6 +137,157 @@ export class FakeSender implements Sender {
   }
 }
 
+/** The step of the fake board a test makes the world refuse. */
+export type BoardFailure =
+  | "createIssue"
+  | "findIssue"
+  | "addToProject"
+  | "setText"
+  | "setDate"
+  | "setSingleSelect"
+  | "addSubIssue"
+  | "fetchBoard";
+
+/** The item a project's own workflow makes of a new issue: what the auto-add fallback has to find. */
+function issueItem(issue: { id: string; number: number; url: string }, itemId: string, title: string): Item {
+  return {
+    id: itemId,
+    ref: `notes#${issue.number}`,
+    title,
+    url: issue.url,
+    status: null,
+    target: null,
+    nextTouch: null,
+    nextAction: null,
+    waitingOn: null,
+    type: null,
+    stage: null,
+    track: null,
+    account: null,
+    cadence: null,
+    parentUrl: null,
+    contentId: issue.id,
+    updatedAt: "",
+  };
+}
+
+/**
+ * The board, read and written: the one fake that covers BoardSource and
+ * IssueWriter together, which is what a proposal's Apply needs. Every call is
+ * recorded in `calls`, with the NAMES a person sees: an option's id is looked
+ * back up, so a wrong id reads as itself in the assertion that fails.
+ *
+ * It says `implements BoardSource, IssueWriter` rather than `BoardSource &
+ * IssueWriter`: the same thing for a class, written the way the parser here takes
+ * it.
+ */
+export class FakeBoard implements BoardSource, IssueWriter {
+  board: Board = { projectId: "PVT_1", title: "Board", fields: new Map(), items: [] };
+  /** Every call in order, the board reads included: when Apply read the board is part of what it does. */
+  readonly calls: string[] = [];
+  /** The issues createIssue made, with their bodies: what findIssue looks a marker up in. */
+  readonly created: Array<{ issue: { id: string; number: number; url: string }; body: string }> = [];
+  /** The step whose next call throws: it wrote nothing, so it is not in `calls`. */
+  failAt: BoardFailure | null = null;
+  /** True: only the next call to the failing step throws. False: every one of them does. */
+  failOnce = true;
+  /** The project's own workflow added the new issue before addToProject ran. */
+  autoAdd = false;
+  /** createIssue also leaves the issue on the board, as that workflow would. */
+  boardAfterCreate = false;
+  /**
+   * createIssue makes the issue and then throws, as a timeout after GitHub wrote it
+   * would: the issue exists, and the answer that would have named it did not arrive.
+   */
+  createThenThrow = false;
+  /** What createIssue returns, and the item id addToProject returns. */
+  nextIssue = { id: "I_900", number: 900, url: "https://github.com/demo/notes/issues/900" };
+  createdItemId = "ITEM_900";
+  /** Holds createIssue open, so a test can click twice while the first click is writing. */
+  gate: Gate | null = null;
+
+  /** The bodies of the issues createIssue made: what the card's sentence ended up as. */
+  get bodies(): string[] {
+    return this.created.map((one) => one.body);
+  }
+
+  async fetchBoard(): Promise<Board> {
+    this.#enter("fetchBoard");
+    return this.board;
+  }
+
+  async createIssue(repo: string, title: string, body: string): Promise<{ id: string; number: number; url: string }> {
+    this.#enter("createIssue", `${repo}|${title}`);
+    if (this.gate !== null) await this.gate.wait();
+    const issue = { ...this.nextIssue };
+    // Recorded before anything can throw: the issue is on GitHub either way.
+    this.created.push({ issue, body });
+    if (this.boardAfterCreate) this.board.items.push(issueItem(issue, this.createdItemId, title));
+    if (this.createThenThrow) throw new Error("createIssue: the request timed out");
+    return issue;
+  }
+
+  async findIssue(repo: string, marker: string): Promise<{ id: string; number: number; url: string } | null> {
+    this.#enter("findIssue", `${repo}|${marker}`);
+    // The newest match, the way the real lookup reads the list: one marker, one issue.
+    for (const one of [...this.created].reverse()) if (one.body.includes(marker)) return { ...one.issue };
+    return null;
+  }
+
+  async addToProject(projectId: string, contentId: string): Promise<string> {
+    this.#enter("addToProject", `${projectId}|${contentId}`);
+    // Recorded before this throw: the item may be on the board anyway, which is
+    // the case the caller's fallback is for.
+    if (this.autoAdd) throw new Error("addToProject: the project already has this issue");
+    return this.createdItemId;
+  }
+
+  async setSingleSelect(projectId: string, itemId: string, fieldId: string, optionId: string): Promise<void> {
+    this.#enter("setSingleSelect", `${itemId}|${this.#fieldName(fieldId)}|${this.#optionName(fieldId, optionId)}`);
+  }
+
+  async setDate(projectId: string, itemId: string, fieldId: string, date: string): Promise<void> {
+    this.#enter("setDate", `${itemId}|${this.#fieldName(fieldId)}|${date}`);
+  }
+
+  async setText(projectId: string, itemId: string, fieldId: string, text: string): Promise<void> {
+    this.#enter("setText", `${itemId}|${this.#fieldName(fieldId)}|${text}`);
+  }
+
+  async addSubIssue(issueId: string, subIssueId: string): Promise<void> {
+    this.#enter("addSubIssue", `${issueId}|${subIssueId}`);
+  }
+
+  /** Recorded, but no failure point: nothing in `add:` comments, so no retry continues from one. */
+  async addComment(subjectId: string, _body: string): Promise<void> {
+    this.calls.push(`addComment ${subjectId}`);
+  }
+
+  #enter(name: BoardFailure, what = ""): void {
+    if (this.failAt === name) {
+      if (this.failOnce) this.failAt = null;
+      throw new Error(`${name} failed`);
+    }
+    this.calls.push(what === "" ? name : `${name} ${what}`);
+  }
+
+  /** A field's name and its board entry by its id: an id the board does not have falls through. */
+  #field(fieldId: string): [string, BoardField] | null {
+    for (const entry of this.board.fields) if (entry[1].id === fieldId) return entry;
+    return null;
+  }
+
+  #fieldName(fieldId: string): string {
+    return this.#field(fieldId)?.[0] ?? fieldId;
+  }
+
+  #optionName(fieldId: string, optionId: string): string {
+    const options = this.#field(fieldId)?.[1].options;
+    if (options !== undefined) for (const [name, id] of options) if (id === optionId) return name;
+    return optionId;
+  }
+}
+
 /** The note model: scripted replies, one per call, and no network. */
 export class FakeLlm implements Llm {
   readonly requests: LlmRequest[] = [];
@@ -261,5 +413,68 @@ export class FakeDictations implements DictationStore {
     if (patch.noteJson !== undefined) row.noteJson = patch.noteJson;
     if (patch.commitUrl !== undefined) row.commitUrl = patch.commitUrl;
     if (patch.error !== undefined) row.error = patch.error;
+  }
+}
+
+/** The proposals table: the same shape, in a map. */
+export class FakeProposals implements ProposalStore {
+  readonly rows = new Map<string, Proposal>();
+  /** The rows a restart would have reset: what interrupted() hands back, once. */
+  readonly interruptedRows: Proposal[] = [];
+
+  recordProposal(proposal: { id: string; kind: string; source: string; createdAt: string }): boolean {
+    if (this.rows.has(proposal.id)) return false;
+    this.rows.set(proposal.id, {
+      id: proposal.id,
+      kind: proposal.kind,
+      status: "drafting",
+      source: proposal.source,
+      payload: null,
+      context: null,
+      progress: null,
+      rev: 0,
+      channel: null,
+      messageTs: null,
+      createdAt: proposal.createdAt,
+      error: null,
+    });
+    return true;
+  }
+
+  findProposal(id: string): Proposal | null {
+    return this.rows.get(id) ?? null;
+  }
+
+  claimProposal(id: string, from: ProposalStatus[], to: ProposalStatus): boolean {
+    const row = this.rows.get(id);
+    if (row === undefined || !from.includes(row.status)) return false;
+    row.status = to;
+    return true;
+  }
+
+  updateProposal(id: string, patch: ProposalPatch): void {
+    const row = this.rows.get(id);
+    if (row === undefined) return;
+    if (patch.status !== undefined) row.status = patch.status;
+    if (patch.payload !== undefined) row.payload = patch.payload;
+    if (patch.context !== undefined) row.context = patch.context;
+    if (patch.progress !== undefined) row.progress = patch.progress;
+    if (patch.channel !== undefined) row.channel = patch.channel;
+    if (patch.messageTs !== undefined) row.messageTs = patch.messageTs;
+    if (patch.error !== undefined) row.error = patch.error;
+  }
+
+  editProposal(id: string, rev: number, payload: string): boolean {
+    const row = this.rows.get(id);
+    if (row === undefined || row.status !== "open" || row.rev !== rev || row.progress !== null) return false;
+    row.payload = payload;
+    row.rev += 1;
+    return true;
+  }
+
+  interrupted(): Proposal[] {
+    const rows = [...this.interruptedRows];
+    this.interruptedRows.length = 0;
+    return rows;
   }
 }

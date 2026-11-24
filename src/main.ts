@@ -3,7 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import { answerQuestion, sourcesLine, type AnswerDeps, type NotesSource } from "./ask.ts";
-import { LLM_VARS, loadConfig, scribeMissing, type Config } from "./config.ts";
+import { ADD_VARS, addMissing, LLM_VARS, loadConfig, scribeMissing, type Config } from "./config.ts";
 import { errMessage } from "./errors.ts";
 import { createBoardClient, type BoardSource } from "./github.ts";
 import { Health } from "./health.ts";
@@ -25,12 +25,13 @@ function log(line: string): void {
   console.log(`${now().toISOString()} ${line}`);
 }
 
-/** What "help" quotes: the two slot times, the notes repo, the ask, and the policy in force. */
+/** What "help" quotes: the two slot times, the two repos, the add and the ask, and the policy in force. */
 function manualSettings(config: Config): ManualSettings {
   return {
     briefTime: config.briefTime,
     eodTime: config.eodTime,
     notesRepo: config.notesRepo,
+    addRepo: config.add?.repo ?? null,
     ask: config.llm !== null,
     policy: { ...DEFAULT_POLICY, ...config.policy },
   };
@@ -146,8 +147,10 @@ async function check(): Promise<void> {
   }
 
   if (!config.scribe) {
-    // Nothing of the scribe's set at all: no line, so `check` reads exactly as it
-    // did in 0.3.0. Half of it set is worth saying, and a typo fails in loadConfig.
+    // Nothing of the scribe's set at all: no line for it. Half of it set is worth
+    // saying, and a typo fails in loadConfig. `check` is no longer 0.3.0's output
+    // on its own: since 0.7.0 the add: block below prints its own line when only
+    // part of ADD_* is set.
     const missing = scribeMissing();
     if (LLM_VARS.some((name) => (process.env[name] ?? "") !== "")) log(`scribe: off, missing ${missing.join(", ")}`);
   } else {
@@ -164,6 +167,15 @@ async function check(): Promise<void> {
   if (config.llm !== null) {
     // The ask is on with the model alone; the notes it may read need NOTES_REPO.
     log(`ask: ${config.llm.model} at ${config.llm.baseUrl}, notes ${config.scribe === null ? "off (no NOTES_REPO)" : config.scribe.repo}`);
+  }
+
+  if (config.add !== null) {
+    log(`add: ${config.add.llm.model} -> ${config.add.repo}`);
+  } else {
+    // The scribe's rule, said for add: nothing of its own set at all is no line, so
+    // `check` reads as it did before 0.7.0; a repo without the model fails in loadConfig.
+    const missing = addMissing();
+    if (ADD_VARS.some((name) => (process.env[name] ?? "") !== "")) log(`add: off, missing ${missing.join(", ")}`);
   }
 
   if (!config.slack) {
@@ -320,6 +332,25 @@ async function run(): Promise<void> {
             maxTokens: config.scribe.llm.maxTokens,
           },
     ask: config.llm === null ? null : { ...answerSettings(config), asks: store },
+    add:
+      config.add === null
+        ? null
+        : {
+            llm: openaiCompatible({
+              baseUrl: config.add.llm.baseUrl,
+              apiKey: config.add.llm.apiKey,
+              model: config.add.llm.model,
+            }),
+            board,
+            proposals: store,
+            repo: config.add.repo,
+            owner: config.projectOwner,
+            number: config.projectNumber,
+            now,
+            log,
+            timeoutMs: config.add.llm.timeoutMs,
+            maxTokens: config.add.llm.maxTokens,
+          },
   });
 
   await bot.start();
@@ -334,6 +365,11 @@ async function run(): Promise<void> {
       ? "ask: off, a DM that is no command gets the hint"
       : `ask: ${config.llm.model}, notes ${config.scribe === null ? "off" : config.scribe.repo}`,
   );
+  log(
+    config.add === null
+      ? "add: off, an add: DM is answered like any other"
+      : `add: ${config.add.llm.model} -> ${config.add.repo}`,
+  );
 
   let health: Health | null = null;
   if (config.httpPort !== null) {
@@ -344,6 +380,11 @@ async function run(): Promise<void> {
 
   // Not awaited: the scheduler must start even if GitHub is slow to answer.
   void reportSchema(board, config.projectOwner, config.projectNumber, bot);
+
+  // A restart that stopped a click or a draft left the cards on screen: each one is
+  // drawn again, so its buttons come back (or, for a cancelled draft, so it says it
+  // was interrupted). Not awaited, for the same reason as the schema report.
+  for (const row of store.interrupted()) void bot.redrawCard(row.id);
 
   const stop = startScheduler({ config, board, store, sender: bot, now, log, onTick: (report) => health?.record(report) });
   log(`scheduler running: M at ${config.briefTime}, E at ${config.eodTime} (${TZ})`);

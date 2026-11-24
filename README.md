@@ -49,8 +49,9 @@ when it is not. The ask line and the `ask` topic are left out when there is no
 model. The text is rendered from `src/manual.ts` with the live
 policy and slot times (`WAITING_CHASE_DAYS`, `STAGE_STALE_DAYS`, the lead times,
 the WIP limit), so the pages say what this deployment does. The `note:` line and
-the `note` topic are left out when the scribe is off, and the notes-repo ack
-below when `NOTES_REPO` is unset. With the defaults, `help` sends exactly this:
+the `note` topic are left out when the scribe is off, the `add:` line and the
+`add` topic when `ADD_REPO` is unset, and the notes-repo ack below when
+`NOTES_REPO` is unset. With the defaults, `help` sends exactly this:
 
 ```
 *What you can type*
@@ -77,19 +78,26 @@ below when `NOTES_REPO` is unset. With the defaults, `help` sends exactly this:
 More: `help pings`, `help buttons`, `help note`, `help ask`, `help updates`, `help today`
 ```
 
+With `ADD_REPO` set, the typed block also carries the `add: <text>` line, and
+`help add` opens its page.
+
 Every successful action is one log line with ids only, never a note's text or
 title: `scribe <ts>: committed <folder> in <ms> ms (<n> actions) <url>`,
 `scribe <ts>: asked for a folder`, `scribe <ts>: committed raw text to <folder>`,
-`button <action> on <item> by <user>`, `move <item>: <old> -> <new>`,
-`reply ack <item>`, `help <topic>`, `ask <ts>: answered in <ms> ms (<n> items,
-notes: <folders>)` and `ask <ts>: failed: <reason>`. A question's text and an
-answer's text are never logged.
+`add <ts>: drafted in <ms> ms (parent <ref>)`,
+`add <ts>: created <repo>#<n> as <itemId>, under <parentItemId>`,
+`add <ts>: create failed at <issue|project|fields|link>: <reason>`,
+`proposal <id>: apply failed`, `button <action> on <item> by <user>`,
+`move <item>: <old> -> <new>`, `reply ack <item>`, `help <topic>`,
+`ask <ts>: answered in <ms> ms (<n> items, notes: <folders>)` and
+`ask <ts>: failed: <reason>`. A question's text and an answer's text are never
+logged, and neither is an `add:` sentence or the title drafted from it.
 
 ## Env
 
 | Variable | Needed by | Default |
 | --- | --- | --- |
-| `GITHUB_TOKEN` | every mode | – (fine-grained PAT: read the project, write the items) |
+| `GITHUB_TOKEN` | every mode | – (fine-grained PAT: read the project, write the items, and Issues read and write on `ADD_REPO`) |
 | `SLACK_BOT_TOKEN` | `run`, optional `check` | – |
 | `SLACK_APP_TOKEN` | `run`, optional `check` | – |
 | `SLACK_USER_ID` | `run`, optional `check` | – (the only person the bot DMs and obeys) |
@@ -100,6 +108,7 @@ answer's text are never logged.
 | `DB_PATH` | | `./data/state.db` |
 | `ASSISTANT_TZ` | | `Asia/Singapore` |
 | `NOTES_REPO` | | – (owner/repo: a commit under `Accounts/<Account>` acks that Account's items, the scribe writes here and the ask reads here; unset turns all three off) |
+| `ADD_REPO` | `run` | – (owner/repo: where an `add:` item's issue is created; with the three `LLM_*` variables it turns `add:` on) |
 | `WAITING_CHASE_DAYS` | | `5` (a Waiting item with no update for longer is chased) |
 | `STAGE_STALE_DAYS` | | `21` (a pipeline item with no update for longer is nagged on Friday) |
 | `LLM_BASE_URL` | `scribe`, `ask`, `check`, `run` | – (an OpenAI-compatible gateway, e.g. `https://<host>/enterpriseai/gateway/v1`) |
@@ -184,7 +193,9 @@ Threads, in full:
 - any other reply (under a briefing, a `today` preview, a dictation's thread, a
   manual message) is a plain question, answered in that thread with no earlier
   talk;
-- `note: …` is a dictation wherever it is written.
+- `note: …` is a dictation wherever it is written, and `add: …` is a draft
+  wherever it is written; under an evening ping each takes that ping's item as a
+  hint and does not ack the ping.
 
 Answers are kept in the `asks` table, keyed by the answer message and its thread,
 and the question's own message ts is claimed in `asks_seen` before the model is
@@ -267,6 +278,72 @@ The Slack handler returns before the work starts and every error becomes a
 thread reply, so Slack's three-second budget is never the scribe's problem. The
 deployment's secret does not carry the LLM variables yet: the pod runs with the
 scribe off, by design.
+
+## Adding items
+
+DM the bot `add: call Dana about the renewal on 8 Dec` and it drafts ONE board
+item from that sentence. It replies `✍️ drafting…` at once and edits that same
+message into a card: the title, the engagement it would go under, Account,
+Track, Work type, Status, Target date, Next touch, Next action, a line saying
+where the proposal stands, and **Create**, **Edit**, **Cancel** under it.
+
+Nothing is written while the card is only a card. **Create** is what writes, and
+the click is the approval.
+
+Like `note:`, an `add:` is read wherever the DM holds it, in a new message or in
+a thread. Typed under an evening ping, the ping's item goes to the model as a
+hint, and the `add:` does not ack the ping.
+
+**Create** writes four things, in this order:
+
+1. an issue in `ADD_REPO`, whose body is your sentence quoted, with the day it
+   came from Slack under it and a hidden marker a retry finds it by;
+2. that issue onto the board;
+3. the item's fields: Account, Track, Work type, Status, Target date, Next touch,
+   Next action;
+4. the new issue as a sub-issue of the parent engagement, when the draft has one.
+
+Each step's result is saved to the proposal before the next one starts, so a
+failure after the issue exists says so on the card and offers **Retry** in place
+of Create: the retry continues from the step that failed, and no second issue is
+ever made. A create whose answer never came back says the issue may exist, and
+**Retry** looks for its marker before it creates anything. The card names the
+step (`adding it to the board`, `writing its fields`, `linking it under its
+parent`) and links the issue that already exists. The draft's option names and
+its parent's ref are resolved against the board as the click finds it, and all
+of them before anything is created, so a board that changed under a draft fails
+with nothing written rather than a stray issue; once the issue exists only the
+steps that are left are resolved, so an option renamed afterwards does not block
+a retry that has nothing left to write with it.
+
+**Edit** opens a modal over the card with all nine fields in it: Title, Parent
+engagement, Account, Track, Work type, Status, Target date, Next touch, Next
+action. Saving it redraws the card (with `Edited.` in front of the line that
+says what Create would do) and writes nothing; Create is still the last click.
+
+Dates are worked out from today with the rule the notes use: "this Friday" is
+the coming Friday, "next Friday" is the Friday of the following week. The Target
+date is the day the thing happens or is due (`on 8 Dec`, `by Friday`); the Next
+touch is a follow-up you name for yourself (`chase on Monday`, `next week`).
+
+A task title starts with a verb and names the result, and does not repeat the
+account; an engagement is `<Name> · <what it's about>`. The parent is matched
+from the board's engagements: the open items that already have tasks, or whose
+title carries that ` · `. When none of them fits the card says
+`⚠ No engagement matched`, and `⚠ No parent, no account` when there is no
+Account either: Edit to set them, or Create it as a standalone item. A model
+that cannot answer at all is not a lost sentence: the card says
+`⚠ The model didn't answer`, the title is the sentence exactly as typed, and the
+other eight fields are yours to fill in with Edit.
+
+With `ADD_REPO` unset, `add:` is off: an `add: …` DM is read as a question when
+the model is set, the way a `note: …` is read when the scribe is off, and the
+`add:` line and topic are left out of the manual. `ADD_REPO` set without the
+three `LLM_*` variables is a startup error, not a silently-off feature: there is
+nowhere for the repo to go without a model, and a typo in the other direction
+should not look like a working bot. The token needs Issues read and write on
+`ADD_REPO` and the project's write access it already has; nothing is written to
+the board until Create.
 
 ## Develop
 

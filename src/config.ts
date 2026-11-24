@@ -28,6 +28,12 @@ export interface ScribeConfig {
   token: string; // NOTES_GITHUB_TOKEN when set, else GITHUB_TOKEN
 }
 
+/** `add:` is on when ADD_REPO and the model are both set. */
+export interface AddConfig {
+  llm: LlmSettings;
+  repo: string; // owner/repo: where a new item's issue is created
+}
+
 export interface Config {
   githubToken: string;
   projectOwner: string;
@@ -45,6 +51,8 @@ export interface Config {
   llm: LlmSettings | null;
   /** null: no "note: ..." in the DM, and no `scribe` mode. */
   scribe: ScribeConfig | null;
+  /** null: no "add: ..." in the DM: no draft of a board item, so nothing to apply. */
+  add: AddConfig | null;
 }
 
 const SLACK_VARS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_USER_ID"];
@@ -57,6 +65,14 @@ export const SCRIBE_VARS = [...LLM_VARS, "NOTES_REPO"] as const;
 /** Which of the scribe's variables the env does not set: all of them means off. */
 export function scribeMissing(env: NodeJS.ProcessEnv = process.env): string[] {
   return SCRIBE_VARS.filter((name) => (env[name] ?? "") === "");
+}
+
+/** Every variable `add:` needs: the model's three, and the repo a new issue goes to. */
+export const ADD_VARS = [...LLM_VARS, "ADD_REPO"] as const;
+
+/** Which of `add:`'s variables the env does not set: all of them means off. */
+export function addMissing(env: NodeJS.ProcessEnv = process.env): string[] {
+  return ADD_VARS.filter((name) => (env[name] ?? "") === "");
 }
 
 /** The model's budget when LLM_TIMEOUT_MS is unset: reasoning models are slow. */
@@ -129,6 +145,11 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
     throw new Error(`${mode}: NOTES_REPO must be owner/repo, got ${notesRepo}`);
   }
 
+  const addRepo = get("ADD_REPO");
+  if (addRepo !== "" && !NOTES_REPO_RE.test(addRepo)) {
+    throw new Error(`${mode}: ADD_REPO must be owner/repo, got ${addRepo}`);
+  }
+
   // The three LLM variables are the model: the ask is on iff they are all set, and
   // the scribe iff NOTES_REPO is set too. Half of them is a typo, not a decision, so
   // it fails here rather than going quiet.
@@ -152,6 +173,13 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
       : null;
   const scribe: ScribeConfig | null =
     llm !== null && notesRepo !== "" ? { llm, repo: notesRepo, token: get("NOTES_GITHUB_TOKEN") || get("GITHUB_TOKEN") } : null;
+  // `add:` has no model of its own: a repo to create an issue in is on with the
+  // whole model and off without it. Half of it is the same typo the scribe's rule
+  // catches, said once for add: because add: is what is broken here.
+  if (addRepo !== "" && llm === null) {
+    fail(mode, LLM_VARS.filter((name) => get(name) === ""), ` (add: needs all of ${LLM_VARS.join(", ")})`);
+  }
+  const add: AddConfig | null = llm !== null && addRepo !== "" ? { llm, repo: addRepo } : null;
 
   return {
     githubToken: get("GITHUB_TOKEN"),
@@ -169,5 +197,6 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
     slack,
     llm,
     scribe,
+    add,
   };
 }
