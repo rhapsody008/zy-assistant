@@ -3,9 +3,9 @@
 // one bad event is no snapshot, so the intake never half-believes a file.
 //
 // Nothing here prints: every function returns what it found and the caller owns
-// the log. What leaves this module is ids, counts, timestamps and field paths;
-// a title is never rendered anywhere, and a domain names a customer, so both
-// stay inside the held snapshot and off every line built here.
+// the log. What leaves this module is ids, counts, timestamps and field paths; a
+// title is never rendered on a line built here, and a domain names a customer, so
+// both stay inside the held snapshot and off every line built here.
 //
 // Freshness is read off generatedAt, never off when the file was read: a pod
 // that restarts does not make an hour-old snapshot look new. And a snapshot is
@@ -13,6 +13,7 @@
 // same, because that push is the Mac saying it is still alive.
 
 import { errMessage } from "./errors.ts";
+import { localNow, TZ } from "./time.ts";
 
 /** One snapshot file may not be bigger than this: anything larger is not a day and a half of meetings. */
 export const SNAPSHOT_MAX_BYTES = 256 * 1024;
@@ -35,9 +36,6 @@ const DOMAIN_MAX = 100;
  * bad domain would cost a whole snapshot.
  */
 const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
-
-/** A snapshot this old is still used, and said to be stale: a sleeping Mac, not an error. */
-const FRESH_MS = 45 * 60_000;
 
 /** A generatedAt further ahead than this is a clock that is wrong, not a push from the future. */
 const FUTURE_MS = 5 * 60_000;
@@ -288,10 +286,16 @@ export class CalendarIntake {
     const { snapshot } = held;
     // A closed window carries nothing for now, however recently the Mac wrote it,
     // so expiry is asked first: an old window can never read as fresh.
+    // Then the local date of the push. The Mac pushes at 07:30 and 18:30, so an age
+    // in minutes would call the snapshot stale for most of the day it is about;
+    // "pushed today" is what fresh can honestly mean here, and an older push still
+    // inside the window is stale but usable. The compare is `>=` because a Mac whose
+    // clock is a few minutes ahead (allowed up to five) pushes tomorrow's date
+    // around midnight, and that is still this moment's snapshot.
     const freshness: CalendarFreshness =
       now.getTime() > Date.parse(snapshot.window.end)
         ? "expired"
-        : now.getTime() - Date.parse(snapshot.generatedAt) <= FRESH_MS
+        : localNow(new Date(snapshot.generatedAt), TZ).date >= localNow(now, TZ).date
           ? "fresh"
           : "stale";
     // Expired and stale snapshots are still returned: what to do about their age

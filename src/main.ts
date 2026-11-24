@@ -44,7 +44,7 @@ function log(line: string): void {
   console.log(`${now().toISOString()} ${line}`);
 }
 
-/** What "help" quotes: the two slot times, the two repos, the add and the ask, and the policy in force. */
+/** What "help" quotes: the two slot times, the two repos, the add, the ask and the calendar, and the policy in force. */
 function manualSettings(config: Config): ManualSettings {
   return {
     briefTime: config.briefTime,
@@ -53,6 +53,7 @@ function manualSettings(config: Config): ManualSettings {
     addRepo: config.add?.repo ?? null,
     noteItems: config.noteItems,
     ask: config.llm !== null,
+    calendar: config.calendarFile !== null,
     policy: { ...DEFAULT_POLICY, ...config.policy },
   };
 }
@@ -62,7 +63,7 @@ const USAGE = `usage: node src/main.ts <mode>
   dry-run --date YYYY-MM-DD [--slot M|E]  print what would be sent that day (default both slots)
   dry-run --week YYYY-MM-DD              print Mon-Fri, M and E (the date must be a Monday)
   scribe [--dry-run] < dictation.txt    turn a dictation into a note entry (stdin); --dry-run prints it
-  ask "<question>"                       answer a question from the board and the notes
+  ask "<question>"                       answer a question from the board, the calendar and the notes
   calendar                               print the calendar snapshot in CALENDAR_FILE, one line per event
   run                                    Slack bot plus the scheduler`;
 
@@ -130,12 +131,22 @@ async function reportSchema(board: BoardSource, owner: string, number: number, s
 }
 
 /**
- * The ask's pipeline, wired the way the deployment runs it: the model, the board,
- * and the notes repo only when NOTES_REPO is set. Both the DM and `ask` use it;
- * only the DM adds the store (`{ ...deps, asks }`), because only the DM has
- * threads to remember.
+ * The calendar the ask reads, or null when CALENDAR_FILE is unset. It only
+ * constructs: no file is read and nothing is logged here, because the caller is
+ * the one that decides when a read is worth a line.
  */
-function answerSettings(config: Config): AnswerDeps {
+export function openCalendar(config: Config): CalendarIntake | null {
+  if (config.calendarFile === null) return null;
+  return new CalendarIntake({ path: config.calendarFile, readFile: (path) => readFile(path, "utf8") });
+}
+
+/**
+ * The ask's pipeline, wired the way the deployment runs it: the model, the board,
+ * the notes repo only when NOTES_REPO is set, and the calendar only when
+ * CALENDAR_FILE is. Both the DM and `ask` use it; only the DM adds the store
+ * (`{ ...deps, asks }`), because only the DM has threads to remember.
+ */
+export function answerSettings(config: Config, calendar: CalendarIntake | null): AnswerDeps {
   const llm = config.llm;
   if (llm === null) throw new Error("ask: LLM_BASE_URL, LLM_API_KEY and LLM_MODEL have to be set");
   const notes: NotesSource | null =
@@ -148,6 +159,7 @@ function answerSettings(config: Config): AnswerDeps {
     owner: config.projectOwner,
     number: config.projectNumber,
     notes,
+    calendar,
     now,
     log,
     timeoutMs: llm.timeoutMs,
@@ -318,7 +330,16 @@ async function askTask(args: string[]): Promise<void> {
   const question = args.join(" ").trim();
   if (question === "") throw new Error('ask: no question, try ask "how is the Acme POC going?"');
   const config = loadConfig("ask");
-  const answer = await answerQuestion(answerSettings(config), { question, previous: [] });
+  // The CLI is a process of its own, with no tick to hold the snapshot: the file is
+  // read here, once. Only a rejection is worth a line; an accepted snapshot shows
+  // itself in the answer's calendar block, above the sources line.
+  const calendar = openCalendar(config);
+  if (calendar !== null) {
+    const refresh = await calendar.refresh(now());
+    const line = refresh.kind === "rejected" ? calendarRefreshLine(refresh) : null;
+    if (line !== null) log(line);
+  }
+  const answer = await answerQuestion(answerSettings(config, calendar), { question, previous: [] });
   console.log(answer.answer);
   console.log(sourcesLine(answer));
 }
@@ -331,10 +352,11 @@ async function askTask(args: string[]): Promise<void> {
  */
 async function calendarTask(): Promise<void> {
   const config = loadConfig("calendar");
-  const path = config.calendarFile;
-  if (path === null) throw new Error("calendar: CALENDAR_FILE must be the absolute path of the snapshot the pod mounts");
   const at = now();
-  const intake = new CalendarIntake({ path, readFile: (file) => readFile(file, "utf8") });
+  const intake = openCalendar(config);
+  // loadConfig accepts an unset CALENDAR_FILE for this mode; the one check is here,
+  // and what it guards is the same intake ask and run build, not a second reader.
+  if (intake === null) throw new Error("calendar: CALENDAR_FILE must be the absolute path of the snapshot the pod mounts");
   const refresh = await intake.refresh(at);
   const state = intake.current(at);
   // Anything but an accepted snapshot is the whole answer: no file yet, or one
@@ -411,6 +433,10 @@ async function run(): Promise<void> {
   prune();
   const pruneTimer = setInterval(prune, 86_400_000);
   const board = createBoardClient(config.githubToken);
+  // One intake for both readers: the ask holds it from the start, and the tick
+  // refreshes it. It is opened before the Slack wiring because `ask:` is built
+  // while the bot is, and a second intake would be a second, empty snapshot.
+  const intake = openCalendar(config);
   const bot = new SlackBot({
     ...config.slack,
     owner: config.projectOwner,
@@ -438,7 +464,7 @@ async function run(): Promise<void> {
             // The commit's reply then promises the card that follows it.
             noteItems: config.noteItems,
           },
-    ask: config.llm === null ? null : { ...answerSettings(config), asks: store },
+    ask: config.llm === null ? null : { ...answerSettings(config, intake), asks: store },
     add:
       config.add === null
         ? null
@@ -474,6 +500,21 @@ async function run(): Promise<void> {
         : null,
   });
 
+  // The calendar is a file a Mac pushes: read once here, then on every tick. A
+  // stale snapshot is a Mac asleep, not a fault, so it is named and still used.
+  // It goes before the Slack socket because neither its read nor its intake needs
+  // Slack, and the first question can arrive the moment the socket is up: starting
+  // it after would answer that question "no snapshot" while one is on the mount.
+  // `health` comes after this block, and the tick's closure reads it then, not now.
+  let health: Health | null = null;
+  let calendar: CalendarWatcher | null = null;
+  if (intake !== null) {
+    calendar = calendarWatcher({ intake, record: (report) => health?.record(report), now, log });
+    await calendar.start();
+    const calendarLine = calendarRunLine(config, intake.current(now()));
+    if (calendarLine !== null) log(calendarLine);
+  }
+
   await bot.start();
   log("slack connected");
   log(
@@ -494,19 +535,6 @@ async function run(): Promise<void> {
   // Unset note items print nothing: a deployment without them reads as it did before.
   const noteItemsLine = noteItemsRunLine(config);
   if (noteItemsLine !== null) log(noteItemsLine);
-
-  // The calendar is a file a Mac pushes: read once here, then on every tick. A
-  // stale snapshot is a Mac asleep, not a fault, so it is named and still used.
-  // `health` comes after this block, and the tick's closure reads it then, not now.
-  let health: Health | null = null;
-  let calendar: CalendarWatcher | null = null;
-  if (config.calendarFile !== null) {
-    const intake = new CalendarIntake({ path: config.calendarFile, readFile: (path) => readFile(path, "utf8") });
-    calendar = calendarWatcher({ intake, record: (report) => health?.record(report), now, log });
-    await calendar.start();
-    const calendarLine = calendarRunLine(config, intake.current(now()));
-    if (calendarLine !== null) log(calendarLine);
-  }
 
   if (config.httpPort !== null) {
     health = new Health(now);

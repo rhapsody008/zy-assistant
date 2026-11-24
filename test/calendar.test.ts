@@ -427,30 +427,49 @@ test("a read that fails is a rejection, and the held snapshot stays", async () =
 
 // ---- Freshness --------------------------------------------------------------
 
-test("freshness is fresh, stale and expired at 10, 60 and 600 minutes old", async () => {
-  const cases = [
-    [10, "fresh"],
-    [60, "stale"],
-    [600, "expired"],
-  ] as const;
-  for (const [minutes, freshness] of cases) {
-    const file = fakeFile(aged(minutes));
-    assert.equal((await file.intake.refresh(NOW)).kind, "accepted");
-    const state = heldState(file.intake, NOW);
-    assert.equal(state.freshness, freshness, `${minutes} minutes old`);
-    assert.equal(state.snapshot.events.length, 1, "a stale or expired snapshot is still returned, and still used");
-    assert.equal(state.snapshot.generatedAt, new Date(NOW.getTime() - minutes * MINUTE).toISOString());
-  }
+/**
+ * A Singapore wall-clock instant. Freshness is today's local date's business, and
+ * the suite pins TZ at its default: 07:30 here is 23:30Z the evening before.
+ */
+const sg = (text: string): Date => new Date(`${text}+08:00`);
+
+const DAY = 86_400_000;
+
+/** Tue 1 Dec 2026, local midnight: the day the freshness tests are read on. */
+const TUE = Date.parse("2026-12-01T00:00:00+08:00");
+
+/** A push at a local wall-clock time, over a window of two days from `midnight`. */
+function push(at: Date, midnight: number = TUE): string {
+  return snapshotFile({
+    generatedAt: at.toISOString(),
+    window: { start: new Date(midnight).toISOString(), end: new Date(midnight + 2 * DAY).toISOString() },
+  });
+}
+
+test("a push from this morning is still fresh a minute before midnight", async () => {
+  // The Mac pushes at 07:30 and 18:30: an age in minutes would call this stale by
+  // lunchtime, for a snapshot that is still the one about today.
+  const file = fakeFile(push(sg("2026-12-01T07:30")));
+  assert.equal((await file.intake.refresh(sg("2026-12-01T07:31"))).kind, "accepted");
+  const state = heldState(file.intake, sg("2026-12-01T23:59"));
+  assert.equal(state.freshness, "fresh");
+  assert.equal(state.snapshot.events.length, 1, "and it is still the snapshot in use");
 });
 
-test("45 minutes is still fresh, and a minute more is stale", async () => {
-  const fresh = fakeFile(aged(45));
-  await fresh.intake.refresh(NOW);
-  assert.equal(heldState(fresh.intake, NOW).freshness, "fresh");
+test("yesterday evening's push is stale a minute after midnight, and still returned", async () => {
+  const file = fakeFile(push(sg("2026-11-30T18:30"), TUE - DAY));
+  assert.equal((await file.intake.refresh(sg("2026-11-30T18:31"))).kind, "accepted");
+  const state = heldState(file.intake, sg("2026-12-01T00:01"));
+  assert.equal(state.freshness, "stale", "today's push has not arrived");
+  assert.equal(state.snapshot.events.length, 1, "a stale snapshot is still used");
+});
 
-  const stale = fakeFile(aged(46));
-  await stale.intake.refresh(NOW);
-  assert.equal(heldState(stale.intake, NOW).freshness, "stale");
+test("a push three minutes ahead of the clock still reads fresh across midnight", async () => {
+  // A Mac's clock may be up to five minutes ahead, so around midnight it names
+  // tomorrow's date: that is still this moment's snapshot, not a stale one.
+  const file = fakeFile(push(sg("2026-12-02T00:03")));
+  assert.equal((await file.intake.refresh(sg("2026-12-01T23:59"))).kind, "accepted");
+  assert.equal(heldState(file.intake, sg("2026-12-01T23:59")).freshness, "fresh");
 });
 
 test("a closed window is expired however recently it was generated", async () => {
@@ -464,12 +483,25 @@ test("a closed window is expired however recently it was generated", async () =>
   assert.equal(heldState(file.intake, NOW).freshness, "expired");
 });
 
+test("a window pushed today is expired too once its end is past", async () => {
+  // Pushed at 00:10 for a window that ends at midnight: yesterday's meetings, and
+  // expiry is asked before freshness so the push's own date cannot save them.
+  const file = fakeFile(
+    snapshotFile({
+      generatedAt: sg("2026-12-01T00:10").toISOString(),
+      window: { start: sg("2026-11-30T00:00").toISOString(), end: sg("2026-12-01T00:00").toISOString() },
+    }),
+  );
+  await file.intake.refresh(sg("2026-12-01T00:10"));
+  assert.equal(heldState(file.intake, sg("2026-12-01T10:25")).freshness, "expired");
+});
+
 test("freshness is generatedAt's, never the read's: a restart does not make an old snapshot new", async () => {
-  const file = fakeFile(aged(120));
-  await file.intake.refresh(NOW);
-  const state = heldState(file.intake, NOW);
-  assert.equal(state.readAt.getTime(), NOW.getTime(), "read just now");
-  assert.equal(state.freshness, "stale", "and two hours old all the same");
+  const file = fakeFile(push(sg("2026-11-30T18:30"), TUE - DAY));
+  await file.intake.refresh(sg("2026-12-01T09:00"));
+  const state = heldState(file.intake, sg("2026-12-01T09:00"));
+  assert.equal(state.readAt.getTime(), sg("2026-12-01T09:00").getTime(), "read just now");
+  assert.equal(state.freshness, "stale", "and pushed last evening all the same");
 });
 
 // ---- The lines --------------------------------------------------------------
@@ -528,44 +560,30 @@ test("a rejection that repeats is logged once over three ticks", async () => {
   assert.equal(file.intake.current(NOW), null, "and nothing is held");
 });
 
-test("a stale snapshot is named once, and an expired one once, however many ticks pass", async () => {
+test("a morning push is logged fresh once and stale once as midnight passes, then expired", async () => {
   const lines: string[] = [];
-  // Generated at NOW-60m, its window ends at NOW+60m: stale, then expired.
-  const file = fakeFile(aged(60));
-  let clock = NOW;
+  // Pushed at 07:30 for a window that ends two days later: fresh, stale, expired.
+  const file = fakeFile(push(sg("2026-12-01T07:30")));
+  let clock = sg("2026-12-01T23:59");
   const watcher = watcherOver(file, () => clock, lines);
-  await watcher.start();
-  await watcher.tick({ at: clock });
-  clock = new Date(NOW.getTime() + 120 * MINUTE);
+
   await watcher.tick({ at: clock });
   await watcher.tick({ at: clock });
+  clock = sg("2026-12-02T00:01");
+  await watcher.tick({ at: clock });
+  await watcher.tick({ at: clock });
+  clock = sg("2026-12-03T00:01");
+  await watcher.tick({ at: clock });
+
   assert.deepEqual(lines, [
-    "calendar: stale, snapshot 2026-12-01T01:25:03.000Z (age 60m)",
-    "calendar: expired, snapshot 2026-12-01T01:25:03.000Z (age 180m)",
+    "calendar: snapshot 2026-11-30T23:30:00.000Z: 1 event, 0 all-day",
+    "calendar: fresh, snapshot 2026-11-30T23:30:00.000Z (age 989m)",
+    "calendar: stale, snapshot 2026-11-30T23:30:00.000Z (age 991m)",
+    "calendar: expired, snapshot 2026-11-30T23:30:00.000Z (age 2431m)",
   ]);
-});
-
-test("a fresh, then stale, then expired walk logs three freshness lines", async () => {
-  const lines: string[] = [];
-  // Generated at NOW-10m, its window ends at NOW+110m: fresh, stale, then expired.
-  const file = fakeFile(aged(10));
-  let clock = NOW;
-  const watcher = watcherOver(file, () => clock, lines);
-
-  await watcher.tick({ at: clock });
-  clock = new Date(NOW.getTime() + 60 * MINUTE);
-  await watcher.tick({ at: clock });
-  clock = new Date(NOW.getTime() + 200 * MINUTE);
-  await watcher.tick({ at: clock });
-
-  const freshness = lines.filter((line) => line.includes("(age "));
-  assert.deepEqual(freshness, [
-    "calendar: fresh, snapshot 2026-12-01T02:15:03.000Z (age 10m)",
-    "calendar: stale, snapshot 2026-12-01T02:15:03.000Z (age 70m)",
-    "calendar: expired, snapshot 2026-12-01T02:15:03.000Z (age 210m)",
-  ]);
-  // The same file read three times is one accepted snapshot and two no-ops.
-  assert.deepEqual(lines.filter((line) => !line.includes("(age ")), ["calendar: snapshot 2026-12-01T02:15:03.000Z: 1 event, 0 all-day"]);
+  // The same file read six times is one accepted snapshot: the ticks after the
+  // first are no-ops, and a transition is named once, never per tick.
+  assert.deepEqual(lines.filter((line) => !line.includes("(age ")), ["calendar: snapshot 2026-11-30T23:30:00.000Z: 1 event, 0 all-day"]);
 });
 
 test("the tick tells the health endpoint before it reads the snapshot file", async () => {

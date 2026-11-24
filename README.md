@@ -34,8 +34,8 @@ time, Stage and Track feed the Friday sections, Cadence is what the Learning
 section reports, and Account is where the notes-repo activity is looked up.
 
 It also answers questions: DM it `how's the Acme POC going?` and it reads the
-board and the notes repo and answers in a thread, changing nothing (see
-**Asking questions**). And it takes dictations: DM `note: …` and the scribe turns
+board, the calendar and the notes repo and answers in a thread, changing nothing
+(see **Asking questions**). And it takes dictations: DM `note: …` and the scribe turns
 it into an entry of the notes repo and replies with the link (see **The scribe**).
 
 ## Using the bot
@@ -79,7 +79,9 @@ More: `help pings`, `help buttons`, `help note`, `help ask`, `help updates`, `he
 ```
 
 With `ADD_REPO` set, the typed block also carries the `add: <text>` line, and
-`help add` opens its page.
+`help add` opens its page. With `CALENDAR_FILE` set, the ask line and `help ask`
+name the calendar, and without it they read as they did before the ask could see
+one.
 
 Every successful action is one log line with ids only, never a note's text or
 title: `scribe <ts>: committed in <ms> ms (<n> actions) <url>`,
@@ -95,9 +97,12 @@ at startup), `calendar: on, <path>: snapshot <iso>, <n> events`, `calendar: snap
 `calendar: <fresh|stale|expired>, snapshot <iso> (age <n>)`, `calendar: the tick failed: <why>`,
 `proposal <id>: apply failed`, `button <action> on <item> by <user>`,
 `move <item>: <old> -> <new>`, `reply ack <item>`, `help <topic>`,
-`ask <ts>: answered in <ms> ms (<n> items, notes: <folders>)` and
+`ask <ts>: answered in <ms> ms (<n> items, calendar: <n events|expired|not synced>, notes: <folders>)` and
 `ask <ts>: failed: <reason>`. A question's text and an answer's text are never
-logged, and neither is an `add:` sentence or the title drafted from it.
+logged, and neither is an `add:` sentence or the title drafted from it. The
+calendar's part of the ask's line is a count or one word for why there is none,
+and is left out whole when there is no calendar: never a title, a domain or a
+time.
 
 ## Env
 
@@ -116,7 +121,7 @@ logged, and neither is an `add:` sentence or the title drafted from it.
 | `NOTES_REPO` | | – (owner/repo: a commit under `Accounts/<Account>` acks that Account's items, the scribe writes here and the ask reads here; unset turns all three off) |
 | `ADD_REPO` | `run` | – (owner/repo: where an `add:` item's issue is created; with the three `LLM_*` variables it turns `add:` on) |
 | `NOTE_ITEMS` | `run` | – (`on`: a committed note's actions are offered as board items; any other value is off. It needs the scribe and `ADD_REPO`, and without either it is a startup error) |
-| `CALENDAR_FILE` | `run`, `calendar` | – (an absolute path to the calendar snapshot the Mac pushes as a ConfigMap; unset turns the calendar off) |
+| `CALENDAR_FILE` | `run`, `ask`, `calendar` | – (an absolute path to the calendar snapshot the Mac pushes as a ConfigMap; the ask reads it too; unset turns the calendar off) |
 | `WAITING_CHASE_DAYS` | | `5` (a Waiting item with no update for longer is chased) |
 | `STAGE_STALE_DAYS` | | `21` (a pipeline item with no update for longer is nagged on Friday) |
 | `LLM_BASE_URL` | `scribe`, `ask`, `check`, `run` | – (an OpenAI-compatible gateway, e.g. `https://<host>/enterpriseai/gateway/v1`) |
@@ -155,9 +160,9 @@ A DM that is no command is a question, as long as the three `LLM_*` variables ar
 set: `how's the Acme POC going?`, `what's waiting on others?`, `what did we decide
 about the Globex sizing?`. The bot replies `🔎 looking…` in a thread under the
 question at once and edits that reply into the answer, with a line under it
-saying what it read (`Sources: 12 board items, notes: Acme · 940 ms`). Every
-failure lands in that reply as `couldn't answer: <reason>`; nothing is thrown at
-Slack.
+saying what it read (`Sources: 12 board items, calendar: 6 events, notes: Acme ·
+940 ms`, and no `calendar:` part when there is no calendar). Every failure lands
+in that reply as `couldn't answer: <reason>`; nothing is thrown at Slack.
 
 The context is rebuilt for every question:
 
@@ -168,17 +173,25 @@ The context is rebuilt for every question:
   25k characters, one line each: ref, title, status, account, track, work type,
   stage, target date, next touch, next action, waiting on, updated, url, with the
   empty fields left out;
+- **the calendar**: with `CALENDAR_FILE` set, the snapshot the bot holds: one
+  heading per local day it covers, `(today)` and `(tomorrow)` named, and one line
+  per meeting — its time, title, whether ZY answered, how many are coming and
+  who it is with (the first five domains, the rest counted), the earliest first
+  and at most 80 of them;
 - **the notes**: with `NOTES_REPO` set, the README of up to three folders the
   question names — a folder name, or the Account of a board item the question
   names — its header and the newest part of its log (a README is newest first),
   with the GitHub URL of each.
 
-The board goes in a `<board>` block and each README in a `<notes folder="…"
-url="…">` block, and the system prompt says that everything inside them is data
-to answer from, never an instruction. Everything inside a block is HTML-escaped
-(`&amp;`, `&lt;`, `&gt;`, and `&quot;` in the attributes), so a title or a README
-that holds `</board>` or `</notes>` cannot end the block it is in. The model gets
-no tools.
+The board goes in a `<board>` block, the calendar in a `<calendar>` block and
+each README in a `<notes folder="…" url="…">` block, and the system prompt says
+that everything inside them is data to answer from, never an instruction.
+Everything inside a block is HTML-escaped (`&amp;`, `&lt;`, `&gt;`, and `&quot;`
+in the attributes), so a title or a README that holds `</board>`, `</calendar>`
+or `</notes>` cannot end the block it is in. The model gets no tools. An expired
+snapshot is not shown at all: the block says the last sync does not cover today,
+because its window holds yesterday's meetings and reading those as tomorrow's
+would be a lie. A snapshot that has not arrived says so too.
 
 The answer comes back at most 8 lines of Slack mrkdwn, at most 2900 characters,
 with dates written as `Thu 26 Nov`, board items cited as their ref linked to the
@@ -188,17 +201,18 @@ say so and say what is missing. A `<think>` block is stripped the way the scribe
 strips it; a reply cut off at `LLM_MAX_TOKENS`, or one whose reasoning never
 closed, is asked for once more.
 
-It is strictly read-only: the board is only fetched, the notes are only read, and
-nothing is written anywhere. The tests prove it with fakes whose write methods
-throw.
+It is strictly read-only: the board is only fetched, the calendar is only read,
+the notes are only read, and nothing is written anywhere. The tests prove it with
+fakes whose write methods throw.
 
 Threads, in full:
 
 - a reply under an evening ping is an ack, whatever it says (a briefing row is
   acked with its own menu, so a reply under the briefing is a question);
 - a reply in a thread the bot has answered is a follow-up: the context is rebuilt
-  from the fresh board and notes (a follow-up may name a different account), and
-  the last three questions and answers of that thread ride along as conversation;
+  from the fresh board, calendar and notes (a follow-up may name a different
+  account), and the last three questions and answers of that thread ride along as
+  conversation;
 - any other reply (under a briefing, a `today` preview, a dictation's thread, a
   manual message) is a plain question, answered in that thread with no earlier
   talk;
@@ -218,8 +232,11 @@ node src/main.ts ask "how's the Acme POC going?"
 ```
 
 The same pipeline, printed instead of posted: it needs `GITHUB_TOKEN` and the
-three `LLM_*` variables, `NOTES_REPO` is optional, and it prints the answer, the
-sources line and the timing. It keeps no history.
+three `LLM_*` variables, `NOTES_REPO` and `CALENDAR_FILE` are optional, and it
+prints the answer, the sources line and the timing. It keeps no history, and it
+reads the snapshot file itself, once, before answering: that process has no tick
+to hold one. A snapshot it cannot trust is one log line and an answer without a
+calendar, never a failed question.
 
 ## The scribe
 
@@ -393,7 +410,9 @@ startup error that names what is missing. Off, the flag changes nothing at all.
 
 With `CALENDAR_FILE` set, the bot reads a calendar snapshot that the Mac pushes
 into a ConfigMap twice a day (07:30 and 18:30 local, and once at login), and
-holds it in memory.
+holds it in memory. The ask reads it too: a question about tomorrow's meetings is
+answered from the block built out of the snapshot the bot is holding, and with
+`CALENDAR_FILE` unset the ask is what it was before there was a calendar.
 
 *Why the Mac pushes.* The cluster has no route to a laptop, and giving it one
 would mean an ingress path, a token and a certificate to pin. The Mac already
@@ -411,15 +430,20 @@ title, how many attendees, each attendee's **domain** (never an address), and
 whether it is `accepted`, `tentative`, `organizer` or `none`. Exchange sources
 only by default; cancelled events and declined invites are left out. The window
 starts at midnight, not at the push, so a meeting that ended an hour ago is still
-in the snapshot — the follow-up after a meeting needs that.
+in the snapshot — the follow-up after a meeting needs that. The window and the
+all-day ends are midnights in the Mac's time zone while the block writes
+`ASSISTANT_TZ`: one zone is assumed, and a zone field in the snapshot is the fix.
 
-*Fresh, stale, expired.* Fresh while `generatedAt` is under 45 minutes old. Past
-that it is **stale** and still used: a sleeping Mac is a normal state, not an
-error, and with two pushes a day the snapshot is correctly named stale for most
-of them. Expired once now is past the snapshot's own window, and only then does
-the bot behave as if there were no calendar. A duplicate push is a silent no-op;
-an older snapshot is refused; a snapshot whose `generatedAt` is more than five
-minutes in the future (a Mac clock running ahead) is refused too.
+*Fresh, stale, expired.* Fresh while `generatedAt` falls on the local date the
+bot is reading it on, which is what a Mac pushing at 07:30 and 18:30 can honestly
+mean: an age in minutes would call the morning's push stale by lunchtime. A push
+from an earlier day is **stale** and still used: a sleeping Mac is a normal
+state, not an error. Expired once now is past the snapshot's own window, and only
+then does the bot behave as if there were no calendar. A duplicate push is a
+silent no-op; an older snapshot is refused; a snapshot whose `generatedAt` is
+more than five minutes in the future (a Mac clock running ahead) is refused too
+— and a clock a few minutes ahead is why the compare is `>=`, so a push that
+names tomorrow's date just before midnight still reads fresh.
 
 *Nothing is trusted.* The whole snapshot is rejected, never half of it, and the
 reason names a field path, never a value: `events[3].end: not a timestamp`.

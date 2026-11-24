@@ -17,6 +17,7 @@ const DEFAULTS: ManualSettings = {
   addRepo: null,
   noteItems: false,
   ask: true,
+  calendar: false,
   policy: DEFAULT_POLICY,
 };
 
@@ -259,6 +260,39 @@ test("with no notes repo the ask page says the answer is the board alone", () =>
 
   assert.match(page, /the notes: nothing, twice over/);
   assert.doesNotMatch(page, /demo\/notes/);
+});
+
+test("the calendar is in the ask line and its page only when CALENDAR_FILE is set", () => {
+  // Off, both read as they did before the ask could see a calendar: byte for byte.
+  assert.match(overviewText(DEFAULTS, true), /• Ask me anything about your board or notes, e\.g\./);
+  assert.match(overviewText(DEFAULTS, true), /I answer from the board and your notes, and I never change anything\./);
+  assert.doesNotMatch(overviewText(DEFAULTS, true), /calendar/);
+  assert.match(helpReply(DEFAULTS, true, "ask").text, /I answer it from the board and your notes: `how's the Acme POC going\?`/);
+
+  const settings: ManualSettings = { ...DEFAULTS, calendar: true };
+  assert.match(overviewText(settings, true), /• Ask me anything about your board, calendar or notes, e\.g\./);
+  assert.match(overviewText(settings, true), /I answer from the board, your calendar and your notes, and I never change anything\./);
+  assert.match(
+    helpReply(settings, true, "ask").text,
+    /Ask me a question in the DM and I answer it from the board, your calendar and your notes: `how's the Acme POC going\?`/,
+  );
+  fits(helpReply(settings, true, "ask").blocks);
+});
+
+test("the ask page's What I read list names the calendar only when CALENDAR_FILE is set", () => {
+  const off = helpReply(DEFAULTS, true, "ask").text;
+  assert.match(off, /\*What I read\*, every time:\n• the board: [^\n]+\n• the notes: /, "off: board then notes, as before");
+  assert.doesNotMatch(off, /calendar/);
+  assert.match(off, /When the board has no item for what you asked, or the notes stop before the date you mean/);
+
+  const settings: ManualSettings = { ...DEFAULTS, calendar: true };
+  const on = helpReply(settings, true, "ask").text;
+  assert.match(
+    on,
+    /\*What I read\*, every time:\n• the board: [^\n]+\n• the calendar: today's and tomorrow's meetings, with their times and titles but no links;\n• the notes: /,
+  );
+  assert.match(on, /or the calendar does not reach the day you mean, or the notes stop before the date you mean/);
+  fits(helpReply(settings, true, "ask").blocks);
 });
 
 test("a reply under an evening ping is an ack; only a model turns the other replies into questions", () => {

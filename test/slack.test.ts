@@ -202,6 +202,7 @@ function harness(item: Item | null = null) {
     addRepo: null,
     noteItems: false,
     ask: false,
+    calendar: false,
     policy: DEFAULT_POLICY,
   };
   const deps: HandlerDeps = {

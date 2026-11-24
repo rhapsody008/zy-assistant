@@ -7,8 +7,9 @@
 // policy and the two slot times), so the manual cannot drift from what the bot
 // does. The note line and the note topic exist only when the scribe is on, the add
 // line and the add topic only when ADD_REPO is set, the ask line and the ask topic
-// only when a model is set, and the notes-repo ack line in "updates" only when
-// NOTES_REPO is set: the manual describes this deployment, not every deployment.
+// only when a model is set, the calendar in both only when CALENDAR_FILE is, and
+// the notes-repo ack line in "updates" only when NOTES_REPO is set: the manual
+// describes this deployment, not every deployment.
 
 import type { Policy } from "./rules.ts";
 import { TZ } from "./time.ts";
@@ -27,6 +28,8 @@ export interface ManualSettings {
   noteItems: boolean;
   /** True when the LLM variables are set: a DM may then hold a question. */
   ask: boolean;
+  /** True when CALENDAR_FILE is set: the ask page and its line say the calendar is read too. */
+  calendar: boolean;
   policy: Policy;
 }
 
@@ -195,6 +198,10 @@ function addTopic(repo: string): ManualTopic {
   };
 }
 
+/** "the board and your notes", or with a calendar "the board, your calendar and your notes". */
+const askReads = (settings: ManualSettings): string =>
+  settings.calendar ? "the board, your calendar and your notes" : "the board and your notes";
+
 function askTopic(settings: ManualSettings): ManualTopic {
   const reads =
     settings.notesRepo === null
@@ -204,13 +211,18 @@ function askTopic(settings: ManualSettings): ManualTopic {
     topic: "ask",
     title: "Questions",
     details: [
-      'Ask me a question in the DM and I answer it from the board and your notes: `how\'s the Acme POC going?`, `what\'s waiting on others?`, `what did we decide about the Globex sizing?`. My answer comes in the thread under your question.',
+      `Ask me a question in the DM and I answer it from ${askReads(settings)}: \`how's the Acme POC going?\`, \`what's waiting on others?\`, \`what did we decide about the Globex sizing?\`. My answer comes in the thread under your question.`,
       [
         "*What I read*, every time:",
         "• the board: every item that is not Done, plus the Done items touched in the last two weeks, the most recently updated first, at most 150 lines;",
+        ...(settings.calendar
+          ? ["• the calendar: today's and tomorrow's meetings, with their times and titles but no links;"]
+          : []),
         reads,
       ].join("\n"),
-      "I answer only from what I read. When the board has no item for what you asked, or the notes stop before the date you mean, I say so and say what is missing, rather than guess. Every date, name and status I write comes from there.",
+      settings.calendar
+        ? "I answer only from what I read. When the board has no item for what you asked, or the calendar does not reach the day you mean, or the notes stop before the date you mean, I say so and say what is missing, rather than guess. Every date, name and status I write comes from there."
+        : "I answer only from what I read. When the board has no item for what you asked, or the notes stop before the date you mean, I say so and say what is missing, rather than guess. Every date, name and status I write comes from there.",
       "It is read-only. Nothing is written to the board or to the notes, no button is pressed, and I have no tools: the worst that can happen is a wrong answer.",
       "A follow-up goes in the same thread: I rebuild from the fresh board and notes, and I keep the last few questions of that thread in mind. Without a model (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`) there is nothing to ask, and a DM that is no command answers with the one-line hint.",
     ],
@@ -262,7 +274,7 @@ function typedBlock(settings: ManualSettings, scribe: boolean): ManualBlock {
       "• `today`: the plan for today, the same text as the morning briefing.",
       ...(settings.ask
         ? [
-            "• Ask me anything about your board or notes, e.g. `how's the Acme POC going?` or `what's waiting on others?` I answer from the board and your notes, and I never change anything.",
+            `• Ask me anything about your ${settings.calendar ? "board, calendar or notes" : "board or notes"}, e.g. \`how's the Acme POC going?\` or \`what's waiting on others?\` I answer from ${askReads(settings)}, and I never change anything.`,
           ]
         : []),
       ...(scribe ? ["• `note: <text>`: `note: Acme call, they want a POC in January. I send the sizing by Friday.` and I save it to the notes repo."] : []),
