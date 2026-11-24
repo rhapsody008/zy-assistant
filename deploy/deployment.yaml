@@ -51,6 +51,9 @@ spec:
             # Where an `add:` sentence's issue is created before it goes on the board.
             - name: ADD_REPO
               value: "rhapsody008/notes"
+            # A committed note's actions become one card of board items.
+            - name: NOTE_ITEMS
+              value: "on"
             - name: LLM_BASE_URL
               value: "https://nai.yolocal.cloud/enterpriseai/gateway/v1"
             - name: LLM_MODEL
