@@ -521,6 +521,12 @@ export interface PlanContext {
   policy?: Partial<Policy>;
   /** itemId -> ISO of the last notes-repo commit under the item's Account. */
   activity?: Map<string, string>;
+  /**
+   * The day's meetings, as meeting-pings.ts renders them (`• 09:00 Acme weekly
+   * sync`): the one section of the briefing that is not about the board. The
+   * morning reads them; the evening has no briefing to put them in.
+   */
+  meetings?: readonly string[];
 }
 
 export function plan(items: Item[], today: string, slot: Slot, history: SentPing[], ctx?: PlanContext): Plan {
@@ -538,7 +544,7 @@ export function plan(items: Item[], today: string, slot: Slot, history: SentPing
   const rules = slot === "M" ? MORNING_RULES : EVENING_RULES;
   const view = open.map((item) => ({ item, findings: rules.flatMap((rule) => rule(item, env)) }));
   // The morning is one message: its rows are the briefing, not pings of their own.
-  if (slot === "M") return { briefing: renderBriefing(view, env, workItems(items)), pings: [] };
+  if (slot === "M") return { briefing: renderBriefing(view, env, workItems(items), ctx?.meetings ?? []), pings: [] };
   return { briefing: null, pings: mergePings(view, env) };
 }
 
@@ -584,7 +590,7 @@ function briefingRows(view: ItemFindings[], env: Env): Ping[] {
   return rows.map((row) => row.ping);
 }
 
-function renderBriefing(view: ItemFindings[], env: Env, work: readonly Item[]): Briefing {
+function renderBriefing(view: ItemFindings[], env: Env, work: readonly Item[], meetings: readonly string[]): Briefing {
   const policy = env.policy;
   const inSection = (name: Section): Finding[] => view.flatMap((v) => v.findings.filter((f) => f.section === name));
 
@@ -598,8 +604,13 @@ function renderBriefing(view: ItemFindings[], env: Env, work: readonly Item[]): 
   const rows = briefingRows(view, env);
   const today = rows.length > 0 ? ["*Today*", ...rows.map((row) => `• ${row.text}`)] : ["*Today*", "Nothing due. 🎉"];
 
-  // The sections under the rows.
+  // The sections under the rows. The day's meetings go first: they are how the
+  // day is shaped, and everything under them is about the board. A day with
+  // nothing on it adds no heading at all, so the briefing cannot grow one that
+  // says nothing every morning.
   const tail: string[] = [];
+  if (meetings.length > 0) tail.push(`*Today's meetings*\n${meetings.join("\n")}`);
+
   const soon = view
     .flatMap((v) => v.findings.filter((f) => f.section === "soon").map((f) => `• ${link(v.item)}: ${f.reason}`));
   if (soon.length > 0) tail.push(`*Coming up*\n${soon.join("\n")}`);

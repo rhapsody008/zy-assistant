@@ -681,3 +681,31 @@ test("the evening sweep re-pings an unacked row whose touch was due", () => {
   assert.equal(evening.pings[0].kind, "reping");
   assert.deepEqual(evening.pings[0].actions, ["ack", "touch1", "touch7", "done"]);
 });
+
+// ---- the day's meetings: the briefing's one section that is not the board's --
+
+const MEETINGS = ["• 09:00 Acme weekly sync", "• 10:30 Globex kickoff"];
+
+test("a morning briefing names the day's meetings under the rows, in its text and its tail", () => {
+  const briefing = plan(BOARD, "2026-11-25", "M", [], { meetings: MEETINGS }).briefing;
+  assert.ok(briefing !== null);
+
+  const section = `*Today's meetings*\n${MEETINGS.join("\n")}`;
+  assert.equal(briefing.tail[0], section, "the first of the sections under the rows");
+  assert.ok(briefing.text.includes(`\n\n${section}\n\n`), "the text carries the same lines, so the preview does not lie");
+  assert.ok(briefing.text.indexOf(section) > briefing.text.indexOf("*Today*"), "and under the rows, not above them");
+  assert.equal(briefing.tail.filter((line) => line.startsWith("*Today's meetings*")).length, 1, "one heading, the lines on it");
+});
+
+test("with no meetings the briefing is byte for byte the one it was", () => {
+  const before = plan(BOARD, "2026-11-25", "M", []);
+  assert.deepEqual(plan(BOARD, "2026-11-25", "M", [], { meetings: [] }), before, "an empty day adds nothing");
+  assert.deepEqual(plan(BOARD, "2026-11-25", "M", [], { meetings: undefined }), before, "and so does no source at all");
+  assert.ok(!(before.briefing?.text ?? "").includes("Today's meetings"), "no heading either");
+});
+
+test("the evening plan ignores meetings entirely", () => {
+  const withMeetings = plan(BOARD, "2026-11-25", "E", [], { meetings: MEETINGS });
+  assert.deepEqual(withMeetings, plan(BOARD, "2026-11-25", "E", []), "the sweep is unchanged");
+  assert.equal(withMeetings.briefing, null, "the evening has no message to put a meeting in");
+});

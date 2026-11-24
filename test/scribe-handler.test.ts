@@ -315,7 +315,8 @@ test("the ping's item rides in the user prompt as context", async () => {
 
   await scribeHandler(deps, { ts: TS, text: DICTATION, hint: "Acme VPC sizing" }, ui);
 
-  assert.match(llm.requests[0].user, /It is about the board item "Acme VPC sizing"\./);
+  assert.match(llm.requests[0].user, /It is about "Acme VPC sizing"\./);
+  assert.doesNotMatch(llm.requests[0].user, /board item/, "the hint is a meeting's title too, and that is no board item");
 });
 
 test("a click is read back as the dictation and the folder it means", () => {

@@ -8,6 +8,8 @@ import {
   addMissing,
   ADD_VARS,
   calendarCheckLine,
+  calendarPingsCheckLine,
+  calendarPingsRunLine,
   calendarRunLine,
   loadConfig,
   noteItemsCheckLine,
@@ -305,4 +307,48 @@ test("the run line names the file and the snapshot the first read found, or says
     "calendar: on, /var/lib/zy/calendar.json: snapshot 2026-12-01T02:15:03Z, 4 events",
   );
   assert.equal(calendarRunLine(config, null), "calendar: on, /var/lib/zy/calendar.json: no snapshot yet");
+});
+
+/** Everything the meeting pings need at once: the snapshot and the scribe that files the reply. */
+const PINGS = { ...CALENDAR, ...LLM, NOTES_REPO: "demo/notes" };
+
+test("CALENDAR_PINGS is off unless it is exactly on, and adding it changes no other setting", () => {
+  const off = loadConfig("dry-run", { ...BASE, ...PINGS });
+  assert.equal(off.calendarPings, false, "unset");
+  for (const value of ["ON", "on ", " On", "true", "1", "off"]) {
+    assert.equal(loadConfig("dry-run", { ...BASE, ...PINGS, CALENDAR_PINGS: value }).calendarPings, false, JSON.stringify(value));
+  }
+
+  const on = loadConfig("dry-run", { ...BASE, ...PINGS, CALENDAR_PINGS: "on" });
+  assert.equal(on.calendarPings, true);
+  assert.deepEqual({ ...on, calendarPings: false }, off, "the pings add a flag and nothing else");
+});
+
+test("CALENDAR_PINGS=on without CALENDAR_FILE is an error that names CALENDAR_FILE", () => {
+  assert.throws(
+    () => loadConfig("dry-run", { ...BASE, ...LLM, NOTES_REPO: "demo/notes", CALENDAR_PINGS: "on" }),
+    /missing env CALENDAR_FILE \(calendar pings need CALENDAR_FILE, the snapshot their meetings come from\)/,
+  );
+});
+
+test("CALENDAR_PINGS=on without the scribe is an error that names what the scribe lacks", () => {
+  assert.throws(
+    () => loadConfig("dry-run", { ...BASE, ...CALENDAR, CALENDAR_PINGS: "on" }),
+    /missing env LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, NOTES_REPO \(calendar pings need the scribe, whose note answers them: all of LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, NOTES_REPO\)/,
+  );
+  // Half a scribe names the half that is missing, and no more.
+  assert.throws(
+    () => loadConfig("dry-run", { ...BASE, ...CALENDAR, ...LLM, CALENDAR_PINGS: "on" }),
+    /missing env NOTES_REPO \(calendar pings need the scribe/,
+  );
+});
+
+test("check and run say nothing about the meeting pings when they are off, and one line when they are on", () => {
+  const off = loadConfig("dry-run", { ...BASE, ...PINGS });
+  const on = loadConfig("dry-run", { ...BASE, ...PINGS, CALENDAR_PINGS: "on" });
+
+  assert.equal(calendarPingsCheckLine(off), null, "off: check reads exactly as it did before");
+  assert.equal(calendarPingsRunLine(off), null, "off: run logs no line at all");
+  assert.equal(calendarPingsCheckLine(on), "calendar pings: on -> /var/lib/zy/calendar.json");
+  assert.equal(calendarPingsRunLine(on), "calendar pings: on");
 });

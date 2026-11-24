@@ -15,6 +15,8 @@ import {
   ADD_VARS,
   addMissing,
   calendarCheckLine,
+  calendarPingsCheckLine,
+  calendarPingsRunLine,
   calendarRunLine,
   LLM_VARS,
   loadConfig,
@@ -28,6 +30,8 @@ import { createBoardClient, type BoardSource } from "./github.ts";
 import { Health } from "./health.ts";
 import { openaiCompatible } from "./llm.ts";
 import type { ManualSettings } from "./manual.ts";
+import { createMeetingPinger } from "./meeting-pinger.ts";
+import { meetingSection } from "./meeting-pings.ts";
 import { createNotesClient } from "./notes.ts";
 import { DEFAULT_POLICY, plan, type Slot } from "./rules.ts";
 import { requiredProblems, STATUS, validateSchema, type SchemaReport } from "./schema.ts";
@@ -54,6 +58,7 @@ function manualSettings(config: Config): ManualSettings {
     noteItems: config.noteItems,
     ask: config.llm !== null,
     calendar: config.calendarFile !== null,
+    calendarPings: config.calendarPings,
     policy: { ...DEFAULT_POLICY, ...config.policy },
   };
 }
@@ -141,6 +146,17 @@ export function openCalendar(config: Config): CalendarIntake | null {
 }
 
 /**
+ * The briefing's meeting lines, read from the snapshot the process already holds:
+ * one reader for the morning, the `today` preview and a dry run, and none of them
+ * reads the file itself. Absent when the meeting asks are off, so those briefings
+ * are what they were before the calendar had a say in one.
+ */
+function meetingsReader(config: Config, intake: CalendarIntake | null): ((date: string) => readonly string[]) | undefined {
+  if (!config.calendarPings || intake === null) return undefined;
+  return (date) => meetingSection(intake.current(now()), date);
+}
+
+/**
  * The ask's pipeline, wired the way the deployment runs it: the model, the board,
  * the notes repo only when NOTES_REPO is set, and the calendar only when
  * CALENDAR_FILE is. Both the DM and `ask` use it; only the DM adds the store
@@ -219,6 +235,9 @@ async function check(): Promise<void> {
   const calendar = calendarCheckLine(config);
   if (calendar !== null) log(calendar);
 
+  const calendarPings = calendarPingsCheckLine(config);
+  if (calendarPings !== null) log(calendarPings);
+
   if (!config.slack) {
     log("Slack env is not set, skipping auth.test and the DM");
     return;
@@ -244,6 +263,16 @@ async function dryRun(args: string[]): Promise<void> {
   const config = loadConfig("dry-run");
   const board = createBoardClient(config.githubToken);
   const project = await board.fetchBoard(config.projectOwner, config.projectNumber);
+  // The meetings a dry run shows are the ones `ask` reads from the same file, and
+  // only when the meeting asks are on: a rejected snapshot is the one line worth
+  // saying, and nothing at all is said when they are off.
+  const intake = config.calendarPings ? openCalendar(config) : null;
+  if (intake !== null) {
+    const refresh = await intake.refresh(now());
+    const line = refresh.kind === "rejected" ? calendarRefreshLine(refresh) : null;
+    if (line !== null) log(line);
+  }
+  const meetings = meetingsReader(config, intake);
 
   const runs: Array<{ date: string; slot: Slot }> = [];
   if (options.week !== null) {
@@ -260,7 +289,7 @@ async function dryRun(args: string[]): Promise<void> {
 
   const targets = new Map(project.items.map((item) => [item.id, item.target]));
   for (const run of runs) {
-    const result = plan(project.items, run.date, run.slot, [], { policy: config.policy });
+    const result = plan(project.items, run.date, run.slot, [], { policy: config.policy, meetings: meetings?.(run.date) });
     console.log(`== ${run.date} ${run.slot}`);
     if (result.briefing) {
       // The text as it goes out, then what Slack would get: one block per row,
@@ -498,6 +527,11 @@ async function run(): Promise<void> {
             log,
           }
         : null,
+    // The meeting asks and the briefing's meetings read the same snapshot, and both
+    // exist only with CALENDAR_PINGS on: off, the bot files no reply and its
+    // briefings read as they did before the calendar had a say in one.
+    meetingPings: config.calendarPings ? store : null,
+    meetings: meetingsReader(config, intake),
   });
 
   // The calendar is a file a Mac pushes: read once here, then on every tick. A
@@ -514,6 +548,12 @@ async function run(): Promise<void> {
     const calendarLine = calendarRunLine(config, intake.current(now()));
     if (calendarLine !== null) log(calendarLine);
   }
+
+  // The asks after a meeting read the same snapshot, so there is one pinger, built
+  // once, and only when both the flag and the intake are there. It is not started
+  // here: the tick that refreshes the snapshot is the only clock it has.
+  const meetingPinger =
+    config.calendarPings && intake !== null ? createMeetingPinger({ intake, store, sender: bot, now, log }) : null;
 
   await bot.start();
   log("slack connected");
@@ -536,6 +576,10 @@ async function run(): Promise<void> {
   const noteItemsLine = noteItemsRunLine(config);
   if (noteItemsLine !== null) log(noteItemsLine);
 
+  // Unset meeting pings print nothing either, for the same reason.
+  const calendarPingsLine = calendarPingsRunLine(config);
+  if (calendarPingsLine !== null) log(calendarPingsLine);
+
   if (config.httpPort !== null) {
     health = new Health(now);
     const port = await health.listen(config.httpPort);
@@ -557,9 +601,16 @@ async function run(): Promise<void> {
     sender: bot,
     now,
     log,
+    meetings: meetingsReader(config, intake),
     // The calendar rides the tick that is already there: it has no clock of its
-    // own, and a pushed file is worth re-reading about once a minute.
-    onTick: (report) => void calendar?.tick(report),
+    // own, and a pushed file is worth re-reading about once a minute. The meeting
+    // pings follow it on the same report, unawaited: they read the snapshot the
+    // refresh has just accepted, and a slow DM must not hold the scheduler (neither
+    // of the two ever rejects).
+    onTick: (report) => {
+      const refreshed = calendar?.tick(report) ?? Promise.resolve();
+      void refreshed.then(() => meetingPinger?.run(report.at));
+    },
   });
   log(`scheduler running: M at ${config.briefTime}, E at ${config.eodTime} (${TZ})`);
 

@@ -297,10 +297,19 @@ test("the system prompt carries the rules, today's date and every folder", () =>
   assert.match(scribeSystemPrompt("2026-11-25", []), /\(none yet\)/);
 });
 
-test("the user prompt is the dictation, and the ping's item when there is one", () => {
+test("the user prompt is the dictation, and the title it was dictated under when there is one", () => {
   assert.equal(scribeUserPrompt("  ten nodes is enough  ", null), "Dictation from Slack:\n\nten nodes is enough");
   assert.equal(
     scribeUserPrompt("ten nodes is enough", "Acme VPC sizing"),
-    'Dictation from Slack:\n\nten nodes is enough\n\nIt is about the board item "Acme VPC sizing".',
+    'Dictation from Slack:\n\nten nodes is enough\n\nIt is about "Acme VPC sizing".',
   );
+  // The hint is a board item's title or a meeting's, and the sentence claims neither:
+  // the same prompt carries a meeting, which is no board item at all.
+  assert.doesNotMatch(scribeUserPrompt("one node per tenant", "Acme weekly sync"), /board item/);
+  // One line, and a quote or a backslash in a hand-written title cannot end it.
+  assert.equal(
+    scribeUserPrompt("x", '  the "Q3" plan\\draft\n with  Acme  '),
+    'Dictation from Slack:\n\nx\n\nIt is about "the \\"Q3\\" plan\\\\draft with Acme".',
+  );
+  assert.equal(scribeUserPrompt("x", "   "), "Dictation from Slack:\n\nx", "a title with nothing in it adds no sentence");
 });

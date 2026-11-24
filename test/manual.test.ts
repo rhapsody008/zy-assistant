@@ -18,6 +18,7 @@ const DEFAULTS: ManualSettings = {
   noteItems: false,
   ask: true,
   calendar: false,
+  calendarPings: false,
   policy: DEFAULT_POLICY,
 };
 
@@ -360,6 +361,35 @@ test("the pages line lists add only when the topic is there", () => {
   assert.match(helpReply(ADDING, true, null).text, /More: `help pings`, `help buttons`, `help note`, `help add`, `help ask`, `help updates`, `help today`$/);
   assert.match(helpReply(DEFAULTS, true, null).text, /More: `help pings`, `help buttons`, `help note`, `help ask`, `help updates`, `help today`$/);
   assert.doesNotMatch(overviewText(DEFAULTS, true), /`help add`/);
+});
+
+test("the meeting ask and the briefing's meetings are only there when CALENDAR_PINGS is on", () => {
+  // Off is what the manual said before the flag existed: byte for byte.
+  const off = overviewText(DEFAULTS, true);
+  assert.doesNotMatch(off, /meeting/i, "off: nothing of a meeting is promised");
+  assert.doesNotMatch(helpReply(DEFAULTS, true, "today").text, /meeting/i);
+
+  const settings: ManualSettings = { ...DEFAULTS, calendarPings: true };
+  const on = overviewText(settings, true);
+  assert.match(on, /• It also lists today's meetings under the rows, one line each: `• 09:00 Acme weekly sync`, an all-day one as `• all day Offsite`\./);
+  assert.match(
+    on,
+    /• When a meeting the calendar exported has ended, one DM about it: `「Acme weekly sync」 ended at 09:30 \(09:00–09:30, 6 attendees\)\. How did it go\?` Your reply in that thread is filed as a note about that meeting, and the note's actions are offered as board items\./,
+  );
+
+  const today = helpReply(settings, true, "today").text;
+  assert.match(today, /• \*Today's meetings\*, from the calendar snapshot: one line per meeting today/);
+  assert.match(today, /`• and N more meetings`/);
+  assert.match(today, /A day with no meetings has no block at all\./);
+
+  // The flag adds its lines and moves nothing else: strip them from the on text and
+  // the off text is what is left, character for character.
+  const flagLine = (line: string): boolean => /meeting/i.test(line);
+  assert.ok(on.split("\n").some(flagLine), "the flag's lines are in the on text");
+  assert.equal(off, on.split("\n").filter((line) => !flagLine(line)).join("\n"));
+
+  fits(overviewBlocks(settings, true));
+  fits(helpReply(settings, true, "today").blocks);
 });
 
 test("the README quotes the overview the bot sends", () => {

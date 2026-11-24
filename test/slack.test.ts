@@ -6,7 +6,8 @@ import { test } from "node:test";
 import type { AddInput, AddUi } from "../src/add-handler.ts";
 import type { Board, BoardSource } from "../src/github.ts";
 import { noteItemsSpec, proposeNoteItems, type NoteItemsDeps, type NoteItemsInput } from "../src/note-items-handler.ts";
-import { DEFAULT_POLICY, type ActionId, type Briefing, type Item, type Ping } from "../src/rules.ts";
+import { DEFAULT_POLICY, plan, type ActionId, type Briefing, type Item, type Ping } from "../src/rules.ts";
+import { scribeUserPrompt } from "../src/scribe.ts";
 import type { AskInput, AskUi } from "../src/ask.ts";
 import {
   addText,
@@ -36,6 +37,7 @@ import {
   type AddDispatch,
   type Block,
   type HandlerDeps,
+  type MeetingPingLookup,
   type MoveSubmit,
   type ProposalActionClick,
   type ProposalEditSubmit,
@@ -58,7 +60,7 @@ import {
 } from "../src/proposals.ts";
 import type { Note } from "../src/scribe.ts";
 import type { ScribeDictation, ScribeUi } from "../src/scribe-handler.ts";
-import type { Proposal, ProposalStatus } from "../src/store.ts";
+import type { MeetingPingRecord, Proposal, ProposalStatus } from "../src/store.ts";
 import { FakeBoard as WritableBoard, FakeProposals, FakeStore } from "./fakes.ts";
 
 class FakeClient implements SlackClient {
@@ -203,6 +205,7 @@ function harness(item: Item | null = null) {
     noteItems: false,
     ask: false,
     calendar: false,
+    calendarPings: false,
     policy: DEFAULT_POLICY,
   };
   const deps: HandlerDeps = {
@@ -587,6 +590,30 @@ function recordAsk() {
   return { calls, uis, settled, dispatch };
 }
 
+/** The meeting asks as the handlers see them: one row per ask, found by its message. */
+class FakeMeetingPings implements MeetingPingLookup {
+  readonly rows = new Map<string, MeetingPingRecord>();
+
+  findMeetingPingByMessage(channel: string, ts: string): MeetingPingRecord | null {
+    return this.rows.get(`${channel}:${ts}`) ?? null;
+  }
+
+  ask(overrides: Partial<MeetingPingRecord> = {}): MeetingPingRecord {
+    const row: MeetingPingRecord = {
+      key: "meeting:EV_1",
+      eventId: "EV_1",
+      date: "2026-11-27",
+      title: "Acme weekly sync",
+      sentAt: "2026-11-27T01:30:00.000Z",
+      channel: "D",
+      ts: "111.8",
+      ...overrides,
+    };
+    this.rows.set(`${row.channel}:${row.ts}`, row);
+    return row;
+  }
+}
+
 /** Resolves once the fake client has posted one more message: no timers. */
 function nextPost(client: FakeClient): Promise<void> {
   return new Promise<void>((resolve) => {
@@ -721,6 +748,104 @@ test("a reply in a ping's thread still acks it, and is never a question", async 
   assert.deepEqual(ask.calls, []);
   assert.equal(store.findByKey(KEY)?.ackedAt, "2026-11-27T01:00:00.000Z");
   assert.equal(client.posts[0].text, "Noted.");
+});
+
+test("a reply under a meeting ask reaches the scribe with the meeting's title as its hint", async () => {
+  const { deps, client, store } = harness(boardItem({ title: "Acme VPC sizing" }));
+  const scribe = recordScribe();
+  deps.scribe = scribe.dispatch;
+  const meetingPings = new FakeMeetingPings();
+  meetingPings.ask();
+  deps.meetingPings = meetingPings;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: "111.8", text: "  one node per tenant was enough  " });
+  await scribe.settled;
+
+  assert.deepEqual(
+    scribe.calls,
+    [{ ts: "222.3", text: "one node per tenant was enough", hint: "Acme weekly sync" }],
+    "the ask's own title, not the board item's: the snapshot may be long gone",
+  );
+  // The prompt the scribe hands the model for this dictation: it names the meeting,
+  // and a meeting is no board item.
+  const prompt = scribeUserPrompt(scribe.calls[0].text, scribe.calls[0].hint);
+  assert.match(prompt, /It is about "Acme weekly sync"\./);
+  assert.doesNotMatch(prompt, /board item/);
+  assert.deepEqual(client.posts, [], "no Noted.: the ask is a question, not a menu");
+  assert.equal(store.findByKey(KEY)?.ackedAt, null, "and no ping is acked by it");
+});
+
+test("today and help in the ask's thread are the commands, and reach no scribe", async () => {
+  const { deps, client, logs } = harness(boardItem());
+  const scribe = recordScribe();
+  deps.scribe = scribe.dispatch;
+  const meetingPings = new FakeMeetingPings();
+  meetingPings.ask();
+  deps.meetingPings = meetingPings;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: "111.8", text: "today" });
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.4", threadTs: "111.8", text: "help" });
+
+  assert.deepEqual(scribe.calls, [], "neither is a note about the meeting");
+  assert.equal(client.posts.length, 2, "the preview and the manual, each posted once");
+  assert.match(client.posts[0].text, /^\(preview\)/, "today is the briefing preview");
+  assert.deepEqual(logs, ["help"], "and help is the manual, not a scribe");
+});
+
+test("an empty reply under a meeting ask files nothing and falls through to the hint", async () => {
+  const { deps, client } = harness();
+  const scribe = recordScribe();
+  deps.scribe = scribe.dispatch;
+  deps.meetingPings = new FakeMeetingPings();
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: "111.8", text: "   " });
+
+  assert.deepEqual(scribe.calls, []);
+  assert.deepEqual(client.posts.map((post) => post.text), ["I didn't catch that. Type `today`, `note: …`, or `help`."]);
+});
+
+test("a reply under a meeting ask with no meeting store wired is a question, as before", async () => {
+  const { deps, client } = harness(boardItem());
+  const scribe = recordScribe();
+  deps.scribe = scribe.dispatch;
+  const ask = recordAsk();
+  deps.ask = ask.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: "111.8", text: "one node per tenant was enough" });
+  await ask.settled;
+
+  assert.deepEqual(scribe.calls, [], "nothing is filed as a note");
+  assert.deepEqual(ask.calls, [{ ts: "222.3", question: "one node per tenant was enough", threadTs: "111.8" }]);
+  assert.deepEqual(client.posts, []);
+});
+
+test("an evening ping's reply still acks and says Noted. with the meeting asks wired", async () => {
+  const { deps, client, store } = harness();
+  const scribe = recordScribe();
+  deps.scribe = scribe.dispatch;
+  deps.meetingPings = new FakeMeetingPings();
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: "111.1", text: "shipped it" });
+
+  assert.deepEqual(scribe.calls, [], "an evening ping's reply is no note");
+  assert.equal(store.findByKey(KEY)?.ackedAt, "2026-11-27T01:00:00.000Z");
+  assert.deepEqual(client.posts.map((post) => post.text), ["Noted."]);
+});
+
+test("a briefing row's reply with the meeting asks wired is a question, not a note", async () => {
+  const { deps, client } = harness(boardItem());
+  const scribe = recordScribe();
+  deps.scribe = scribe.dispatch;
+  deps.meetingPings = new FakeMeetingPings();
+  const ask = recordAsk();
+  deps.ask = ask.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.4", threadTs: "111.6", text: "what's waiting on others?" });
+  await ask.settled;
+
+  assert.deepEqual(scribe.calls, [], "a briefing's ts names every row, so it names no meeting either");
+  assert.deepEqual(ask.calls, [{ ts: "222.4", question: "what's waiting on others?", threadTs: "111.6" }]);
+  assert.deepEqual(client.posts, []);
 });
 
 test("a reply in a dictation's thread is a question, not an ack", async () => {
@@ -1013,6 +1138,20 @@ function rowClick(overrides: Partial<RowClick> = {}): RowClick {
     ...overrides,
   };
 }
+
+test("the briefing's meeting section is one section under the rows, first of the tail", () => {
+  const meetings = ["• 09:00 Acme weekly sync", "• 10:30 Globex kickoff"];
+  const briefing = plan([boardItem()], "2026-11-27", "M", [], { meetings }).briefing;
+  assert.ok(briefing !== null);
+  const sections = asJson(briefingBlocks(briefing, new Map())).flatMap((block) => (block.type === "section" ? [block.text.text] : []));
+
+  const section = "*Today's meetings*\n• 09:00 Acme weekly sync\n• 10:30 Globex kickoff";
+  const at = sections.indexOf(section);
+  const row = sections.findIndex((text) => text.includes("|notes#52> A: *overdue*"));
+  assert.ok(row >= 0, "the briefed row is above it");
+  assert.equal(at, row + 1, "the heading and its lines are one section, right under the rows");
+  assert.deepEqual(sections.slice(-1), ["*In progress:* 1"]);
+});
 
 test("a row's menu carries short values and the labels a person reads", () => {
   const blocks = briefingBlocks(briefingOf([rowPing("52", ["ack", "move", "touch1", "touch7", "done"])]), new Map([["52", "2026-12-02"]]));

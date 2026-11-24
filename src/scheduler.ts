@@ -30,6 +30,12 @@ export interface SchedulerDeps {
   log: (line: string) => void;
   /** The notes-repo calls, injectable so tests never touch the network. */
   fetchFn?: FetchLike;
+  /**
+   * The day's meetings for the morning briefing, read from the snapshot the caller
+   * already holds: the scheduler knows nothing of the calendar, and this is never
+   * called for the evening, which has no briefing to put them in.
+   */
+  meetings?: (date: string) => readonly string[];
   /** After every tick, how it ended, for the health endpoint. */
   onTick?: (report: TickReport) => void;
 }
@@ -104,7 +110,12 @@ async function runSlot(date: string, slot: Slot, now: Date, deps: SchedulerDeps)
           fetchFn: deps.fetchFn,
         })
       : undefined;
-    const result = plan(board.items, date, slot, history, { policy: config.policy, activity });
+    const result = plan(board.items, date, slot, history, {
+      policy: config.policy,
+      activity,
+      // The morning only: the evening's own message says nothing about the day.
+      meetings: slot === "M" ? deps.meetings?.(date) : undefined,
+    });
     const targets = new Map(board.items.map((i) => [i.id, i.target]));
 
     // The morning is one message, sent once: its rows are recorded in one go, all

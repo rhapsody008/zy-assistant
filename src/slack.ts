@@ -44,7 +44,7 @@ import {
   type ScribeDictation,
   type ScribeUi,
 } from "./scribe-handler.ts";
-import type { PingRecord, PingStore } from "./store.ts";
+import type { MeetingPingRecord, PingRecord, PingStore } from "./store.ts";
 import { addDays, fmtDate, localNow, nextWorkday, TZ } from "./time.ts";
 
 export interface Sent {
@@ -504,6 +504,15 @@ function parseActionId(actionId: string): ActionId | null {
   }
 }
 
+/**
+ * The meeting asks as the handlers see them: the ask a thread hangs under, and
+ * nothing else. Written out rather than Pick<>d out of the store's interface
+ * because a click's Pick is a type in this file already.
+ */
+export type MeetingPingLookup = {
+  findMeetingPingByMessage(channel: string, ts: string): MeetingPingRecord | null;
+};
+
 export interface HandlerDeps {
   client: SlackClient;
   store: PingStore;
@@ -530,6 +539,17 @@ export interface HandlerDeps {
   noteItems?: NoteItemsDispatch | null;
   /** The proposal machinery the cards route into: absent means no card can be clicked. */
   proposals?: ProposalDeps | null;
+  /**
+   * The meeting asks, when CALENDAR_PINGS is on: the ask a reply hangs under, whose
+   * title is the note's topic. Absent or null is a bot that files no such reply, so
+   * a thread it cannot place reads exactly as it did before the asks existed.
+   */
+  meetingPings?: MeetingPingLookup | null;
+  /**
+   * The day's meetings, as the calendar holds them: the `today` preview says them
+   * the way the morning does. Absent reads as a day with nothing on it.
+   */
+  meetings?: (date: string) => readonly string[];
 }
 
 /**
@@ -878,8 +898,12 @@ export function addText(text: string): string | null {
 /**
  * A DM from ZY, in this order: a dictation is scribed and a sentence is drafted into
  * an item; a reply under an evening ping acks that ping; `today` and the manual
- * answer; anything else is a question when a model is set, and the one-line hint
- * when it is not.
+ * answer; a reply under a meeting ask is a note about that meeting; anything else is
+ * a question when a model is set, and the one-line hint when it is not.
+ *
+ * The two commands sit above the meeting reply on purpose: an ask's thread is a
+ * conversation, and `today` or `help` typed in it is still the command. Every other
+ * reply in it is a note of its own, which is what the ask promises.
  */
 export async function handleMessage(deps: HandlerDeps, message: DmMessage): Promise<void> {
   if (message.userId !== deps.userId) return;
@@ -887,7 +911,7 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
   // A dictation wins over the thread-ack: dictated under a ping, it is about the ping.
   const note = dictationText(message.text);
   if (note !== null && deps.scribe) {
-    void runScribe(deps, message, note);
+    void runScribe(deps, message, note, meetingOf(deps, message));
     return;
   }
 
@@ -926,6 +950,17 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
     return;
   }
 
+  // A reply under a meeting ask is a note about that meeting, whatever the words:
+  // the ask is a question, not a menu, so there is no "Noted." to give it and no
+  // ping to ack. A reply that is empty once trimmed is no note, and falls through
+  // to be a question like any other.
+  const reply = message.text.trim();
+  const meeting = reply === "" ? null : meetingOf(deps, message);
+  if (meeting !== null && scribeOn(deps)) {
+    void runScribe(deps, message, reply, meeting);
+    return;
+  }
+
   // Anything else is a question, when there is a model to ask: a DM of its own,
   // or a follow-up in the thread of an answer.
   if (askOn(deps) && message.text.trim() !== "") {
@@ -943,7 +978,7 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
 async function sendToday(deps: HandlerDeps, channel: string): Promise<void> {
   const board = await deps.board.fetchBoard(deps.owner, deps.number);
   const today = localNow(deps.now(), TZ).date;
-  const preview = plan(board.items, today, "M", []);
+  const preview = plan(board.items, today, "M", [], { meetings: deps.meetings?.(today) ?? [] });
   await postMessage(deps, { channel, text: ["(preview)", preview.briefing?.text ?? ""].join("\n\n").trim() });
 }
 
@@ -973,10 +1008,15 @@ async function runAsk(deps: HandlerDeps, message: DmMessage): Promise<void> {
  * The scribe's work, off the handler's path: the event is already acked, and a
  * commit takes longer than Slack would wait. Every error ends in the thread.
  */
-async function runScribe(deps: HandlerDeps, message: DmMessage, text: string): Promise<void> {
+async function runScribe(
+  deps: HandlerDeps,
+  message: DmMessage,
+  text: string,
+  meeting: MeetingPingRecord | null,
+): Promise<void> {
   const ui = threadUi(deps.client, message.channel, message.ts);
   try {
-    const hint = await pingHint(deps, message);
+    const hint = await pingHint(deps, message, meeting);
     const commit = await deps.scribe?.({ ts: message.ts, text, hint }, ui);
     // After the commit, because a note that was not written has no actions to offer.
     if (commit !== null && commit !== undefined) await proposeNoteCard(deps, message.channel, commit);
@@ -1012,8 +1052,22 @@ async function proposeNoteCard(deps: HandlerDeps, channel: string, commit: Scrib
   }
 }
 
-/** A note dictated under a ping is about that ping's item: its title is the hint. */
-async function pingHint(deps: HandlerDeps, message: DmMessage): Promise<string | null> {
+/**
+ * The meeting ask this message replies under, or null: one lookup per message,
+ * handed to the scribe so the hint does not read the store a second time.
+ */
+function meetingOf(deps: HandlerDeps, message: DmMessage): MeetingPingRecord | null {
+  if (!message.threadTs) return null;
+  return deps.meetingPings?.findMeetingPingByMessage(message.channel, message.threadTs) ?? null;
+}
+
+/**
+ * A note dictated under a ping is about that ping's item: its title is the hint.
+ * A meeting ask keeps its own title in the store, and that is the same hint one
+ * step removed: the reply names the meeting long after the snapshot moved on.
+ */
+async function pingHint(deps: HandlerDeps, message: DmMessage, meeting: MeetingPingRecord | null): Promise<string | null> {
+  if (meeting !== null) return meeting.title;
   return (await threadItem(deps, message))?.title ?? null;
 }
 
@@ -1709,6 +1763,13 @@ export interface SlackBotOptions {
    * loadConfig's NOTE_ITEMS rule is about.
    */
   noteItems?: NoteItemsDeps | null;
+  /**
+   * The meeting asks and the day's meetings, both from the calendar and both only
+   * with CALENDAR_PINGS on: absent, a reply under an ask is no note and the
+   * briefing names no meeting. loadConfig's rule is what ties them to the scribe.
+   */
+  meetingPings?: MeetingPingLookup | null;
+  meetings?: (date: string) => readonly string[];
 }
 
 /** Slack's "the blocks you sent are no good", as Bolt throws it. */
@@ -1745,6 +1806,8 @@ export class SlackBot implements Sender {
       log: options.log,
       manual: options.manual,
       rows: this.#rows,
+      meetingPings: options.meetingPings ?? null,
+      meetings: options.meetings,
       scribe: scribe === null ? null : (dictation, ui) => scribeHandler(scribe, dictation, ui),
       ask: ask === null ? null : (input, ui) => askQuestion(ask, input, ui),
       add: add === null ? null : (input, ui) => addHandler(add, input, ui),

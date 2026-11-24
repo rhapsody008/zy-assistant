@@ -51,7 +51,8 @@ policy and slot times (`WAITING_CHASE_DAYS`, `STAGE_STALE_DAYS`, the lead times,
 the WIP limit), so the pages say what this deployment does. The `note:` line and
 the `note` topic are left out when the scribe is off, the `add:` line and the
 `add` topic when `ADD_REPO` is unset, and the notes-repo ack below when
-`NOTES_REPO` is unset. With the defaults, `help` sends exactly this:
+`NOTES_REPO` is unset. With `CALENDAR_PINGS` off the manual says nothing of a
+meeting. With the defaults, `help` sends exactly this:
 
 ```
 *What you can type*
@@ -95,14 +96,17 @@ title: `scribe <ts>: committed in <ms> ms (<n> actions) <url>`,
 at startup), `calendar: on, <path>: snapshot <iso>, <n> events`, `calendar: snapshot
 <iso>: <n> events, <n> all-day`, `calendar: snapshot rejected: <field path>: <why>`,
 `calendar: <fresh|stale|expired>, snapshot <iso> (age <n>)`, `calendar: the tick failed: <why>`,
+`calendar pings: on` at startup, `meeting ping <eventId>: sent`,
+`meeting ping <eventId>: failed: <reason>`, `meeting pings: <reason>`,
 `proposal <id>: apply failed`, `button <action> on <item> by <user>`,
 `move <item>: <old> -> <new>`, `reply ack <item>`, `help <topic>`,
 `ask <ts>: answered in <ms> ms (<n> items, calendar: <n events|expired|not synced>, notes: <folders>)` and
 `ask <ts>: failed: <reason>`. A question's text and an answer's text are never
-logged, and neither is an `add:` sentence or the title drafted from it. The
-calendar's part of the ask's line is a count or one word for why there is none,
-and is left out whole when there is no calendar: never a title, a domain or a
-time.
+logged, and neither is an `add:` sentence or the title drafted from it. Nor is a
+meeting's title or a reply's words: the note itself carries them to the notes
+repo. The calendar's part of the ask's line is a count or one word for why there
+is none, and is left out whole when there is no calendar: never a title, a domain
+or a time.
 
 ## Env
 
@@ -122,6 +126,7 @@ time.
 | `ADD_REPO` | `run` | – (owner/repo: where an `add:` item's issue is created; with the three `LLM_*` variables it turns `add:` on) |
 | `NOTE_ITEMS` | `run` | – (`on`: a committed note's actions are offered as board items; any other value is off. It needs the scribe and `ADD_REPO`, and without either it is a startup error) |
 | `CALENDAR_FILE` | `run`, `ask`, `calendar` | – (an absolute path to the calendar snapshot the Mac pushes as a ConfigMap; the ask reads it too; unset turns the calendar off) |
+| `CALENDAR_PINGS` | `run` | – (`on`: one DM asking how each meeting that has ended went, and the day's meetings in the briefing; any other value is off. It needs `CALENDAR_FILE` and the scribe, and without either it is a startup error naming what is missing) |
 | `WAITING_CHASE_DAYS` | | `5` (a Waiting item with no update for longer is chased) |
 | `STAGE_STALE_DAYS` | | `21` (a pipeline item with no update for longer is nagged on Friday) |
 | `LLM_BASE_URL` | `scribe`, `ask`, `check`, `run` | – (an OpenAI-compatible gateway, e.g. `https://<host>/enterpriseai/gateway/v1`) |
@@ -455,6 +460,48 @@ is only stale.
 The Mac's half is documented in `mac/calendar/README.md`: build once (a `.app`
 bundle, because a bare binary never gets the Calendar permission dialog), install
 the launchd job, and it pushes from then on.
+
+*The briefing's meetings.* With `CALENDAR_PINGS=on` the 09:00 briefing carries a
+`*Today's meetings*` block under its Today rows, one line per meeting
+(`• 09:00 Acme weekly sync`, an all-day one as `• all day Offsite`), at most 8
+lines and ending with `• and N more meetings` when the day has more; a day with
+no meetings gets no block at all. Like the ask, it says nothing when the snapshot
+is expired or was never pushed.
+
+## Post-meeting asks
+
+With `CALENDAR_PINGS=on` the bot asks how a meeting went. It is off unless the
+value is exactly `on`: on without `CALENDAR_FILE`, or without the scribe, is a
+startup error naming what is missing, because the ask needs a snapshot to ask
+about and a note to file the answer as.
+
+*The ask.* When a meeting that the Mac exported has ended, the bot sends one DM
+about it:
+
+```
+「Acme weekly sync」 ended at 09:30 (09:00–09:30, 6 attendees). How did it go? Reply in this thread and I'll file it as a note about that meeting.
+```
+
+A meeting is asked about when it is today's, on a weekday, not all-day, has at
+least one attendee, ended 5 to 45 minutes ago, and ended between 08:00 and 19:00
+local: at most six a day, earliest first, and never twice — the `meeting_pings`
+table holds each ask, so a restart does not re-ask. A reply in that thread is
+filed as a note by the scribe, with the meeting's title as the note's topic, and
+the note's `### Actions` become board items as in **Board items from a note**.
+Any words count: the ask is not a menu, and a `note:` or an `add:` typed in that
+thread still wins.
+
+An expired or never-pushed snapshot asks nothing: an expired window holds
+yesterday's meetings, and asking how yesterday's went is worse than silence.
+
+Everything here and the briefing's meetings block are off unless the flag is on,
+and turning them quiet is turning the flag off: one commit, nothing lost, and the
+`meeting_pings` rows left behind are harmless.
+
+The log lines are in the list above: `meeting ping <eventId>: sent`,
+`meeting ping <eventId>: failed: <reason>`, `meeting pings: <reason>`, and
+`calendar pings: on` at startup. A meeting's title and a reply's words are never
+logged: the note itself carries them to the notes repo.
 
 ## Develop
 

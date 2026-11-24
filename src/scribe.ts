@@ -90,10 +90,23 @@ export function scribeSystemPrompt(today: string, folders: readonly string[]): s
   ].join("\n");
 }
 
-/** The dictation itself, and the board item it was dictated under when there is one. */
+/**
+ * A hint as one quoted phrase: a title is written by hand, so a quote or a
+ * backslash in it must not end the sentence it is quoted in, and a newline must
+ * not become a line of its own. Collapsed first, escaped second. Pure.
+ */
+function quotedHint(hint: string): string {
+  return oneLine(hint).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+/** The dictation itself, and the title it was dictated under when there is one. */
 export function scribeUserPrompt(text: string, hint: string | null): string {
   const lines = [`Dictation from Slack:`, "", text.trim()];
-  if (hint !== null) lines.push("", `It is about the board item "${hint}".`);
+  // Neutral between the two things a hint can be, a board item and a meeting ask:
+  // both pass a title, and only one of them is about the board. Nothing at all for
+  // a hint that is empty once collapsed, so no sentence quotes an empty title.
+  const about = hint === null ? "" : quotedHint(hint);
+  if (about !== "") lines.push("", `It is about "${about}".`);
   return lines.join("\n");
 }
 

@@ -63,6 +63,13 @@ export interface Config {
   noteItems: boolean;
   /** CALENDAR_FILE: the absolute path of the snapshot the pod mounts, or null: off. */
   calendarFile: string | null;
+  /**
+   * CALENDAR_PINGS=on: one DM asking how a meeting went, after it ends. It is only
+   * on with CALENDAR_FILE (there is no snapshot otherwise) and with the scribe (a
+   * reply becomes a note, so without it the ask has no answer), and loadConfig
+   * refuses the half state.
+   */
+  calendarPings: boolean;
 }
 
 const SLACK_VARS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_USER_ID"];
@@ -211,6 +218,16 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
     fail(mode, SCRIBE_VARS.filter((name) => get(name) === ""), ` (note items need the scribe: all of ${SCRIBE_VARS.join(", ")})`);
   }
   if (noteItems && addRepo === "") fail(mode, ["ADD_REPO"], " (note items need ADD_REPO, where their issues are created)");
+  // The meeting pings are the calendar's next step: they read a snapshot and their
+  // answer is a note, so on without either has nothing to ask about and nowhere to
+  // file the reply. It is the note items' rule again, said for the pings.
+  const calendarPings = get("CALENDAR_PINGS") === "on";
+  if (calendarPings && calendarFile === "") {
+    fail(mode, ["CALENDAR_FILE"], " (calendar pings need CALENDAR_FILE, the snapshot their meetings come from)");
+  }
+  if (calendarPings && scribe === null) {
+    fail(mode, SCRIBE_VARS.filter((name) => get(name) === ""), ` (calendar pings need the scribe, whose note answers them: all of ${SCRIBE_VARS.join(", ")})`);
+  }
 
   return {
     githubToken: get("GITHUB_TOKEN"),
@@ -231,6 +248,7 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
     add,
     noteItems,
     calendarFile: calendarFile === "" ? null : calendarFile,
+    calendarPings,
   };
 }
 
@@ -271,4 +289,21 @@ export function calendarRunLine(config: Config, state: CalendarState | null): st
       ? "no snapshot yet"
       : `snapshot ${state.snapshot.generatedAt}, ${state.snapshot.events.length} event${state.snapshot.events.length === 1 ? "" : "s"}`;
   return `calendar: on, ${config.calendarFile}: ${held}`;
+}
+
+/**
+ * What `check` says about the meeting pings: one line when they are on, and
+ * nothing at all when they are off, so check reads as it did before them.
+ */
+export function calendarPingsCheckLine(config: Config): string | null {
+  const file = config.calendarPings ? config.calendarFile : null;
+  return file === null ? null : `calendar pings: on -> ${file}`;
+}
+
+/**
+ * What `run` logs at startup: one line when the pings are on, and nothing at all
+ * when they are off, so a deployment without them reads as it did before.
+ */
+export function calendarPingsRunLine(config: Config): string | null {
+  return config.calendarPings ? "calendar pings: on" : null;
 }

@@ -2,9 +2,9 @@
 // briefings went out, which slots already ran, how often a failing slot has been
 // retried, every dictation the scribe has not finished with yet, the questions
 // the DM has taken and answered (the claims that dedupe a redelivery, and the
-// answers a follow-up in their thread quotes), and the proposals the DM has
-// drafted and is waiting on a click for. `:memory:` is accepted so tests never
-// touch the disk.
+// answers a follow-up in their thread quotes), the proposals the DM has drafted
+// and is waiting on a click for, and the asks that went out after a meeting.
+// `:memory:` is accepted so tests never touch the disk.
 
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -158,6 +158,43 @@ export interface PingStore {
   recordSlotFailure(date: string, slot: Slot, error: string): number;
 }
 
+/** One ask after a meeting: the DM, and the key that makes it once. */
+export interface NewMeetingPing {
+  key: string; // "meeting:<event id>": the dedupe key, stable per occurrence
+  eventId: string;
+  date: string; // the local date the meeting ended
+  title: string; // the meeting's title, for the reply's note topic
+  sentAt: string; // ISO
+  channel: string;
+  ts: string; // the ask's message ts, the thread the reply lands in
+}
+
+export interface MeetingPingRecord {
+  key: string;
+  eventId: string;
+  date: string;
+  title: string;
+  sentAt: string;
+  channel: string;
+  ts: string;
+}
+
+/**
+ * The meeting asks, apart from PingStore because a meeting is not a board item:
+ * no board update acks one, and plan() must never see one.
+ *
+ * A title is stored here, which nothing else in the bot does. It is ZY's own data
+ * on his own volume, kept because the reply needs a topic long after the calendar
+ * snapshot may have moved on; logs still never carry it.
+ */
+export interface MeetingPingStore {
+  recordMeetingPing(p: NewMeetingPing): void;
+  /** The keys already asked about on that date: the planner's `sent` set. */
+  meetingPingKeys(date: string): Set<string>;
+  /** The ask a DM thread hangs under, or null: the reply is filed as a note about it. */
+  findMeetingPingByMessage(channel: string, ts: string): MeetingPingRecord | null;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS pings (
   key TEXT PRIMARY KEY,
@@ -231,6 +268,20 @@ CREATE TABLE IF NOT EXISTS asks (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS asks_thread ON asks (thread_ts, created_at);
+-- Every ask after a meeting, written as it is sent: the key is what keeps the
+-- same meeting from being asked about twice, and the message names the thread a
+-- reply is filed from. It is not in pings: a meeting is no board item, and a
+-- board update must never ack one.
+CREATE TABLE IF NOT EXISTS meeting_pings (
+  key TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL,
+  date TEXT NOT NULL,
+  title TEXT NOT NULL,
+  sent_at TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  ts TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS meeting_pings_message ON meeting_pings (channel, ts);
 -- Every question message taken, written before the model is called: Slack
 -- delivers the same event twice sometimes, and one question has one answer.
 CREATE TABLE IF NOT EXISTS asks_seen (
@@ -294,6 +345,18 @@ function toProposal(row: Row): Proposal {
 /** `${date}:${slot}:briefing`, the same shape as a ping key. */
 export const briefingKey = (date: string, slot: Slot): string => pingKey(date, slot, "briefing");
 
+function toMeetingPing(row: Row): MeetingPingRecord {
+  return {
+    key: text(row.key),
+    eventId: text(row.event_id),
+    date: text(row.date),
+    title: text(row.title),
+    sentAt: text(row.sent_at),
+    channel: text(row.channel),
+    ts: text(row.ts),
+  };
+}
+
 function toAsk(row: Row): AskRecord {
   return {
     ts: text(row.ts),
@@ -304,7 +367,7 @@ function toAsk(row: Row): AskRecord {
   };
 }
 
-export class SqliteStore implements PingStore, DictationStore, AskStore, ProposalStore {
+export class SqliteStore implements PingStore, DictationStore, AskStore, ProposalStore, MeetingPingStore {
   #db: DatabaseSync;
   #interrupted: string[]; // the ids the constructor reset, read out once
 
@@ -486,6 +549,27 @@ export class SqliteStore implements PingStore, DictationStore, AskStore, Proposa
       const row = this.findProposal(id);
       return row === null ? [] : [row];
     });
+  }
+
+  // First wins, unlike recordPing: the row is the thread anchor a reply may already
+  // hang under, so a second send for the same key must never move it. Nothing is
+  // replaced and nothing is doubled.
+  recordMeetingPing(p: NewMeetingPing): void {
+    this.#db
+      .prepare(
+        "INSERT OR IGNORE INTO meeting_pings (key, event_id, date, title, sent_at, channel, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(p.key, p.eventId, p.date, p.title, p.sentAt, p.channel, p.ts);
+  }
+
+  meetingPingKeys(date: string): Set<string> {
+    const rows = this.#db.prepare("SELECT key FROM meeting_pings WHERE date = ?").all(date);
+    return new Set(rows.map((row) => text(row.key)));
+  }
+
+  findMeetingPingByMessage(channel: string, ts: string): MeetingPingRecord | null {
+    const row = this.#db.prepare("SELECT * FROM meeting_pings WHERE channel = ? AND ts = ?").get(channel, ts);
+    return row ? toMeetingPing(row) : null;
   }
 
   claimAsk(ts: string, at: string): boolean {

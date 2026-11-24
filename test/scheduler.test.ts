@@ -390,3 +390,30 @@ test("the history window covers waitingChaseDays, so a chase already made is see
   await at(deps, NINE);
   assert.deepEqual(sender.briefings[0].rows, [], "pinged 9 days ago: not chased again this morning");
 });
+
+test("the morning briefing carries the day's meetings, and the evening never asks for them", async () => {
+  const asked: string[] = [];
+  const meetings = (date: string): readonly string[] => {
+    asked.push(date);
+    return ["• 09:00 Acme weekly sync"];
+  };
+
+  const morning = harness(ITEMS, { meetings });
+  await at(morning.deps, NINE);
+  assert.deepEqual(asked, ["2026-11-23"], "asked once, for the day the slot is about");
+  assert.deepEqual(
+    morning.sender.briefings[0].tail.filter((line) => line.startsWith("*Today's meetings*")),
+    ["*Today's meetings*\n• 09:00 Acme weekly sync"],
+  );
+
+  const evening = harness([item("9", { target: "2026-11-23" })], { meetings });
+  await at(evening.deps, SEVENTEEN_THIRTY);
+  assert.deepEqual(asked, ["2026-11-23"], "the evening has no briefing, so the source is not read for it");
+  assert.equal(evening.sender.sent.length, 1, "and the sweep still went out");
+});
+
+test("a morning with no meeting source is the briefing it was", async () => {
+  const { deps, sender } = harness(ITEMS);
+  await at(deps, NINE);
+  assert.deepEqual(sender.briefings[0].tail.filter((line) => line.includes("Today's meetings")), []);
+});

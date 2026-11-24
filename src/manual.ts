@@ -7,8 +7,9 @@
 // policy and the two slot times), so the manual cannot drift from what the bot
 // does. The note line and the note topic exist only when the scribe is on, the add
 // line and the add topic only when ADD_REPO is set, the ask line and the ask topic
-// only when a model is set, the calendar in both only when CALENDAR_FILE is, and
-// the notes-repo ack line in "updates" only when NOTES_REPO is set: the manual
+// only when a model is set, the calendar in both only when CALENDAR_FILE is, the
+// notes-repo ack line in "updates" only when NOTES_REPO is set, and the ask after a
+// meeting and the briefing's meetings only when CALENDAR_PINGS is: the manual
 // describes this deployment, not every deployment.
 
 import type { Policy } from "./rules.ts";
@@ -30,6 +31,11 @@ export interface ManualSettings {
   ask: boolean;
   /** True when CALENDAR_FILE is set: the ask page and its line say the calendar is read too. */
   calendar: boolean;
+  /**
+   * True when CALENDAR_PINGS is on: the DM that asks how a meeting went, and the
+   * briefing's meetings block. Off, the two are what the manual said before them.
+   */
+  calendarPings: boolean;
   policy: Policy;
 }
 
@@ -90,6 +96,11 @@ function todayTopic(settings: ManualSettings): ManualTopic {
         "*What the morning briefing holds*, in this order:",
         `• *Today*: one row per item whose Target date is today, due within ${plural(policy.pingDays, "day")} or already overdue, whose Next touch is due or past, or that is at a milestone, whatever its status. Each row has a menu with its actions; with nothing due it reads "Nothing due. 🎉".`,
         "The rows are ordered: what is late, then what is due today, then what is due soon, then a chase, then a milestone heads-up. Within a group the earlier date goes first, then the board's order.",
+        ...(settings.calendarPings
+          ? [
+              "• *Today's meetings*, from the calendar snapshot: one line per meeting today, `• 09:00 Acme weekly sync`, an all-day one as `• all day Offsite`, at most 8 lines and ending with `• and N more meetings` when the day has more. A day with no meetings has no block at all.",
+            ]
+          : []),
         `• *Coming up*: ${comingUp}.`,
         `• *Stale dates*: Target dates more than ${plural(policy.staleDays, "day")} overdue, to fix or close.`,
         `• *Pipeline* and *Learning*, Fridays only: an open Stage item nobody has touched for more than ${plural(policy.stageStaleDays, "day")}, and a Learn-track item with its cadence and the date of its last update.`,
@@ -297,9 +308,17 @@ function sentBlock(settings: ManualSettings): ManualBlock {
     [
       "*What I send you* (automatic; you never type these)",
       `• The briefing at \`${settings.briefTime}\` on weekdays: ONE message, with a row per item that needs you and a \`⋯\` menu on each row.`,
+      ...(settings.calendarPings
+        ? ["• It also lists today's meetings under the rows, one line each: `• 09:00 Acme weekly sync`, an all-day one as `• all day Offsite`."]
+        : []),
       `• At \`${settings.eodTime}\`, only if something needs you: a ping for each item due today, and a re-ping of an unanswered row that is still late or still due. A quiet evening sends nothing.`,
       `• The pings of the evening are a separate message about ONE item: a deadline close (Target date due in ${plural(policy.pingDays, "day")} or fewer) or already passed, a Next touch due, or someone to chase (a ${policy.waiting} item nobody moved for ${plural(policy.waitingChaseDays, "day")}). Each ping has buttons.`,
       "• A row looks like this: `notes#53 Acme deck review: due in 2 days (Thu 26 Nov)` with `⋯` on its right: *Got it*, *Done*, *+1 day*, *+7 days*, *Move date…*",
+      ...(settings.calendarPings
+        ? [
+            "• When a meeting the calendar exported has ended, one DM about it: `「Acme weekly sync」 ended at 09:30 (09:00–09:30, 6 attendees). How did it go?` Your reply in that thread is filed as a note about that meeting, and the note's actions are offered as board items.",
+          ]
+        : []),
     ].join("\n"),
   );
 }
