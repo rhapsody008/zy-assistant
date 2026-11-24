@@ -58,6 +58,9 @@ spec:
             # at 07:30 and 18:30 local.
             - name: CALENDAR_FILE
               value: "/calendar/snapshot.json"
+            # One ask per meeting that has ended, and the day's meetings in the briefing.
+            - name: CALENDAR_PINGS
+              value: "on"
             - name: LLM_BASE_URL
               value: "https://nai.yolocal.cloud/enterpriseai/gateway/v1"
             - name: LLM_MODEL
