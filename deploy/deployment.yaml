@@ -48,6 +48,9 @@ spec:
               value: "Asia/Singapore"
             - name: NOTES_REPO
               value: "rhapsody008/notes"
+            # Where an `add:` sentence's issue is created before it goes on the board.
+            - name: ADD_REPO
+              value: "rhapsody008/notes"
             - name: LLM_BASE_URL
               value: "https://nai.yolocal.cloud/enterpriseai/gateway/v1"
             - name: LLM_MODEL
