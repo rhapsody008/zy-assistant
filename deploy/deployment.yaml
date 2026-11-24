@@ -29,7 +29,7 @@ spec:
       containers:
         - name: app
           # Tag pinned in kustomization.yaml (images:).
-          image: ghcr.io/rhapsody008/zy-assistant:0.9.0
+          image: ghcr.io/rhapsody008/zy-assistant:0.10.0
           envFrom:
             # Created outside this repo: GITHUB_TOKEN, SLACK_BOT_TOKEN,
             # SLACK_APP_TOKEN, SLACK_USER_ID.
@@ -54,7 +54,8 @@ spec:
             # A committed note's actions become one card of board items.
             - name: NOTE_ITEMS
               value: "on"
-            # The Mac's calendar snapshot, pushed as a ConfigMap every 15 minutes.
+            # The Mac's calendar snapshot, pushed as a ConfigMap twice a day,
+            # at 07:30 and 18:30 local.
             - name: CALENDAR_FILE
               value: "/calendar/snapshot.json"
             - name: LLM_BASE_URL
