@@ -3,7 +3,18 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addMissing, ADD_VARS, loadConfig, noteItemsCheckLine, noteItemsRunLine, SCRIBE_VARS, scribeMissing } from "../src/config.ts";
+import { parseSnapshot, type CalendarState } from "../src/calendar.ts";
+import {
+  addMissing,
+  ADD_VARS,
+  calendarCheckLine,
+  calendarRunLine,
+  loadConfig,
+  noteItemsCheckLine,
+  noteItemsRunLine,
+  SCRIBE_VARS,
+  scribeMissing,
+} from "../src/config.ts";
 
 const BASE = { GITHUB_TOKEN: "test-token" };
 
@@ -205,4 +216,93 @@ test("check and run say nothing about note items when they are off, and one line
   assert.equal(noteItemsCheckLine(on), "note items: on -> demo/board");
   assert.equal(noteItemsRunLine(off), null, "off: run logs no line at all, as it did before 0.8.0");
   assert.equal(noteItemsRunLine(on), "note items: on -> demo/board");
+});
+
+const CALENDAR = { CALENDAR_FILE: "/var/lib/zy/calendar.json" };
+
+test("CALENDAR_FILE is off when unset, and adding it changes no other setting", () => {
+  const off = loadConfig("dry-run", { ...BASE });
+  assert.equal(off.calendarFile, null);
+  assert.equal(calendarCheckLine(off), null, "unset: check reads exactly as it did before");
+  assert.equal(calendarRunLine(off, null), null, "and run logs no line at all");
+
+  const on = loadConfig("dry-run", { ...BASE, ...CALENDAR });
+  assert.deepEqual({ ...on, calendarFile: null }, off, "the calendar adds a path and nothing else");
+});
+
+test("an absolute CALENDAR_FILE is read, and check names it", () => {
+  const config = loadConfig("dry-run", { ...BASE, ...CALENDAR });
+  assert.equal(config.calendarFile, "/var/lib/zy/calendar.json");
+  assert.equal(calendarCheckLine(config), "calendar: on -> /var/lib/zy/calendar.json");
+});
+
+test("a relative CALENDAR_FILE is a startup error", () => {
+  for (const value of ["calendar.json", "./calendar.json", "../calendar.json", "var/lib/zy/calendar.json"]) {
+    assert.throws(
+      () => loadConfig("dry-run", { ...BASE, CALENDAR_FILE: value }),
+      /CALENDAR_FILE must be an absolute path, got/,
+      value,
+    );
+  }
+});
+
+test("the calendar mode needs no GITHUB_TOKEN, no Slack, no model, and reads the project's own", () => {
+  const bare = loadConfig("calendar", { ...CALENDAR });
+  assert.equal(bare.githubToken, "", "the one mode that works with no token at all");
+  assert.equal(bare.slack, null);
+  assert.equal(bare.llm, null);
+  assert.equal(bare.projectOwner, "rhapsody008", "the project's defaults, like check's");
+  assert.equal(bare.projectNumber, 1);
+
+  const configured = loadConfig("calendar", { ...CALENDAR, PROJECT_OWNER: "demo", PROJECT_NUMBER: "7" });
+  assert.equal(configured.projectOwner, "demo");
+  assert.equal(configured.projectNumber, 7);
+});
+
+test("every other mode still demands GITHUB_TOKEN, as it did before", () => {
+  for (const mode of ["check", "dry-run", "scribe", "ask"] as const) {
+    assert.throws(() => loadConfig(mode, {}), /missing env GITHUB_TOKEN/, mode);
+  }
+  assert.throws(() => loadConfig("run", {}), /^Error: run: missing env GITHUB_TOKEN, SLACK_BOT_TOKEN/, "run");
+  // `calendar` reads the project's variables like `check`, but not the token, and
+  // a Slack env it does not use cannot make it fail either.
+  const slack = { SLACK_BOT_TOKEN: "bot", SLACK_APP_TOKEN: "app", SLACK_USER_ID: "user" };
+  const config = loadConfig("calendar", { ...slack, ...CALENDAR });
+  assert.equal(config.slack, null, "no Slack client is built for a mode that sends nothing");
+  assert.throws(() => loadConfig("check", {}), /missing env GITHUB_TOKEN/);
+});
+
+/** A one-event snapshot for the run line: the parser is the only way a state exists. */
+function heldState(events: number): CalendarState {
+  const one = {
+    id: "9f2c41d07ab3e6c1",
+    start: "2026-12-01T03:00:00Z",
+    end: "2026-12-01T04:00:00Z",
+    allDay: false,
+    title: "Kickoff with demo",
+    domains: ["demo.example"],
+    attendees: 6,
+    status: "accepted",
+  };
+  const text = JSON.stringify({
+    v: 1,
+    generatedAt: "2026-12-01T02:15:03Z",
+    window: { start: "2026-11-30T16:00:00Z", end: "2026-12-02T16:00:00Z" },
+    events: Array.from({ length: events }, (_, i) => ({ ...one, id: i.toString(16).padStart(16, "0") })),
+  });
+  const now = new Date("2026-12-01T02:25:03Z");
+  return { snapshot: parseSnapshot(text, now), readAt: now, freshness: "fresh" };
+}
+
+test("the run line names the file and the snapshot the first read found, or says there is none", () => {
+  const config = loadConfig("dry-run", { ...BASE, ...CALENDAR });
+  assert.equal(
+    calendarRunLine(config, heldState(1)),
+    "calendar: on, /var/lib/zy/calendar.json: snapshot 2026-12-01T02:15:03Z, 1 event",
+  );
+  assert.equal(
+    calendarRunLine(config, heldState(4)),
+    "calendar: on, /var/lib/zy/calendar.json: snapshot 2026-12-01T02:15:03Z, 4 events",
+  );
+  assert.equal(calendarRunLine(config, null), "calendar: on, /var/lib/zy/calendar.json: no snapshot yet");
 });

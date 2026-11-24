@@ -90,7 +90,10 @@ title: `scribe <ts>: committed in <ms> ms (<n> actions) <url>`,
 `note-items <ts>: proposed <n> items (<k> not created, parent <ref>)`,
 `note-items <ts>: item <n>: created <repo>#<n> as <itemId>, under <parentItemId>`,
 `note items: on -> <ADD_REPO>` (and `note items: off, a note's actions are only listed`
-at startup), `proposal <id>: apply failed`, `button <action> on <item> by <user>`,
+at startup), `calendar: on, <path>: snapshot <iso>, <n> events`, `calendar: snapshot
+<iso>: <n> events, <n> all-day`, `calendar: snapshot rejected: <field path>: <why>`,
+`calendar: <fresh|stale|expired>, snapshot <iso> (age <n>)`, `calendar: the tick failed: <why>`,
+`proposal <id>: apply failed`, `button <action> on <item> by <user>`,
 `move <item>: <old> -> <new>`, `reply ack <item>`, `help <topic>`,
 `ask <ts>: answered in <ms> ms (<n> items, notes: <folders>)` and
 `ask <ts>: failed: <reason>`. A question's text and an answer's text are never
@@ -113,6 +116,7 @@ logged, and neither is an `add:` sentence or the title drafted from it.
 | `NOTES_REPO` | | – (owner/repo: a commit under `Accounts/<Account>` acks that Account's items, the scribe writes here and the ask reads here; unset turns all three off) |
 | `ADD_REPO` | `run` | – (owner/repo: where an `add:` item's issue is created; with the three `LLM_*` variables it turns `add:` on) |
 | `NOTE_ITEMS` | `run` | – (`on`: a committed note's actions are offered as board items; any other value is off. It needs the scribe and `ADD_REPO`, and without either it is a startup error) |
+| `CALENDAR_FILE` | `run`, `calendar` | – (an absolute path to the calendar snapshot the Mac pushes as a ConfigMap; unset turns the calendar off) |
 | `WAITING_CHASE_DAYS` | | `5` (a Waiting item with no update for longer is chased) |
 | `STAGE_STALE_DAYS` | | `21` (a pipeline item with no update for longer is nagged on Friday) |
 | `LLM_BASE_URL` | `scribe`, `ask`, `check`, `run` | – (an OpenAI-compatible gateway, e.g. `https://<host>/enterpriseai/gateway/v1`) |
@@ -133,6 +137,7 @@ node src/main.ts dry-run --week 2026-11-23               # Mon-Fri, M and E (a M
 node src/main.ts scribe --dry-run < note.txt             # a dictation: print the folder and the entry
 node src/main.ts scribe < note.txt                       # a dictation: commit it
 node src/main.ts ask "how's the Acme POC going?"         # a question: the answer and its sources
+node src/main.ts calendar                                # the calendar snapshot the bot holds
 node src/main.ts run                                     # Slack + scheduler, every 60 s
 ```
 
@@ -383,6 +388,47 @@ date. Saving it re-parents and redraws the card; nothing is written until
 `NOTE_ITEMS` is only on with the scribe (a note has to have actions) and
 `ADD_REPO` (the items need a repo to be created in); on without either is a
 startup error that names what is missing. Off, the flag changes nothing at all.
+
+## The calendar
+
+With `CALENDAR_FILE` set, the bot reads a calendar snapshot that the Mac pushes
+into a ConfigMap roughly every fifteen minutes, and holds it in memory.
+
+*Why the Mac pushes.* The cluster has no route to a laptop, and giving it one
+would mean an ingress path, a token and a certificate to pin. The Mac already
+holds a kubeconfig that trusts the cluster's CA, so `mac/calendar/` reads
+Calendar.app with EventKit, prints a small JSON snapshot, and writes it as one
+ConfigMap (`zy-calendar` in this namespace) with `kubectl`. `deploy/` mounts it
+at `/calendar` as **optional**, so a pod starts and stays up whether or not the
+Mac has ever pushed — and a snapshot that already exists survives a restart,
+the Mac sleeping, and a redeploy.
+
+*What the snapshot holds.* Today and tomorrow: a two-day window from local
+midnight, so a meeting that ends tomorrow still has its follow-up in the snapshot
+of today. An opaque 16-hex-character id per event, start and end, `allDay`, the
+title, how many attendees, each attendee's **domain** (never an address), and
+whether it is `accepted`, `tentative`, `organizer` or `none`. Exchange sources
+only by default; cancelled events and declined invites are left out. The window
+starts at midnight, not at the push, so a meeting that ended an hour ago is still
+in the snapshot — the follow-up after a meeting needs that.
+
+*Fresh, stale, expired.* Fresh while `generatedAt` is under 45 minutes old. Past
+that it is **stale** and still used: a sleeping Mac is a normal state, not an
+error. Expired once now is past the snapshot's own window, and only then does the
+bot behave as if there were no calendar. A duplicate push is a silent no-op; an
+older snapshot is refused; a snapshot whose `generatedAt` is more than five
+minutes in the future (a Mac clock running ahead) is refused too.
+
+*Nothing is trusted.* The whole snapshot is rejected, never half of it, and the
+reason names a field path, never a value: `events[3].end: not a timestamp`.
+Titles and domains are never logged, and `node src/main.ts calendar` prints the
+summary plus one line per event with no title at all. It exits 1 for an expired
+snapshot — the window has closed, so the pipe is dead — and 0 when the snapshot
+is only stale.
+
+The Mac's half is documented in `mac/calendar/README.md`: build once (a `.app`
+bundle, because a bare binary never gets the Calendar permission dialog), install
+the launchd job, and it pushes from then on.
 
 ## Develop
 

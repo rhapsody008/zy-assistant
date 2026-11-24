@@ -1,9 +1,28 @@
-// Entry point: `check`, `dry-run`, `run`, `scribe` and `ask`. Modes are described in
-// README.md.
+// Entry point: `check`, `dry-run`, `run`, `scribe`, `ask` and `calendar`. Modes are
+// described in README.md.
 
 import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { answerQuestion, sourcesLine, type AnswerDeps, type NotesSource } from "./ask.ts";
-import { ADD_VARS, addMissing, LLM_VARS, loadConfig, noteItemsCheckLine, noteItemsRunLine, scribeMissing, type Config } from "./config.ts";
+import {
+  CalendarIntake,
+  calendarFreshnessLine,
+  calendarRefreshLine,
+  snapshotLines,
+  type CalendarFreshness,
+} from "./calendar.ts";
+import {
+  ADD_VARS,
+  addMissing,
+  calendarCheckLine,
+  calendarRunLine,
+  LLM_VARS,
+  loadConfig,
+  noteItemsCheckLine,
+  noteItemsRunLine,
+  scribeMissing,
+  type Config,
+} from "./config.ts";
 import { errMessage } from "./errors.ts";
 import { createBoardClient, type BoardSource } from "./github.ts";
 import { Health } from "./health.ts";
@@ -12,7 +31,7 @@ import type { ManualSettings } from "./manual.ts";
 import { createNotesClient } from "./notes.ts";
 import { DEFAULT_POLICY, plan, type Slot } from "./rules.ts";
 import { requiredProblems, STATUS, validateSchema, type SchemaReport } from "./schema.ts";
-import { startScheduler } from "./scheduler.ts";
+import { startScheduler, type TickReport } from "./scheduler.ts";
 import { extractNote, writeEntry } from "./scribe-handler.ts";
 import { renderEntry } from "./scribe.ts";
 import { SlackBot, briefingBlocks, type Block, type Sender } from "./slack.ts";
@@ -44,6 +63,7 @@ const USAGE = `usage: node src/main.ts <mode>
   dry-run --week YYYY-MM-DD              print Mon-Fri, M and E (the date must be a Monday)
   scribe [--dry-run] < dictation.txt    turn a dictation into a note entry (stdin); --dry-run prints it
   ask "<question>"                       answer a question from the board and the notes
+  calendar                               print the calendar snapshot in CALENDAR_FILE, one line per event
   run                                    Slack bot plus the scheduler`;
 
 interface DryRunArgs {
@@ -183,6 +203,10 @@ async function check(): Promise<void> {
   const noteItems = noteItemsCheckLine(config);
   if (noteItems !== null) log(noteItems);
 
+  // Nothing at all when the calendar is off: check reads as it did before it too.
+  const calendar = calendarCheckLine(config);
+  if (calendar !== null) log(calendar);
+
   if (!config.slack) {
     log("Slack env is not set, skipping auth.test and the DM");
     return;
@@ -299,6 +323,82 @@ async function askTask(args: string[]): Promise<void> {
   console.log(sourcesLine(answer));
 }
 
+/**
+ * `calendar`: the one-command check of the pipe, from the pod's side. It reads
+ * the file the pod mounts and prints the snapshot the bot would hold: the summary
+ * and one line per event, ids and counts only. It needs no token, no Slack and no
+ * model, so it answers before anything else is configured.
+ */
+async function calendarTask(): Promise<void> {
+  const config = loadConfig("calendar");
+  const path = config.calendarFile;
+  if (path === null) throw new Error("calendar: CALENDAR_FILE must be the absolute path of the snapshot the pod mounts");
+  const at = now();
+  const intake = new CalendarIntake({ path, readFile: (file) => readFile(file, "utf8") });
+  const refresh = await intake.refresh(at);
+  const state = intake.current(at);
+  // Anything but an accepted snapshot is the whole answer: no file yet, or one
+  // this parser will not trust. The reason is a field path and no value.
+  if (refresh.kind !== "accepted" || state === null) {
+    throw new Error(`calendar: ${refresh.kind === "rejected" ? refresh.reason : "no snapshot yet"}`);
+  }
+  for (const line of snapshotLines(state, at)) console.log(line);
+  // Stale is a Mac asleep, and still printed: the file is what it is. Expired is a
+  // window that has closed, so the pipe is dead and the exit code has to say it.
+  if (state.freshness === "expired") process.exitCode = 1;
+}
+
+/** What the calendar's tick is: a read at startup, and the same read on every tick after it. */
+export interface CalendarWatcher {
+  start(): Promise<void>;
+  tick(report: TickReport): Promise<void>;
+}
+
+export interface CalendarWatcherOptions {
+  /** The snapshot the pod mounts: never null, a watcher without one is not built. */
+  intake: CalendarIntake;
+  /** The health endpoint's record; the wiring passes a closure, because HTTP_PORT is read later. */
+  record: (report: TickReport) => void;
+  now: () => Date;
+  log: (line: string) => void;
+}
+
+/**
+ * The calendar's place in the scheduler's tick: read the file, hold what it says,
+ * and log a change once rather than every minute. The health endpoint hears the
+ * tick before the file is read, so a slow mount cannot hide a scheduler that is
+ * running; and neither call ever rejects, because Node 26 ends the process on an
+ * unhandled rejection, and a calendar file must not stop the bot.
+ */
+export function calendarWatcher(options: CalendarWatcherOptions): CalendarWatcher {
+  let freshness: CalendarFreshness | null = null;
+
+  async function refresh(reportAccepted: boolean): Promise<void> {
+    const at = options.now();
+    const result = await options.intake.refresh(at);
+    // At startup the run line below already names the accepted snapshot, so only a
+    // rejection has news; on a tick an accepted one does (it is the heartbeat).
+    if (reportAccepted || result.kind !== "accepted") {
+      const line = calendarRefreshLine(result);
+      if (line !== null) options.log(line);
+    }
+    const state = options.intake.current(at);
+    if (state === null) return;
+    // One line per transition, never per tick: a Mac asleep shows as stale, and is
+    // still what the bot uses.
+    if (state.freshness !== freshness) options.log(calendarFreshnessLine(state, at));
+    freshness = state.freshness;
+  }
+
+  return {
+    start: () => refresh(false),
+    tick: (report) => {
+      options.record(report);
+      return refresh(true).catch((err: unknown) => options.log(`calendar: the tick failed: ${errMessage(err)}`));
+    },
+  };
+}
+
 async function run(): Promise<void> {
   const config = loadConfig("run");
   const store = openStore(config.dbPath);
@@ -395,7 +495,19 @@ async function run(): Promise<void> {
   const noteItemsLine = noteItemsRunLine(config);
   if (noteItemsLine !== null) log(noteItemsLine);
 
+  // The calendar is a file a Mac pushes: read once here, then on every tick. A
+  // stale snapshot is a Mac asleep, not a fault, so it is named and still used.
+  // `health` comes after this block, and the tick's closure reads it then, not now.
   let health: Health | null = null;
+  let calendar: CalendarWatcher | null = null;
+  if (config.calendarFile !== null) {
+    const intake = new CalendarIntake({ path: config.calendarFile, readFile: (path) => readFile(path, "utf8") });
+    calendar = calendarWatcher({ intake, record: (report) => health?.record(report), now, log });
+    await calendar.start();
+    const calendarLine = calendarRunLine(config, intake.current(now()));
+    if (calendarLine !== null) log(calendarLine);
+  }
+
   if (config.httpPort !== null) {
     health = new Health(now);
     const port = await health.listen(config.httpPort);
@@ -410,7 +522,17 @@ async function run(): Promise<void> {
   // was interrupted). Not awaited, for the same reason as the schema report.
   for (const row of store.interrupted()) void bot.redrawCard(row.id);
 
-  const stop = startScheduler({ config, board, store, sender: bot, now, log, onTick: (report) => health?.record(report) });
+  const stop = startScheduler({
+    config,
+    board,
+    store,
+    sender: bot,
+    now,
+    log,
+    // The calendar rides the tick that is already there: it has no clock of its
+    // own, and a pushed file is worth re-reading about once a minute.
+    onTick: (report) => void calendar?.tick(report),
+  });
   log(`scheduler running: M at ${config.briefTime}, E at ${config.eodTime} (${TZ})`);
 
   let stopping = false;
@@ -440,30 +562,37 @@ async function run(): Promise<void> {
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
-const [, , mode, ...args] = process.argv;
+// Only the entry point runs a mode: a test imports this file for the wiring and
+// must not get a usage line or an exit code.
+if (import.meta.main) {
+  const [, , mode, ...args] = process.argv;
 
-try {
-  switch (mode) {
-    case "check":
-      await check();
-      break;
-    case "dry-run":
-      await dryRun(args);
-      break;
-    case "run":
-      await run();
-      break;
-    case "scribe":
-      await scribeTask(args);
-      break;
-    case "ask":
-      await askTask(args);
-      break;
-    default:
-      console.log(USAGE);
-      process.exitCode = 2;
+  try {
+    switch (mode) {
+      case "check":
+        await check();
+        break;
+      case "dry-run":
+        await dryRun(args);
+        break;
+      case "run":
+        await run();
+        break;
+      case "scribe":
+        await scribeTask(args);
+        break;
+      case "ask":
+        await askTask(args);
+        break;
+      case "calendar":
+        await calendarTask();
+        break;
+      default:
+        console.log(USAGE);
+        process.exitCode = 2;
+    }
+  } catch (err) {
+    console.error(`zy-assistant: ${errMessage(err)}`);
+    process.exitCode = 1;
   }
-} catch (err) {
-  console.error(`zy-assistant: ${errMessage(err)}`);
-  process.exitCode = 1;
 }

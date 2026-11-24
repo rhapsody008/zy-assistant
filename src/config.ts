@@ -1,10 +1,12 @@
 // Environment. Every process env variable is read here, so a missing one fails
 // loudly at startup and names itself. No tokens are ever logged.
 
+import { isAbsolute } from "node:path";
+import type { CalendarState } from "./calendar.ts";
 import { DEFAULT_POLICY, type Policy } from "./rules.ts";
 import { parseHHMM } from "./time.ts";
 
-export type Mode = "check" | "dry-run" | "run" | "scribe" | "ask";
+export type Mode = "check" | "dry-run" | "run" | "scribe" | "ask" | "calendar";
 
 export interface SlackConfig {
   botToken: string;
@@ -59,6 +61,8 @@ export interface Config {
    * need a repo), and loadConfig refuses the half state.
    */
   noteItems: boolean;
+  /** CALENDAR_FILE: the absolute path of the snapshot the pod mounts, or null: off. */
+  calendarFile: string | null;
 }
 
 const SLACK_VARS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_USER_ID"];
@@ -96,18 +100,23 @@ function fail(mode: Mode, names: string[], hint = ""): never {
 
 /** run needs Slack, check uses it when set, dry-run never does. */
 export function loadConfig(mode: "run", env?: NodeJS.ProcessEnv): Config & { slack: SlackConfig };
-export function loadConfig(mode: "check" | "dry-run" | "scribe" | "ask", env?: NodeJS.ProcessEnv): Config;
+export function loadConfig(mode: "check" | "dry-run" | "scribe" | "ask" | "calendar", env?: NodeJS.ProcessEnv): Config;
 export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Config {
   const get = (name: string): string => env[name] ?? "";
 
+  // The calendar is a file on the pod: no token, no Slack, no model. It is the one
+  // mode that has to work with nothing else configured, because it is the check of
+  // the pipe itself.
   const required =
-    mode === "run"
-      ? ["GITHUB_TOKEN", ...SLACK_VARS]
-      : mode === "scribe"
-        ? ["GITHUB_TOKEN", "NOTES_REPO", ...LLM_VARS]
-        : mode === "ask"
-          ? ["GITHUB_TOKEN", ...LLM_VARS]
-          : ["GITHUB_TOKEN"];
+    mode === "calendar"
+      ? []
+      : mode === "run"
+        ? ["GITHUB_TOKEN", ...SLACK_VARS]
+        : mode === "scribe"
+          ? ["GITHUB_TOKEN", "NOTES_REPO", ...LLM_VARS]
+          : mode === "ask"
+            ? ["GITHUB_TOKEN", ...LLM_VARS]
+            : ["GITHUB_TOKEN"];
   const missing = required.filter((name) => get(name) === "");
   if (missing.length > 0) fail(mode, missing);
 
@@ -154,6 +163,13 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
   const addRepo = get("ADD_REPO");
   if (addRepo !== "" && !NOTES_REPO_RE.test(addRepo)) {
     throw new Error(`${mode}: ADD_REPO must be owner/repo, got ${addRepo}`);
+  }
+
+  // A relative path would be read from whichever directory the pod starts in, so a
+  // file that is not there yet fails here and not as a snapshot that never arrives.
+  const calendarFile = get("CALENDAR_FILE");
+  if (calendarFile !== "" && !isAbsolute(calendarFile)) {
+    throw new Error(`${mode}: CALENDAR_FILE must be an absolute path, got ${calendarFile}`);
   }
 
   // The three LLM variables are the model: the ask is on iff they are all set, and
@@ -214,6 +230,7 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
     scribe,
     add,
     noteItems,
+    calendarFile: calendarFile === "" ? null : calendarFile,
   };
 }
 
@@ -233,4 +250,25 @@ export function noteItemsCheckLine(config: Config): string | null {
 export function noteItemsRunLine(config: Config): string | null {
   const repo = config.noteItems ? config.add?.repo : undefined;
   return repo === undefined ? null : `note items: on -> ${repo}`;
+}
+
+/**
+ * What `check` says about the calendar: the file it would read, or nothing at
+ * all when CALENDAR_FILE is unset, so check reads as it did before.
+ */
+export function calendarCheckLine(config: Config): string | null {
+  return config.calendarFile === null ? null : `calendar: on -> ${config.calendarFile}`;
+}
+
+/**
+ * What `run` logs at startup: the file, and the snapshot the first read found in
+ * it. Nothing at all when it is off, so a deployment without it is quiet.
+ */
+export function calendarRunLine(config: Config, state: CalendarState | null): string | null {
+  if (config.calendarFile === null) return null;
+  const held =
+    state === null
+      ? "no snapshot yet"
+      : `snapshot ${state.snapshot.generatedAt}, ${state.snapshot.events.length} event${state.snapshot.events.length === 1 ? "" : "s"}`;
+  return `calendar: on, ${config.calendarFile}: ${held}`;
 }
