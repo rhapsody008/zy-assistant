@@ -3,7 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import { answerQuestion, sourcesLine, type AnswerDeps, type NotesSource } from "./ask.ts";
-import { ADD_VARS, addMissing, LLM_VARS, loadConfig, scribeMissing, type Config } from "./config.ts";
+import { ADD_VARS, addMissing, LLM_VARS, loadConfig, noteItemsCheckLine, noteItemsRunLine, scribeMissing, type Config } from "./config.ts";
 import { errMessage } from "./errors.ts";
 import { createBoardClient, type BoardSource } from "./github.ts";
 import { Health } from "./health.ts";
@@ -32,6 +32,7 @@ function manualSettings(config: Config): ManualSettings {
     eodTime: config.eodTime,
     notesRepo: config.notesRepo,
     addRepo: config.add?.repo ?? null,
+    noteItems: config.noteItems,
     ask: config.llm !== null,
     policy: { ...DEFAULT_POLICY, ...config.policy },
   };
@@ -177,6 +178,10 @@ async function check(): Promise<void> {
     const missing = addMissing();
     if (ADD_VARS.some((name) => (process.env[name] ?? "") !== "")) log(`add: off, missing ${missing.join(", ")}`);
   }
+
+  // Nothing at all when note items are off: check reads as it did before 0.8.0.
+  const noteItems = noteItemsCheckLine(config);
+  if (noteItems !== null) log(noteItems);
 
   if (!config.slack) {
     log("Slack env is not set, skipping auth.test and the DM");
@@ -330,6 +335,8 @@ async function run(): Promise<void> {
             log,
             timeoutMs: config.scribe.llm.timeoutMs,
             maxTokens: config.scribe.llm.maxTokens,
+            // The commit's reply then promises the card that follows it.
+            noteItems: config.noteItems,
           },
     ask: config.llm === null ? null : { ...answerSettings(config), asks: store },
     add:
@@ -351,6 +358,20 @@ async function run(): Promise<void> {
             timeoutMs: config.add.llm.timeoutMs,
             maxTokens: config.add.llm.maxTokens,
           },
+    // A note's items are add:'s second step: the same board, store and repo, so
+    // an item from a note and one from a sentence are written by one code path.
+    noteItems:
+      config.noteItems && config.add !== null
+        ? {
+            board,
+            proposals: store,
+            repo: config.add.repo,
+            owner: config.projectOwner,
+            number: config.projectNumber,
+            now,
+            log,
+          }
+        : null,
   });
 
   await bot.start();
@@ -370,6 +391,9 @@ async function run(): Promise<void> {
       ? "add: off, an add: DM is answered like any other"
       : `add: ${config.add.llm.model} -> ${config.add.repo}`,
   );
+  // Unset note items print nothing: a deployment without them reads as it did before.
+  const noteItemsLine = noteItemsRunLine(config);
+  if (noteItemsLine !== null) log(noteItemsLine);
 
   let health: Health | null = null;
   if (config.httpPort !== null) {

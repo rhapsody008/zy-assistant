@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addMissing, ADD_VARS, loadConfig, SCRIBE_VARS, scribeMissing } from "../src/config.ts";
+import { addMissing, ADD_VARS, loadConfig, noteItemsCheckLine, noteItemsRunLine, SCRIBE_VARS, scribeMissing } from "../src/config.ts";
 
 const BASE = { GITHUB_TOKEN: "test-token" };
 
@@ -165,4 +165,44 @@ test("addMissing names what add: lacks, and nothing once it is all set", () => {
   assert.deepEqual(addMissing({}), [...ADD_VARS]);
   assert.deepEqual(addMissing({ ...ADD }), ["LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"]);
   assert.deepEqual(addMissing({ ...LLM, ...ADD }), []);
+});
+
+/** Everything note items need at once: the scribe's own, and the repo their issues go to. */
+const LIVE = { ...LLM, NOTES_REPO: "demo/notes", ADD_REPO: "demo/board" };
+
+test("NOTE_ITEMS is off unless it is exactly on", () => {
+  assert.equal(loadConfig("dry-run", { ...BASE }).noteItems, false, "unset");
+  assert.equal(loadConfig("dry-run", { ...BASE, ...LIVE, NOTE_ITEMS: "on" }).noteItems, true);
+  for (const value of ["ON", "on ", " On", "true", "1", "off"]) {
+    assert.equal(loadConfig("dry-run", { ...BASE, ...LIVE, NOTE_ITEMS: value }).noteItems, false, JSON.stringify(value));
+  }
+});
+
+test("NOTE_ITEMS=on without the scribe is an error that names what the scribe lacks", () => {
+  assert.throws(
+    () => loadConfig("dry-run", { ...BASE, NOTE_ITEMS: "on" }),
+    /missing env LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, NOTES_REPO \(note items need the scribe: all of LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, NOTES_REPO\)/,
+  );
+  // Half a scribe names the half that is missing, and no more.
+  assert.throws(
+    () => loadConfig("dry-run", { ...BASE, ...LLM, ADD_REPO: "demo/board", NOTE_ITEMS: "on" }),
+    /missing env NOTES_REPO \(note items need the scribe/,
+  );
+});
+
+test("NOTE_ITEMS=on without ADD_REPO is an error that names ADD_REPO", () => {
+  assert.throws(
+    () => loadConfig("dry-run", { ...BASE, ...LLM, NOTES_REPO: "demo/notes", NOTE_ITEMS: "on" }),
+    /missing env ADD_REPO \(note items need ADD_REPO, where their issues are created\)/,
+  );
+});
+
+test("check and run say nothing about note items when they are off, and one line when they are on", () => {
+  const off = loadConfig("dry-run", { ...BASE });
+  const on = loadConfig("dry-run", { ...BASE, ...LIVE, NOTE_ITEMS: "on" });
+
+  assert.equal(noteItemsCheckLine(off), null, "off: check reads exactly as it did before 0.8.0");
+  assert.equal(noteItemsCheckLine(on), "note items: on -> demo/board");
+  assert.equal(noteItemsRunLine(off), null, "off: run logs no line at all, as it did before 0.8.0");
+  assert.equal(noteItemsRunLine(on), "note items: on -> demo/board");
 });

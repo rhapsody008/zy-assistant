@@ -319,6 +319,75 @@ test("Create writes the issue, the board item, its fields and the link, in that 
   assert.deepEqual(setup.logs.at(-1), `add ${TS}: created demo/notes#900 as ITEM_900, under ITEM_41`);
 });
 
+test("an add: create runs one pinned order of writes, each saved before the next", async () => {
+  const setup = harness();
+  await drafted(setup);
+  // The board's own call log and the progress saves share one trace: the order
+  // between them is the thing this test is about.
+  const trace = setup.board.calls;
+  const update = setup.proposals.updateProposal.bind(setup.proposals);
+  setup.proposals.updateProposal = (id, patch) => {
+    if (typeof patch.progress === "string") trace.push(`save ${Object.keys(JSON.parse(patch.progress) as object).join("+")}`);
+    update(id, patch);
+  };
+  const before = trace.length;
+  const ui = new RecordingUi();
+
+  await proposalClick(machinery(setup.deps, ui), click(ui));
+
+  assert.deepEqual(trace.slice(before), [
+    "fetchBoard",
+    "save issuePending", // the marker, before the POST that may land without an answer
+    "createIssue demo/notes|Call Dana about the renewal",
+    "save issue",
+    "addToProject PVT_1|I_900",
+    "save issue+itemId",
+    "setSingleSelect ITEM_900|Status|Next",
+    "setSingleSelect ITEM_900|Track|Customer",
+    "setSingleSelect ITEM_900|Account|Acme",
+    "setSingleSelect ITEM_900|Work type|POC",
+    "setDate ITEM_900|Target date|2026-12-08",
+    "setDate ITEM_900|Next touch|2026-11-30",
+    "setText ITEM_900|Next action|Ask Dana for the renewal date",
+    "save issue+itemId+fields",
+    "addSubIssue I_41|I_900",
+    "save issue+itemId+fields+linked",
+  ]);
+});
+
+test("a draft that waits on someone writes Waiting on last, through setText", async () => {
+  const setup = harness();
+  const row = await drafted(setup);
+  const board = acmeBoard();
+  board.fields.set("Waiting on", { id: "F_WAITING" });
+  setup.board.board = board;
+  const payload = readPayload(row.payload);
+  assert.ok(payload !== null);
+  // The `add:` prompt never asks for one: a note item's draft is what carries it.
+  row.payload = json({ ...payload, draft: { ...payload.draft, waitingOn: "Dana's answer" } });
+  const before = setup.board.calls.length;
+  const ui = new RecordingUi();
+
+  await proposalClick(machinery(setup.deps, ui), click(ui));
+
+  assert.deepEqual(
+    setup.board.calls.slice(before).filter((call) => call.startsWith("set")),
+    [
+      "setSingleSelect ITEM_900|Status|Next",
+      "setSingleSelect ITEM_900|Track|Customer",
+      "setSingleSelect ITEM_900|Account|Acme",
+      "setSingleSelect ITEM_900|Work type|POC",
+      "setDate ITEM_900|Target date|2026-12-08",
+      "setDate ITEM_900|Next touch|2026-11-30",
+      "setText ITEM_900|Next action|Ask Dana for the renewal date",
+      "setText ITEM_900|Waiting on|Dana's answer",
+    ],
+    "the waiting on is the last field written",
+  );
+  assert.equal(ui.redraws.at(-1)?.card.lines.at(-1), "Waiting on: Dana's answer", "and the card says who owes it");
+  assert.equal(rowOf(setup.proposals).status, "done");
+});
+
 test("a field the draft leaves null is not written, and a parent decides account and track", async () => {
   const setup = harness({ replies: [json({ ...RAW, account: null, track: null, workType: null, nextTouch: null, nextAction: null })] });
   await drafted(setup);

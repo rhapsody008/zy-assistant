@@ -261,7 +261,7 @@ test("a second click on a written note changes nothing and says so", async () =>
   assert.equal(ui.replies.at(-1), "already written: https://github.com/demo/notes/commit/1");
 });
 
-test("a commit is logged with the folder, the duration and the actions, never the note's title", async () => {
+test("a commit is logged with its duration and actions, never the folder or the note's title", async () => {
   const { deps, notes, logs, ui } = harness(json(NOTE));
   let at = NOW.getTime();
   deps.now = () => new Date(at);
@@ -274,8 +274,9 @@ test("a commit is logged with the folder, the duration and the actions, never th
   await scribeHandler(deps, { ts: TS, text: DICTATION, hint: null }, ui);
 
   assert.deepEqual(logs, [
-    "scribe 1700000000.000100: committed Accounts/Acme in 40 ms (1 actions) https://github.com/demo/notes/commit/1",
+    "scribe 1700000000.000100: committed in 40 ms (1 actions) https://github.com/demo/notes/commit/1",
   ]);
+  assert.doesNotMatch(logs.join("\n"), /Accounts\/Acme/, "no customer folder in the log");
   assert.doesNotMatch(logs.join("\n"), /Acme VPC sizing/, "no note title in the log");
   assert.doesNotMatch(logs.join("\n"), /ten nodes/, "and none of the dictation");
 });
@@ -292,7 +293,10 @@ test("a folder question and a raw commit are each one log line, by id", async ()
 
   assert.equal(notes.writes.length, 0, "the first dictation was never answered");
   assert.equal(raw.notes.writes.length, 1);
-  assert.deepEqual(raw.logs.filter((line) => line.includes("committed")), [`scribe ${TS}: committed raw text to Accounts/Acme`]);
+  assert.deepEqual(raw.logs.filter((line) => line.includes("committed")), [
+    `scribe ${TS}: committed raw text https://github.com/demo/notes/commit/1`,
+  ]);
+  assert.doesNotMatch(raw.logs.join("\n"), /Accounts\/Acme/, "no customer folder in the log either");
   assert.doesNotMatch(raw.logs.join("\n"), /the Acme workshop/, "the words stay in the note, not in the log");
 });
 
@@ -331,6 +335,62 @@ test("a click is read back as the dictation and the folder it means", () => {
 
 test("the reply names the actions only when there are some", () => {
   assert.equal(doneMessage("Accounts/Acme", "Timesheet", "u", []), "✅ Accounts/Acme: Timesheet → u");
+});
+
+test("the done message promises the card that follows, and step 2 only when none does", () => {
+  const head = "✅ Accounts/Acme: Acme VPC sizing → https://github.com/demo/notes/commit/1";
+  const action = "• ZY: send the sizing sheet (due 2026-11-28)";
+
+  assert.equal(
+    doneMessage("Accounts/Acme", "Acme VPC sizing", "https://github.com/demo/notes/commit/1", NOTE.actions),
+    [head, "board proposals: coming in step 2", action].join("\n"),
+    "the default is the reply a deployment without note items sends",
+  );
+  assert.equal(
+    doneMessage("Accounts/Acme", "Acme VPC sizing", "https://github.com/demo/notes/commit/1", NOTE.actions, true),
+    [head, "board items: a card follows", action].join("\n"),
+  );
+  assert.equal(
+    doneMessage("Accounts/Acme", "Timesheet", "u", [], true),
+    "✅ Accounts/Acme: Timesheet → u",
+    "no actions: nothing follows, whatever the flag says",
+  );
+});
+
+test("a commit hands back the note it wrote, the folder it landed in and its link", async () => {
+  const direct = harness(json(NOTE));
+  const first = await scribeHandler(direct.deps, { ts: TS, text: DICTATION, hint: null }, direct.ui);
+  assert.deepEqual(first, { ts: TS, folder: "Accounts/Acme", note: NOTE, url: "https://github.com/demo/notes/commit/1" });
+
+  // The same note, committed from the stored one once ZY answered the folder question.
+  const clicked = harness(json({ ...NOTE, folder: null, newFolderName: "Initech" }));
+  assert.equal(await scribeHandler(clicked.deps, { ts: TS, text: DICTATION, hint: null }, clicked.ui), null, "a question is no commit");
+  assert.deepEqual(await scribeChoice(clicked.deps, { ts: TS, action: "folder", value: "Partners/Globex" }, clicked.ui), {
+    ts: TS,
+    folder: "Partners/Globex",
+    // The note keeps the folder the model left empty: where it went is the commit's own fact.
+    note: { ...NOTE, folder: null, newFolderName: "Initech" },
+    url: "https://github.com/demo/notes/commit/1",
+  });
+
+  // With note items on, the same commit's reply promises the card instead of step 2.
+  const withItems = harness(json(NOTE));
+  withItems.deps.noteItems = true;
+  await scribeHandler(withItems.deps, { ts: TS, text: DICTATION, hint: null }, withItems.ui);
+  assert.match(withItems.ui.edits[0].text, /board items: a card follows/);
+  assert.doesNotMatch(withItems.ui.edits[0].text, /step 2/);
+});
+
+test("a raw dictation or a write that failed hands back nothing", async () => {
+  // The model never answered: the words are committed verbatim, and they have no actions.
+  const raw = harness("I cannot make a note of that.", "Still no JSON.");
+  await scribeHandler(raw.deps, { ts: TS, text: DICTATION, hint: null }, raw.ui);
+  assert.equal(await scribeChoice(raw.deps, { ts: TS, action: "folder", value: "Accounts/Acme" }, raw.ui), null);
+
+  // A write that never landed: the dictation stays, and nothing was committed.
+  const failed = harness(json(NOTE));
+  failed.notes.conflicts = 3;
+  assert.equal(await scribeHandler(failed.deps, { ts: TS, text: DICTATION, hint: null }, failed.ui), null);
 });
 
 test("a folder the model invents is a question, never a write", async () => {

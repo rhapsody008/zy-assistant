@@ -11,6 +11,14 @@ import { errMessage } from "./errors.ts";
 import type { BoardSource } from "./github.ts";
 import { helpReply, type ManualSettings } from "./manual.ts";
 import {
+  noteItemsProposalId,
+  noteItemsSpec,
+  proposeNoteItems,
+  type NoteItemsDeps,
+  type NoteItemsInput,
+  type NoteItemsUi,
+} from "./note-items-handler.ts";
+import {
   cardText,
   parseProposalValue,
   proposalClick,
@@ -20,6 +28,7 @@ import {
   type EditField,
   type ProposalButton,
   type ProposalDeps,
+  type ProposalSpec,
   type ProposalUi,
 } from "./proposals.ts";
 import { plan, type ActionId, type Briefing, type Item, type Ping } from "./rules.ts";
@@ -30,6 +39,7 @@ import {
   scribeChoice,
   scribeHandler,
   type ScribeAsk,
+  type ScribeCommit,
   type ScribeDeps,
   type ScribeDictation,
   type ScribeUi,
@@ -513,6 +523,11 @@ export interface HandlerDeps {
   ask?: AskDispatch | null;
   /** The add: pipeline, when ADD_REPO and the model are set: null answers like any other DM. */
   add?: AddDispatch | null;
+  /**
+   * The note-items step, when NOTE_ITEMS is on: it takes a committed note's
+   * actions and posts their card. null leaves them the list the reply shows.
+   */
+  noteItems?: NoteItemsDispatch | null;
   /** The proposal machinery the cards route into: absent means no card can be clicked. */
   proposals?: ProposalDeps | null;
 }
@@ -538,13 +553,16 @@ export function rowEdits(): RowEdits {
 }
 
 /** The scribe, called without being awaited: Slack wants its three seconds. */
-export type ScribeDispatch = (dictation: ScribeDictation, ui: ScribeUi) => Promise<void>;
+export type ScribeDispatch = (dictation: ScribeDictation, ui: ScribeUi) => Promise<ScribeCommit | null>;
 
 /** The ask, called without being awaited for the same reason. */
 export type AskDispatch = (input: AskInput, ui: AskUi) => Promise<void>;
 
 /** The add: pipeline, called without being awaited: a model draft takes a while. */
 export type AddDispatch = (input: AddInput, ui: AddUi) => Promise<void>;
+
+/** The note-items step, called after the scribe's commit: one card, and no board write yet. */
+export type NoteItemsDispatch = (input: NoteItemsInput, ui: NoteItemsUi) => Promise<void>;
 
 export interface ActionClick {
   actionId: string; // raw action_id, e.g. "zy_done"
@@ -959,13 +977,37 @@ async function runScribe(deps: HandlerDeps, message: DmMessage, text: string): P
   const ui = threadUi(deps.client, message.channel, message.ts);
   try {
     const hint = await pingHint(deps, message);
-    await deps.scribe?.({ ts: message.ts, text, hint }, ui);
+    const commit = await deps.scribe?.({ ts: message.ts, text, hint }, ui);
+    // After the commit, because a note that was not written has no actions to offer.
+    if (commit !== null && commit !== undefined) await proposeNoteCard(deps, message.channel, commit);
   } catch (err) {
     deps.log(`scribe ${message.ts} failed: ${errMessage(err)}`);
     try {
       await ui.reply(`⚠️ the scribe failed: ${errMessage(err)}`);
     } catch (replyErr) {
       deps.log(`scribe ${message.ts}: the error reply failed too: ${errMessage(replyErr)}`);
+    }
+  }
+}
+
+/**
+ * A committed note's actions, offered as one card in the dictation's thread, when
+ * NOTE_ITEMS is on and the note has any. The propose step logs and replies to its
+ * own failures; what is caught here is only what escapes it, since a note that was
+ * written is written, and a card that would not post is not a failed commit.
+ */
+async function proposeNoteCard(deps: HandlerDeps, channel: string, commit: ScribeCommit): Promise<void> {
+  const dispatch = deps.noteItems;
+  if (dispatch === null || dispatch === undefined || commit.note.actions.length === 0) return;
+  const ui = noteItemsUi(deps.client, channel, commit.ts);
+  try {
+    await dispatch({ ts: commit.ts, channel, folder: commit.folder, note: commit.note, url: commit.url }, ui);
+  } catch (err) {
+    deps.log(`note-items ${commit.ts} failed: ${errMessage(err)}`);
+    try {
+      await ui.reply(`⚠️ could not propose board items: ${errMessage(err)}`);
+    } catch (replyErr) {
+      deps.log(`note-items ${commit.ts}: the error reply failed too: ${errMessage(replyErr)}`);
     }
   }
 }
@@ -1013,6 +1055,22 @@ async function runAdd(deps: HandlerDeps, message: DmMessage, text: string): Prom
       deps.log(`add ${message.ts}: the error reply failed too: ${errMessage(replyErr)}`);
     }
   }
+}
+
+/** The note-items step's Slack side: the card in the dictation's thread, and the lines under it. */
+function noteItemsUi(client: SlackClient, channel: string, threadTs: string): NoteItemsUi {
+  // The id the row was made with, so the card's buttons name the proposal a click finds.
+  const id = noteItemsProposalId(threadTs);
+  return {
+    async post(card: Card, rev: number): Promise<string> {
+      const res = await client.chat.postMessage({ channel, text: cardText(card), blocks: cardBlocks(id, rev, card), thread_ts: threadTs });
+      if (!res.ts) throw new Error("chat.postMessage returned no ts");
+      return res.ts;
+    },
+    async reply(text: string): Promise<void> {
+      await client.chat.postMessage({ channel, text, thread_ts: threadTs });
+    },
+  };
 }
 
 /** The add: pipeline's Slack side: the drafting reply, its failure, and the card on it. */
@@ -1097,7 +1155,9 @@ async function dispatchScribeChoice(deps: HandlerDeps, scribe: ScribeDeps, args:
   }
   const ui = threadUi(deps.client, args.channel, choice.ts);
   try {
-    await scribeChoice(scribe, choice, ui);
+    const commit = await scribeChoice(scribe, choice, ui);
+    // A folder click and a retry commit too, so the card follows both of them.
+    if (commit !== null) await proposeNoteCard(deps, args.channel, commit);
   } catch (err) {
     deps.log(`scribe ${choice.ts}: the choice failed: ${errMessage(err)}`);
     try {
@@ -1643,6 +1703,12 @@ export interface SlackBotOptions {
   ask?: AskDeps | null;
   /** The add: pipeline, or null: without it "add: ..." is answered like any other DM. */
   add?: AddDeps | null;
+  /**
+   * The note-items step, or null: without it a note's actions stay the list the
+   * reply shows. It needs the add: pipeline's board, store and repo, which is what
+   * loadConfig's NOTE_ITEMS rule is about.
+   */
+  noteItems?: NoteItemsDeps | null;
 }
 
 /** Slack's "the blocks you sent are no good", as Bolt throws it. */
@@ -1660,8 +1726,15 @@ export class SlackBot implements Sender {
     const scribe = options.scribe ?? null;
     const ask = options.ask ?? null;
     const add = options.add ?? null;
+    const noteItems = options.noteItems ?? null;
     this.#scribe = scribe;
     this.#rows = rowEdits();
+    // The kinds this bot can apply, and the store behind them: a card is only
+    // clickable when there is a pipeline to apply it with.
+    const specs: Record<string, ProposalSpec> = {};
+    if (add !== null) specs.add = addSpec(add);
+    if (noteItems !== null) specs.note = noteItemsSpec(noteItems);
+    const proposalStore = add?.proposals ?? noteItems?.proposals ?? null;
     this.#deps = {
       store: options.store,
       board: options.board,
@@ -1675,11 +1748,10 @@ export class SlackBot implements Sender {
       scribe: scribe === null ? null : (dictation, ui) => scribeHandler(scribe, dictation, ui),
       ask: ask === null ? null : (input, ui) => askQuestion(ask, input, ui),
       add: add === null ? null : (input, ui) => addHandler(add, input, ui),
+      noteItems: noteItems === null ? null : (input, ui) => proposeNoteItems(noteItems, input, ui),
       // The cards are only clickable when there is a pipeline behind them.
       proposals:
-        add === null
-          ? null
-          : { store: add.proposals, specs: { add: addSpec(add) }, userId: options.userId, now: options.now, log: options.log },
+        proposalStore === null ? null : { store: proposalStore, specs, userId: options.userId, now: options.now, log: options.log },
     };
     this.app = new App({
       token: options.botToken,

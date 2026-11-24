@@ -15,6 +15,7 @@ const DEFAULTS: ManualSettings = {
   eodTime: "17:30",
   notesRepo: "demo/notes",
   addRepo: null,
+  noteItems: false,
   ask: true,
   policy: DEFAULT_POLICY,
 };
@@ -220,6 +221,21 @@ test("the note page says what a dictation becomes, and what it does not do yet",
   assert.match(page, /nothing goes to the board\. Board proposals come in step 2/);
   assert.match(page, /"this Friday" is the coming Friday/);
   assert.match(page, /"next Friday" is the Friday of the following week, 7 days after/);
+});
+
+test("the note page offers the board items only when NOTE_ITEMS is on", () => {
+  const off = helpReply(DEFAULTS, true, "note").text;
+  const on = helpReply({ ...DEFAULTS, noteItems: true }, true, "note").text;
+
+  assert.match(off, /nothing goes to the board\. Board proposals come in step 2\./, "off: the page it has always been");
+  assert.doesNotMatch(off, /board items/, "nothing of the feature is promised without it");
+  assert.match(
+    on,
+    /The note's actions are offered as board items on a card in the reply's thread, up to six of them, and nothing is written until you click \*Create\*\./,
+  );
+  assert.doesNotMatch(on, /step 2/, "what it describes is what happens now");
+  assert.doesNotMatch(on, /nothing goes to the board/);
+  fits(helpReply({ ...DEFAULTS, noteItems: true }, true, "note").blocks);
 });
 
 test("the ask page says what it reads, that it is read-only, and that it says when it does not know", () => {

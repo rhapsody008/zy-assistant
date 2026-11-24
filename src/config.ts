@@ -53,6 +53,12 @@ export interface Config {
   scribe: ScribeConfig | null;
   /** null: no "add: ..." in the DM: no draft of a board item, so nothing to apply. */
   add: AddConfig | null;
+  /**
+   * NOTE_ITEMS=on: a committed note's actions are offered as board items. It is
+   * only on with the scribe (a note has to have actions) and ADD_REPO (the items
+   * need a repo), and loadConfig refuses the half state.
+   */
+  noteItems: boolean;
 }
 
 const SLACK_VARS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_USER_ID"];
@@ -180,6 +186,15 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
     fail(mode, LLM_VARS.filter((name) => get(name) === ""), ` (add: needs all of ${LLM_VARS.join(", ")})`);
   }
   const add: AddConfig | null = llm !== null && addRepo !== "" ? { llm, repo: addRepo } : null;
+  // Note items are the scribe's next step and write through add:'s create: on
+  // without either has nothing to propose and nowhere to write, so it fails here
+  // and names what it lacks, the way ADD_REPO without the model does. "on" is the
+  // only value that turns them on, so a typo is off rather than a surprise batch.
+  const noteItems = get("NOTE_ITEMS") === "on";
+  if (noteItems && scribe === null) {
+    fail(mode, SCRIBE_VARS.filter((name) => get(name) === ""), ` (note items need the scribe: all of ${SCRIBE_VARS.join(", ")})`);
+  }
+  if (noteItems && addRepo === "") fail(mode, ["ADD_REPO"], " (note items need ADD_REPO, where their issues are created)");
 
   return {
     githubToken: get("GITHUB_TOKEN"),
@@ -198,5 +213,24 @@ export function loadConfig(mode: Mode, env: NodeJS.ProcessEnv = process.env): Co
     llm,
     scribe,
     add,
+    noteItems,
   };
+}
+
+/**
+ * What `check` says about note items: one line when they are on, and nothing at
+ * all when they are off, so a deployment without them reads as it did before.
+ */
+export function noteItemsCheckLine(config: Config): string | null {
+  const repo = config.noteItems ? config.add?.repo : undefined;
+  return repo === undefined ? null : `note items: on -> ${repo}`;
+}
+
+/**
+ * What `run` logs: on says where the items go, and nothing at all when they are
+ * off, so a deployment without them reads as it did before.
+ */
+export function noteItemsRunLine(config: Config): string | null {
+  const repo = config.noteItems ? config.add?.repo : undefined;
+  return repo === undefined ? null : `note items: on -> ${repo}`;
 }

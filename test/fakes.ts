@@ -191,6 +191,13 @@ export class FakeBoard implements BoardSource, IssueWriter {
   failAt: BoardFailure | null = null;
   /** True: only the next call to the failing step throws. False: every one of them does. */
   failOnce = true;
+  /**
+   * Which call of the failing step is the one that throws, counted from 1: a batch
+   * whose second item fails still writes its first, so the step is not its first call.
+   */
+  failAtCall = 1;
+  /** What the failing step throws: a test that needs the words of a real refusal. */
+  failWith: string | null = null;
   /** The project's own workflow added the new issue before addToProject ran. */
   autoAdd = false;
   /** createIssue also leaves the issue on the board, as that workflow would. */
@@ -200,11 +207,15 @@ export class FakeBoard implements BoardSource, IssueWriter {
    * would: the issue exists, and the answer that would have named it did not arrive.
    */
   createThenThrow = false;
+  /** The same, for one issue of a batch: the nth createIssue loses its answer. */
+  createThenThrowOn: number | null = null;
   /** What createIssue returns, and the item id addToProject returns. */
   nextIssue = { id: "I_900", number: 900, url: "https://github.com/demo/notes/issues/900" };
   createdItemId = "ITEM_900";
   /** Holds createIssue open, so a test can click twice while the first click is writing. */
   gate: Gate | null = null;
+  /** How many times each step was called: what failAtCall counts. */
+  readonly #calls = new Map<BoardFailure, number>();
 
   /** The bodies of the issues createIssue made: what the card's sentence ended up as. */
   get bodies(): string[] {
@@ -223,7 +234,9 @@ export class FakeBoard implements BoardSource, IssueWriter {
     // Recorded before anything can throw: the issue is on GitHub either way.
     this.created.push({ issue, body });
     if (this.boardAfterCreate) this.board.items.push(issueItem(issue, this.createdItemId, title));
-    if (this.createThenThrow) throw new Error("createIssue: the request timed out");
+    if (this.createThenThrow || this.created.length === this.createThenThrowOn) {
+      throw new Error("createIssue: the request timed out");
+    }
     return issue;
   }
 
@@ -264,9 +277,12 @@ export class FakeBoard implements BoardSource, IssueWriter {
   }
 
   #enter(name: BoardFailure, what = ""): void {
-    if (this.failAt === name) {
+    const call = (this.#calls.get(name) ?? 0) + 1;
+    this.#calls.set(name, call);
+    // failOnce is the one call named by failAtCall; otherwise every call from it on fails.
+    if (this.failAt === name && (this.failOnce ? call === this.failAtCall : call >= this.failAtCall)) {
       if (this.failOnce) this.failAt = null;
-      throw new Error(`${name} failed`);
+      throw new Error(this.failWith ?? `${name} failed`);
     }
     this.calls.push(what === "" ? name : `${name} ${what}`);
   }

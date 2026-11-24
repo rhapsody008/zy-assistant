@@ -35,6 +35,7 @@ import {
   type AddContext,
   type AddDraft,
   type AddPayload,
+  type AddProgress,
   type AddState,
 } from "./add.ts";
 import { errMessage } from "./errors.ts";
@@ -52,7 +53,7 @@ const ACK = "✍️ drafting…";
 const ID_PREFIX = "add:";
 
 /** Where a write failed: what the log line says a retry continues from. */
-type FailedStep = "issue" | "project" | "fields" | "link";
+export type FailedStep = "issue" | "project" | "fields" | "link";
 
 /** Where a sentence was typed when it was a reply: the item its thread is about. */
 export interface AddHint {
@@ -237,7 +238,7 @@ type FieldWrite =
   | { kind: "text"; fieldId: string; text: string };
 
 /** What the pre-flight resolves while nothing is written: the field writes, and the issue to hang the new one under. */
-interface AddPlan {
+export interface AddPlan {
   fields: FieldWrite[];
   parent: { itemId: string; contentId: string } | null;
 }
@@ -283,14 +284,18 @@ function plannedParent(board: Board, ref: string): { itemId: string; contentId: 
  * two halves are also resolved on their own, by a retry whose issue already
  * exists and whose stale names must not stop it finishing.
  */
-function planOf(draft: AddDraft, board: Board): AddPlan {
+export function planOf(draft: AddDraft, board: Board): AddPlan {
   return {
     fields: planFields(draft, board),
     parent: draft.parentRef === null ? null : plannedParent(board, draft.parentRef),
   };
 }
 
-/** The field writes the draft names, in board order: each one resolved or a throw. */
+/**
+ * The field writes the draft names, in the order they are written: the options,
+ * then the dates, then the text fields, `Waiting on` last of all. Each one is
+ * resolved here or throws.
+ */
 function planFields(draft: AddDraft, board: Board): FieldWrite[] {
   return [
     selected(board, FIELD.status, draft.status),
@@ -300,6 +305,7 @@ function planFields(draft: AddDraft, board: Board): FieldWrite[] {
     dated(board, FIELD.target, draft.targetDate),
     dated(board, FIELD.nextTouch, draft.nextTouch),
     written(board, FIELD.nextAction, draft.nextAction),
+    written(board, FIELD.waitingOn, draft.waitingOn),
   ].filter((write): write is FieldWrite => write !== null);
 }
 
@@ -315,33 +321,44 @@ function writeField(board: BoardSource & IssueWriter, projectId: string, itemId:
   }
 }
 
-/**
- * The writes behind Create, continuing from whatever progress already has: the
- * issue, its board item, its fields, and the link under its engagement. Each
- * step is saved before the next one starts, so the card's retry knows where a
- * failure stopped and writes no second issue.
- */
-async function applyAdd(deps: AddDeps, proposal: Proposal, save: (progress: string) => void): Promise<void> {
-  const ts = tsOf(proposal.id);
-  // Before the board read and before any write: there is nothing to resolve without both.
-  const { payload } = readableDraft(proposal);
-  const draft = payload.draft;
-  // {} would say nothing was written, so a progress that cannot be read is a stop,
-  // not a second issue.
-  const progress = readProgress(proposal.progress);
-  if (progress === null) throw new Error("this draft's progress could not be read");
-  // A fresh read on every attempt: the ids, the options and the parent are the
-  // board's as it is now, never the snapshot the draft was drawn from.
-  const board = await deps.board.fetchBoard(deps.owner, deps.number);
-  // Nothing has been written yet, so every name is checked here, before an issue
-  // exists. Once one does, a name the board has since dropped must not stop the
-  // retry: the steps that are left resolve their own names just before they write.
-  if (progress.issue === undefined && progress.issuePending === undefined) planOf(draft, board);
+/** What createItem works against one item: its progress, its issue body, and how its failures are logged. */
+export interface CreateItemArgs {
+  /** The board as the caller read it: every id resolved here comes from this read. */
+  board: Board;
+  draft: AddDraft;
+  /** The item's own progress, mutated and saved in place: a batch carries one of these per item. */
+  progress: AddProgress;
+  /** Called after each step, before the next one starts: what a retry continues from. */
+  save: (progress: string) => void;
+  /** The proposal id: looked up as the pending marker the caller embedded in the body. */
+  marker: string;
+  /** The issue's body, built by the caller: the attribution, and so the sentence, is its own. */
+  body: string;
+  /** A step that failed: each caller logs it in its own voice, and the throw is theirs too. */
+  fail: (step: FailedStep, err: unknown) => never;
+}
 
-  const fail = (step: FailedStep, err: unknown): never => {
-    deps.log(`add ${ts}: create failed at ${step}: ${errMessage(err)}`);
-    throw err;
-  };
+/** What createItem leaves its caller: the issue, the board item, and the parent it hangs under. */
+export interface CreatedItem {
+  issue: { id: string; number: number; url: string };
+  itemId: string;
+  parentItemId: string | null;
+}
+
+/**
+ * One item's four writes, continuing from whatever its progress already has: the
+ * issue, its board item, its fields, and the link under its parent. Each step is
+ * saved before the next one starts, so a retry knows where a failure stopped and
+ * writes no second issue.
+ *
+ * The caller builds the body and logs the failures: a DM and a meeting note do
+ * not say the same thing about where an item came from, nor fail in one voice.
+ */
+export async function createItem(
+  deps: Pick<AddDeps, "board" | "repo" | "owner" | "number">,
+  args: CreateItemArgs,
+): Promise<CreatedItem> {
+  const { board, draft, progress, save, marker, body, fail } = args;
 
   if (progress.issue === undefined) {
     // The marker is saved before the POST: if the POST landed while its answer did
@@ -359,12 +376,10 @@ async function applyAdd(deps: AddDeps, proposal: Proposal, save: (progress: stri
       }
     }
     if (progress.issue === undefined) {
-      progress.issuePending = proposal.id;
+      progress.issuePending = marker;
       save(JSON.stringify(progress));
-      // The day ZY typed it, not the day of the retry: the issue says when it came from Slack.
-      const added = localNow(new Date(proposal.createdAt), TZ).date;
       try {
-        progress.issue = await deps.board.createIssue(deps.repo, draft.title, issueBody(proposal.source, added, proposal.id));
+        progress.issue = await deps.board.createIssue(deps.repo, draft.title, body);
       } catch (err) {
         return fail("issue", err);
       }
@@ -402,8 +417,8 @@ async function applyAdd(deps: AddDeps, proposal: Proposal, save: (progress: stri
     save(JSON.stringify(progress));
   }
 
-  // The item the issue hangs under, for the last line: the write below resolves it
-  // itself, and a retry that finds it already linked only looks it up.
+  // The item the issue hangs under, for the caller's log line: the write below
+  // resolves it itself, and a retry that finds it already linked only looks it up.
   let parentItemId: string | null = null;
   if (draft.parentRef !== null) {
     if (progress.linked === undefined) {
@@ -421,8 +436,49 @@ async function applyAdd(deps: AddDeps, proposal: Proposal, save: (progress: stri
     }
   }
 
+  return { issue, itemId, parentItemId };
+}
+
+/**
+ * One `add:` proposal's Create: its draft and its own progress, the board as the
+ * click finds it, and the single line an item that came from a DM leaves.
+ */
+async function applyAdd(deps: AddDeps, proposal: Proposal, save: (progress: string) => void): Promise<void> {
+  const ts = tsOf(proposal.id);
+  // Before the board read and before any write: there is nothing to resolve without both.
+  const { payload } = readableDraft(proposal);
+  const draft = payload.draft;
+  // {} would say nothing was written, so a progress that cannot be read is a stop,
+  // not a second issue.
+  const progress = readProgress(proposal.progress);
+  if (progress === null) throw new Error("this draft's progress could not be read");
+  // A fresh read on every attempt: the ids, the options and the parent are the
+  // board's as it is now, never the snapshot the draft was drawn from.
+  const board = await deps.board.fetchBoard(deps.owner, deps.number);
+  // Nothing has been written yet, so every name is checked here, before an issue
+  // exists. Once one does, a name the board has since dropped must not stop the
+  // retry: the steps that are left resolve their own names just before they write.
+  if (progress.issue === undefined && progress.issuePending === undefined) planOf(draft, board);
+
+  const fail = (step: FailedStep, err: unknown): never => {
+    deps.log(`add ${ts}: create failed at ${step}: ${errMessage(err)}`);
+    throw err;
+  };
+
+  // The day ZY typed it, not the day of the retry: the issue says when it came from Slack.
+  const added = localNow(new Date(proposal.createdAt), TZ).date;
+  const created = await createItem(deps, {
+    board,
+    draft,
+    progress,
+    save,
+    marker: proposal.id,
+    body: issueBody(proposal.source, added, proposal.id),
+    fail,
+  });
+
   // One line per created item, ids only: no title, no sentence, no option.
-  deps.log(`add ${ts}: created ${deps.repo}#${issue.number} as ${itemId}, under ${parentItemId ?? "none"}`);
+  deps.log(`add ${ts}: created ${deps.repo}#${created.issue.number} as ${created.itemId}, under ${created.parentItemId ?? "none"}`);
 }
 
 /** The `add:` kind: how a card is drawn, how the draft is edited, and what Create writes. */

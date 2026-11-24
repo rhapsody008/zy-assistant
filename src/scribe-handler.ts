@@ -11,8 +11,9 @@
 // answered with is only a folder the repo lists, and a folder to create is only
 // Accounts/<a name the pattern accepts>. Nothing the model says becomes a path.
 //
-// Step 2 (board proposals) is not here: the note's actions are rendered, stored
-// and listed back, and nothing is proposed to the board yet.
+// What a commit returns is the note it wrote, because the next step is the
+// caller's: the bot offers the note's actions as board items (note-items-handler.ts),
+// and the CLI, which has no board, only prints the entry.
 
 import { errMessage } from "./errors.ts";
 import { completeJson, type Llm } from "./llm.ts";
@@ -73,6 +74,19 @@ export interface ScribeDeps {
   timeoutMs: number;
   /** How long its reply may be, LLM_MAX_TOKENS. */
   maxTokens: number;
+  /**
+   * True when note items are on (NOTE_ITEMS): the commit's reply then promises a
+   * card, because the caller will post one. This file does not propose anything.
+   */
+  noteItems?: boolean;
+}
+
+/** What a commit wrote: the dictation's ts, where it landed, the note, and its link. */
+export interface ScribeCommit {
+  ts: string; // the dictation's ts: the proposal's id and the thread's parent
+  folder: string; // the folder it actually went into
+  note: Note; // its actions are what the board items are made from
+  url: string; // the commit's link, and where an issue says it came from
 }
 
 /**
@@ -134,12 +148,14 @@ export async function writeEntry(
   throw new Error(`${path} kept changing under us, gave up after ${WRITE_ATTEMPTS} attempts`);
 }
 
-/** "✅ Accounts/Acme: size the VPC → https://…", and the actions, which step 2 picks up. */
-export function doneMessage(folder: string, topic: string, url: string, actions: Note["actions"]): string {
+/** "✅ Accounts/Acme: size the VPC → https://…", and the actions, which the note items step picks up. */
+export function doneMessage(folder: string, topic: string, url: string, actions: Note["actions"], proposing = false): string {
   const head = `✅ ${folder}: ${topic} → ${url}`;
   if (actions.length === 0) return head;
   const list = actions.map((a) => `• ${a.owner}: ${a.text}${a.due === null ? "" : ` (due ${a.due})`}`);
-  return [head, "board proposals: coming in step 2", ...list].join("\n");
+  // What follows the actions: one card when this deployment proposes them, and
+  // the step that used to promise one when it does not.
+  return [head, proposing ? "board items: a card follows" : "board proposals: coming in step 2", ...list].join("\n");
 }
 
 interface CommitArgs {
@@ -148,9 +164,8 @@ interface CommitArgs {
   entry: string;
   date: string; // for the commit message
   topic: string; // ditto, and in the reply
-  actions: Note["actions"];
-  /** True: the words go in verbatim, because the model never answered. */
-  raw: boolean;
+  /** The note that was written, or null: the words went in verbatim, so it has no actions. */
+  note: Note | null;
   ui: ScribeUi;
   /** The "writing…" message to turn into the result, or null to reply afresh. */
   ackTs: string | null;
@@ -160,9 +175,13 @@ interface CommitArgs {
  * Writes one entry and says where it landed. A failed write keeps the dictation
  * and asks again, with a Retry button, so there is something to click once
  * GitHub is back: nothing is stranded.
+ *
+ * What comes back is the note that was committed, or null when nothing was
+ * written or the words were raw: an unparsed dictation has no actions to offer.
  */
-async function commit(deps: ScribeDeps, args: CommitArgs): Promise<void> {
+async function commit(deps: ScribeDeps, args: CommitArgs): Promise<ScribeCommit | null> {
   const startedAt = deps.now().getTime();
+  const actions = args.note?.actions ?? [];
   let url: string;
   try {
     url = await writeEntry(deps, { folder: args.folder, entry: args.entry, date: args.date, topic: args.topic });
@@ -177,13 +196,16 @@ async function commit(deps: ScribeDeps, args: CommitArgs): Promise<void> {
       await args.ui.edit(args.ackTs, warning);
       await args.ui.ask({ ts: args.ts, text: "Try writing it again?", folders: [], create: null, retry: true });
     }
-    return;
+    return null;
   }
   deps.dictations.updateDictation(args.ts, { status: "done", folder: args.folder, commitUrl: url, error: null });
-  // One line per commit, ids only: no dictation text, no note title, no folder tree.
-  if (args.raw) deps.log(`scribe ${args.ts}: committed raw text to ${args.folder}`);
-  else deps.log(`scribe ${args.ts}: committed ${args.folder} in ${deps.now().getTime() - startedAt} ms (${args.actions.length} actions) ${url}`);
-  await report(args.ui, args.ackTs, doneMessage(args.folder, args.topic, url, args.actions));
+  // One line per commit, ids only: no dictation text, no note title, and no
+  // folder, which is a customer's name. The url names the repo, not the customer.
+  if (args.note === null) deps.log(`scribe ${args.ts}: committed raw text ${url}`);
+  else deps.log(`scribe ${args.ts}: committed in ${deps.now().getTime() - startedAt} ms (${actions.length} actions) ${url}`);
+  // The reply promises a card only when this deployment will post one.
+  await report(args.ui, args.ackTs, doneMessage(args.folder, args.topic, url, actions, deps.noteItems === true));
+  return args.note === null ? null : { ts: args.ts, folder: args.folder, note: args.note, url };
 }
 
 async function report(ui: ScribeUi, ackTs: string | null, text: string): Promise<void> {
@@ -199,17 +221,17 @@ function suggestedFolder(name: string | null): { path: string; name: string } | 
 }
 
 /** The one note `note: ...` DM: store, extract, then write or ask where it goes. */
-export async function scribeHandler(deps: ScribeDeps, dictation: ScribeDictation, ui: ScribeUi): Promise<void> {
+export async function scribeHandler(deps: ScribeDeps, dictation: ScribeDictation, ui: ScribeUi): Promise<ScribeCommit | null> {
   const now = deps.now();
   const today = localNow(now, TZ).date;
   // The stored ts is the dedupe: Slack redelivers, and a second socket answers too.
   if (!deps.dictations.recordDictation({ ts: dictation.ts, text: dictation.text, createdAt: now.toISOString() })) {
     deps.log(`scribe ${dictation.ts}: already stored, ignoring the redelivery`);
-    return;
+    return null;
   }
   if (!deps.dictations.claimDictation(dictation.ts, ["stored"])) {
     deps.log(`scribe ${dictation.ts}: another run took it first, ignoring this one`);
-    return;
+    return null;
   }
   const ackTs = await ui.reply("📝 writing…");
 
@@ -221,7 +243,7 @@ export async function scribeHandler(deps: ScribeDeps, dictation: ScribeDictation
     deps.log(`scribe ${dictation.ts}: could not list the notes folders: ${reason}`);
     deps.dictations.updateDictation(dictation.ts, { status: "failed", error: reason });
     await ui.edit(ackTs, `⚠️ could not read the notes repo: ${reason}`);
-    return;
+    return null;
   }
 
   let note: Note | null = null;
@@ -238,21 +260,19 @@ export async function scribeHandler(deps: ScribeDeps, dictation: ScribeDictation
   // never reaches a write, the question does.
   const known = note === null || note.folder === null ? null : safeFolder(note.folder, folders);
   if (note !== null && known !== null) {
-    // The extracted note is kept before it is written: its actions are what step
-    // 2 (board proposals) will read, and a failed write must not lose them.
+    // The extracted note is kept before it is written: its actions are what the
+    // board items are made from, and a failed write must not lose them.
     deps.dictations.updateDictation(dictation.ts, { noteJson: JSON.stringify(note), folder: known });
-    await commit(deps, {
+    return commit(deps, {
       ts: dictation.ts,
       folder: known,
       entry: renderEntry(note),
       date: note.date,
       topic: note.topic,
-      actions: note.actions,
-      raw: false,
+      note,
       ui,
       ackTs,
     });
-    return;
   }
 
   // Either the model found no folder, or it did not answer at all. Both end in
@@ -269,6 +289,7 @@ export async function scribeHandler(deps: ScribeDeps, dictation: ScribeDictation
   }
   await ui.ask({ ts: dictation.ts, text, folders, create: suggested?.name ?? null, retry: false });
   deps.log(`scribe ${dictation.ts}: asked for a folder`);
+  return null;
 }
 
 /** ZY's answer to the folder question: an existing folder, a new one, a retry, or cancel. */
@@ -335,63 +356,60 @@ async function alreadyHandled(dictation: Dictation, ui: ScribeUi): Promise<void>
 }
 
 /** The answer to the folder question: the write the model's answer was waiting for. */
-export async function scribeChoice(deps: ScribeDeps, choice: ScribeChoice, ui: ScribeUi): Promise<void> {
+export async function scribeChoice(deps: ScribeDeps, choice: ScribeChoice, ui: ScribeUi): Promise<ScribeCommit | null> {
   const dictation = deps.dictations.findDictation(choice.ts);
   if (dictation === null) {
     deps.log(`scribe ${choice.ts}: no such dictation`);
-    return;
+    return null;
   }
   if (choice.action === "cancel") {
     // A cancel races a click on the same question too: only the first one counts.
     if (!deps.dictations.claimDictation(choice.ts, CLAIM_FROM)) {
       deps.log(`scribe ${choice.ts}: already ${dictation.status}, this cancel does nothing`);
       await alreadyHandled(dictation, ui);
-      return;
+      return null;
     }
     deps.dictations.updateDictation(choice.ts, { status: "cancelled" });
     await ui.reply("Cancelled. The dictation stays stored.");
-    return;
+    return null;
   }
 
   const note = storedNote(dictation.noteJson);
   const folder = choiceFolder(choice, dictation, note);
   if (folder === null) {
     deps.log(`scribe ${choice.ts}: the choice names no folder this repo may have`);
-    return;
+    return null;
   }
   // One click wins: a double click, a click on a written note, or a Create racing
   // a select all end here, and only the first one commits.
   if (!deps.dictations.claimDictation(choice.ts, CLAIM_FROM)) {
     deps.log(`scribe ${choice.ts}: already ${dictation.status}, this choice does nothing`);
     await alreadyHandled(dictation, ui);
-    return;
+    return null;
   }
 
   // The day ZY dictated it, not the day of the click.
   const today = localNow(new Date(dictation.createdAt), TZ).date;
   if (note === null) {
     // The model never answered: the words go in verbatim, and they are not edited.
-    await commit(deps, {
+    return commit(deps, {
       ts: choice.ts,
       folder,
       entry: rawEntry(today, dictation.text),
       date: today,
       topic: "Raw dictation (unprocessed)",
-      actions: [],
-      raw: true,
+      note: null,
       ui,
       ackTs: null,
     });
-    return;
   }
-  await commit(deps, {
+  return commit(deps, {
     ts: choice.ts,
     folder,
     entry: renderEntry(note),
     date: note.date,
     topic: note.topic,
-    actions: note.actions,
-    raw: false,
+    note,
     ui,
     ackTs: null,
   });

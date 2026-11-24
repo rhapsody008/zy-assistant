@@ -82,12 +82,15 @@ With `ADD_REPO` set, the typed block also carries the `add: <text>` line, and
 `help add` opens its page.
 
 Every successful action is one log line with ids only, never a note's text or
-title: `scribe <ts>: committed <folder> in <ms> ms (<n> actions) <url>`,
-`scribe <ts>: asked for a folder`, `scribe <ts>: committed raw text to <folder>`,
+title: `scribe <ts>: committed in <ms> ms (<n> actions) <url>`,
+`scribe <ts>: asked for a folder`, `scribe <ts>: committed raw text <url>`,
 `add <ts>: drafted in <ms> ms (parent <ref>)`,
 `add <ts>: created <repo>#<n> as <itemId>, under <parentItemId>`,
 `add <ts>: create failed at <issue|project|fields|link>: <reason>`,
-`proposal <id>: apply failed`, `button <action> on <item> by <user>`,
+`note-items <ts>: proposed <n> items (<k> not created, parent <ref>)`,
+`note-items <ts>: item <n>: created <repo>#<n> as <itemId>, under <parentItemId>`,
+`note items: on -> <ADD_REPO>` (and `note items: off, a note's actions are only listed`
+at startup), `proposal <id>: apply failed`, `button <action> on <item> by <user>`,
 `move <item>: <old> -> <new>`, `reply ack <item>`, `help <topic>`,
 `ask <ts>: answered in <ms> ms (<n> items, notes: <folders>)` and
 `ask <ts>: failed: <reason>`. A question's text and an answer's text are never
@@ -109,6 +112,7 @@ logged, and neither is an `add:` sentence or the title drafted from it.
 | `ASSISTANT_TZ` | | `Asia/Singapore` |
 | `NOTES_REPO` | | – (owner/repo: a commit under `Accounts/<Account>` acks that Account's items, the scribe writes here and the ask reads here; unset turns all three off) |
 | `ADD_REPO` | `run` | – (owner/repo: where an `add:` item's issue is created; with the three `LLM_*` variables it turns `add:` on) |
+| `NOTE_ITEMS` | `run` | – (`on`: a committed note's actions are offered as board items; any other value is off. It needs the scribe and `ADD_REPO`, and without either it is a startup error) |
 | `WAITING_CHASE_DAYS` | | `5` (a Waiting item with no update for longer is chased) |
 | `STAGE_STALE_DAYS` | | `21` (a pipeline item with no update for longer is nagged on Friday) |
 | `LLM_BASE_URL` | `scribe`, `ask`, `check`, `run` | – (an OpenAI-compatible gateway, e.g. `https://<host>/enterpriseai/gateway/v1`) |
@@ -245,7 +249,8 @@ What it does with a dictation:
    `notes(<folder>): <date> <topic> [scribe]`; a README that changed under it is
    read again, up to three times;
 5. edits the `📝 writing…` reply to `✅ <folder>: <topic> → <link>`, plus the
-   note's actions with "board proposals: coming in step 2".
+   note's actions with "board items: a card follows" when `NOTE_ITEMS` is on, and
+   with "board proposals: coming in step 2" when it is not.
 
 If the model cannot answer at all, nothing is lost: the raw text is offered the
 existing folders and committed verbatim as
@@ -270,9 +275,10 @@ _Scribed by zy-assistant from Slack._
 ```
 
 `Attendees`, `Decisions` and `### Actions` are left out when they are empty. The
-actions are also stored (in the dictation's `note_json`) and listed in the reply:
-they are what step 2 will turn into board proposals. Nothing proposes anything
-to the board yet.
+actions are also stored (in the dictation's `note_json`) and listed in the reply.
+With `NOTE_ITEMS` on they are then offered as board items on a card (see **Board
+items from a note**); without it they stay that list, and nothing goes to the
+board.
 
 The Slack handler returns before the work starts and every error becomes a
 thread reply, so Slack's three-second budget is never the scribe's problem. The
@@ -344,6 +350,39 @@ nowhere for the repo to go without a model, and a typo in the other direction
 should not look like a working bot. The token needs Issues read and write on
 `ADD_REPO` and the project's write access it already has; nothing is written to
 the board until Create.
+
+## Board items from a note
+
+With `NOTE_ITEMS=on`, a committed note's actions become ONE card, in the thread
+of the dictation, right after the commit: up to six items, one line each.
+
+*How the note's actions are read*: each action is `- [ ] <owner>: <text> (due
+<date>)`. An action of ZY's becomes **Next** with a Target date, because it is a
+date he owes. Anyone else's becomes **Waiting**, with that person as the
+waiting-on and the date as the Next touch, because it is the day he chases it:
+the deadline rules must never nag ZY for another person's deliverable. An action
+whose words already name a board item is left out (`<ref> is already on the
+board`), and a date that is already past is left off the item's own dates, so
+nothing puts a target in the past. The account is the note's folder
+when it is `Accounts/<name>`, and the item hangs under that account's engagement
+when the board has one: nothing here asks a model.
+
+*Create* writes four things per item, in the note's order: an issue in
+`ADD_REPO` whose body quotes the note's own action line and links the note, that
+issue onto the board, the item's fields, and the item as a sub-issue of its
+engagement. Each item's steps are saved as they land, so a failure part-way says
+so on the card and offers **Retry**, which carries on from the item it stopped at
+and never makes a second issue: an item that fails does not stop the ones after
+it, and Retry continues with whichever are left.
+
+*Edit* opens a modal over the card: the parent engagement of the whole batch, and
+for each item what it becomes (Next, Waiting or Don't create), its title, and its
+date. Saving it re-parents and redraws the card; nothing is written until
+*Create*, exactly as with `add:`.
+
+`NOTE_ITEMS` is only on with the scribe (a note has to have actions) and
+`ADD_REPO` (the items need a repo to be created in); on without either is a
+startup error that names what is missing. Off, the flag changes nothing at all.
 
 ## Develop
 

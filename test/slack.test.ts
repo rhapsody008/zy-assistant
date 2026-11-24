@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { AddInput, AddUi } from "../src/add-handler.ts";
 import type { Board, BoardSource } from "../src/github.ts";
+import { noteItemsSpec, proposeNoteItems, type NoteItemsDeps, type NoteItemsInput } from "../src/note-items-handler.ts";
 import { DEFAULT_POLICY, type ActionId, type Briefing, type Item, type Ping } from "../src/rules.ts";
 import type { AskInput, AskUi } from "../src/ask.ts";
 import {
@@ -55,9 +56,10 @@ import {
   type ProposalDeps,
   type ProposalSpec,
 } from "../src/proposals.ts";
+import type { Note } from "../src/scribe.ts";
 import type { ScribeDictation, ScribeUi } from "../src/scribe-handler.ts";
 import type { Proposal, ProposalStatus } from "../src/store.ts";
-import { FakeProposals, FakeStore } from "./fakes.ts";
+import { FakeBoard as WritableBoard, FakeProposals, FakeStore } from "./fakes.ts";
 
 class FakeClient implements SlackClient {
   readonly posts: PostMessageArgs[] = [];
@@ -198,6 +200,7 @@ function harness(item: Item | null = null) {
     eodTime: "17:30",
     notesRepo: null,
     addRepo: null,
+    noteItems: false,
     ask: false,
     policy: DEFAULT_POLICY,
   };
@@ -562,6 +565,7 @@ function recordScribe() {
     calls.push(dictation);
     uis.push(ui);
     resolve();
+    return null; // no commit: the tests of the card supply one
   };
   return { calls, uis, settled, dispatch };
 }
@@ -662,7 +666,7 @@ test("a DM that is no command gets one hint naming today and help", async () => 
 
 test("with the scribe on, the unknown-DM hint offers note: too", async () => {
   const { deps, client } = harness();
-  deps.scribe = async () => {};
+  deps.scribe = async () => null;
 
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "ping" });
 
@@ -696,7 +700,7 @@ test("the commands are still commands with a model set: today, help, and note:",
   const { deps, client } = harness();
   const ask = recordAsk();
   deps.ask = ask.dispatch;
-  deps.scribe = async () => {};
+  deps.scribe = async () => null;
 
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "today" });
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "help" });
@@ -722,7 +726,7 @@ test("a reply in a dictation's thread is a question, not an ack", async () => {
   const { deps, client } = harness();
   const ask = recordAsk();
   deps.ask = ask.dispatch;
-  deps.scribe = async () => {};
+  deps.scribe = async () => null;
 
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.9", threadTs: "222.2", text: "what did we decide about Acme?" });
   await ask.settled;
@@ -857,7 +861,7 @@ test("a help request is read from the command words alone", () => {
 
 test("with the scribe on, the manual has the note topic and its page says how to dictate", async () => {
   const { deps, client } = harness();
-  deps.scribe = async () => {};
+  deps.scribe = async () => null;
 
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "help" });
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "help note" });
@@ -1521,7 +1525,7 @@ test("without add:, an add: DM is a question, and the hint names add: only when 
 
   const withBoth = harness();
   withBoth.deps.add = async () => {};
-  withBoth.deps.scribe = async () => {};
+  withBoth.deps.scribe = async () => null;
   await handleMessage(withBoth.deps, { userId: "U_ZY", channel: "D", ts: "222.6", threadTs: null, text: "ping" });
   assert.deepEqual(withBoth.client.posts.map((post) => post.text), ["I didn't catch that. Type `today`, `add: …`, `note: …`, or `help`."]);
 });
@@ -1832,4 +1836,168 @@ test("a DM's add: draws its card on the drafting reply it posted, at the message
   assert.equal(client.updates[0].ts, "ts-1", "the ack is the message the card replaces");
   assert.equal(client.updates[0].text, cardText(OPEN_CARD));
   assert.equal(sentBlocks(client.updates[0].blocks).at(-1)?.elements[0].value, "add:222.2|0", "the card's id is the message it was drafted from");
+});
+
+// ---- the note items: a committed note's actions, offered as one card -------
+
+/** The dictation a note's card belongs to, and the id its buttons carry. */
+const NOTE_TS = "222.2";
+const NOTE_ID = `note:${NOTE_TS}`;
+
+/** The note's own link: what the card links, and what an issue says it came from. */
+const NOTE_URL = "https://github.com/demo/notes/commit/abc123";
+
+/** Two of ZY's actions and one of Dana's: a note with something to offer. */
+const NOTE_WITH_ACTIONS: Note = {
+  folder: "Accounts/Acme",
+  newFolderName: null,
+  date: "2026-11-26",
+  type: "POC",
+  topic: "NKP sizing",
+  attendees: ["Dana"],
+  summary: "Sizing was agreed.",
+  decisions: [],
+  actions: [
+    { owner: "ZY", text: "send the sizing sheet", due: null },
+    { owner: "Dana", text: "confirm the POC window", due: null },
+  ],
+};
+
+/**
+ * The bot's own note-items wiring: a commit that already happened, and the real
+ * propose step over a board that can take an item. Everything is a promise, so a
+ * test waits for the pipeline with flushed().
+ */
+function noteItemsHarness(note: Note = NOTE_WITH_ACTIONS) {
+  const h = harness();
+  const board = new WritableBoard();
+  board.board = {
+    projectId: "PVT_1",
+    title: "Board",
+    fields: new Map([["Status", { id: "F_STATUS", options: new Map([["Next", "O_NEXT"], ["Waiting", "O_WAITING"], ["Done", "O_DONE"]]) }]]),
+    items: [],
+  };
+  const proposals = new FakeProposals();
+  const noteDeps: NoteItemsDeps = {
+    board,
+    proposals,
+    repo: "demo/notes",
+    owner: "rhapsody008",
+    number: 1,
+    now: h.deps.now,
+    log: h.deps.log,
+  };
+  const calls: NoteItemsInput[] = [];
+  h.deps.scribe = async () => ({ ts: NOTE_TS, folder: "Accounts/Acme", note, url: NOTE_URL });
+  h.deps.noteItems = async (input, ui) => {
+    calls.push(input);
+    await proposeNoteItems(noteDeps, input, ui);
+  };
+  h.deps.proposals = { store: proposals, specs: { note: noteItemsSpec(noteDeps) }, userId: "U_ZY", now: h.deps.now, log: h.deps.log };
+  return { ...h, board, proposals, noteDeps, calls };
+}
+
+/** Lets a background pipeline run to its end: it is all promises, so one task turn is enough. */
+const flushed = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+/** The dictation's own message: what a test types, and what the card replies under. */
+const DICTATION = { userId: "U_ZY", channel: "D", ts: NOTE_TS, threadTs: null, text: "note: Acme call, ten nodes" };
+
+test("a committed note's actions are offered as one card in the dictation's thread", async () => {
+  const { deps, client, proposals, calls } = noteItemsHarness();
+
+  await handleMessage(deps, DICTATION);
+  await flushed();
+
+  assert.deepEqual(
+    calls,
+    [{ ts: NOTE_TS, channel: "D", folder: "Accounts/Acme", note: NOTE_WITH_ACTIONS, url: NOTE_URL }],
+    "the commit, and the channel the card goes to",
+  );
+  assert.equal(client.posts.length, 1, "one card, and nothing else");
+  assert.equal(client.posts[0].thread_ts, NOTE_TS, "a reply in the dictation's thread");
+  assert.match(client.posts[0].text ?? "", /^\*Board items from this note\* · 2 actions · nothing created yet/);
+
+  const buttons = sentBlocks(client.posts[0].blocks).at(-1);
+  assert.equal(buttons?.block_id, `zy_prop:${NOTE_ID}`, "the card the click looks the row up by");
+  assert.equal(buttons?.elements[0].value, `${NOTE_ID}|0`, "the row's id and rev, in every button");
+
+  const row = proposals.findProposal(NOTE_ID);
+  assert.equal(row?.status, "open");
+  assert.equal(row?.channel, "D", "where the card is: a restart redraws it there");
+  assert.equal(row?.messageTs, "ts-1", "the card's own message");
+});
+
+test("with note items off, a committed note's actions stay the list the reply shows", async () => {
+  const { deps, client, calls } = noteItemsHarness();
+  deps.noteItems = null;
+
+  await handleMessage(deps, DICTATION);
+  await flushed();
+
+  assert.deepEqual(calls, [], "nothing is proposed without the feature");
+  assert.deepEqual(client.posts, [], "and no card is posted");
+});
+
+test("a note with no actions is no card", async () => {
+  const { deps, client, calls } = noteItemsHarness({ ...NOTE_WITH_ACTIONS, actions: [] });
+
+  await handleMessage(deps, DICTATION);
+  await flushed();
+
+  assert.deepEqual(calls, [], "there is nothing to offer");
+  assert.deepEqual(client.posts, []);
+});
+
+test("a propose step that throws says so in the thread, and leaves the scribe's reply alone", async () => {
+  const { deps, client, logs } = noteItemsHarness();
+  deps.scribe = async (_dictation, ui) => {
+    await ui.reply(`✅ Accounts/Acme: NKP sizing → ${NOTE_URL}`);
+    return { ts: NOTE_TS, folder: "Accounts/Acme", note: NOTE_WITH_ACTIONS, url: NOTE_URL };
+  };
+  deps.noteItems = async () => {
+    throw new Error("the board is down");
+  };
+
+  await handleMessage(deps, DICTATION);
+  await flushed();
+
+  assert.deepEqual(client.posts.map((post) => post.text), [
+    `✅ Accounts/Acme: NKP sizing → ${NOTE_URL}`,
+    "⚠️ could not propose board items: the board is down",
+  ]);
+  assert.equal(client.posts[1].thread_ts, NOTE_TS, "the warning goes where the card would have");
+  assert.match(logs.join("\n"), /note-items 222\.2 failed: the board is down/);
+  assert.doesNotMatch(logs.join("\n"), /the scribe failed/, "the note was written: a card that fails is no failed commit");
+});
+
+test("a click on the posted card's Create reaches the kind registered for a note", async () => {
+  const { deps, client, proposals } = noteItemsHarness();
+  await handleMessage(deps, DICTATION);
+  await flushed();
+  const value = sentBlocks(client.posts[0].blocks).at(-1)?.elements[0].value as string;
+
+  // The kind the bot registers for `note:` rows, over the same store.
+  const spec = new RecordingSpec();
+  deps.proposals = { store: proposals, specs: { note: spec }, userId: "U_ZY", now: deps.now, log: deps.log };
+  await handleProposalAction(deps, { actionId: "zy_prop_create", value, userId: "U_ZY", channel: "D", ts: "ts-1", triggerId: "TRIGGER_9" });
+
+  assert.deepEqual(spec.applies, [NOTE_ID], "the button's own value names the row the card was drawn from");
+  assert.equal(proposals.findProposal(NOTE_ID)?.status, "done");
+});
+
+test("a restart redraws a note's card where the row says it is, in the dictation's thread", async () => {
+  const { deps, client } = noteItemsHarness();
+  await handleMessage(deps, DICTATION);
+  await flushed();
+
+  await redrawProposalCard(deps, NOTE_ID);
+
+  assert.deepEqual(
+    client.updates.map((update) => [update.channel, update.ts]),
+    [["D", "ts-1"]],
+    "the channel the propose step stored, and the card's own message",
+  );
+  assert.match(client.updates[0].text, /^\*Board items from this note\* · 2 actions · nothing created yet/);
+  assert.equal(sentBlocks(client.updates[0].blocks).at(-1)?.elements[0].value, `${NOTE_ID}|0`, "its buttons came back");
 });

@@ -20,6 +20,11 @@ export interface ManualSettings {
   notesRepo: string | null; // NOTES_REPO: where the scribe writes, and what the ask reads
   /** ADD_REPO: where an `add:` issue is created, and what turns the `add:` line and topic on. */
   addRepo: string | null;
+  /**
+   * True when NOTE_ITEMS is on: the note page then says the note's actions become
+   * board items on a card, instead of promising them for a later step.
+   */
+  noteItems: boolean;
   /** True when the LLM variables are set: a DM may then hold a question. */
   ask: boolean;
   policy: Policy;
@@ -158,7 +163,11 @@ function noteTopic(settings: ManualSettings): ManualTopic {
       `The model picks the folder from the ones \`${settings.notesRepo ?? "the notes repo"}\` has. When none of them fits it suggests \`Accounts/<name>\`, and I ask: *Create*, one of the existing folders, or *Cancel*. An account I have never seen ends in that question, not in a guess.`,
       "If the model cannot answer at all, the raw words are committed verbatim and quoted, once you choose the folder.",
       'Dates: "this Friday" is the coming Friday, and "next Friday" is the Friday of the following week, 7 days after that one. The same for every other weekday.',
-      "Not yet: the note's actions are listed in the reply, but nothing goes to the board. Board proposals come in step 2.",
+      // The last line is what this deployment does with the actions: a card, or
+      // the list the reply already carries.
+      settings.noteItems
+        ? "The note's actions are offered as board items on a card in the reply's thread, up to six of them, and nothing is written until you click *Create*."
+        : "Not yet: the note's actions are listed in the reply, but nothing goes to the board. Board proposals come in step 2.",
     ],
   };
 }

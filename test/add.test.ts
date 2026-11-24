@@ -100,6 +100,7 @@ const DRAFT: AddDraft = {
   targetDate: "2026-12-08",
   nextTouch: "2026-11-30",
   nextAction: "Ask for the renewal date",
+  waitingOn: null,
 };
 
 const ISSUE = { id: "I_900", number: 900, url: "https://github.com/zy/notes/issues/900" };
@@ -301,6 +302,16 @@ test("the title is one line of at most 120 characters, and the next action of 30
   assert.equal(draft.nextAction?.length, 300);
 });
 
+test("a waiting on is clipped exactly the way the next action is", () => {
+  const draft = validateDraft({ ...RAW, waitingOn: `  waiting\n on ${"z".repeat(400)}  ` }, CTX, TODAY);
+
+  assert.equal(draft.waitingOn?.startsWith("waiting on z"), true);
+  assert.equal(draft.waitingOn?.includes("\n"), false);
+  assert.equal(draft.waitingOn?.length, 300);
+  assert.equal(validateDraft({ ...RAW, waitingOn: null }, CTX, TODAY).waitingOn, null, "no one named, no one waited on");
+  assert.throws(() => validateDraft({ ...RAW, waitingOn: "   " }, CTX, TODAY), /waitingOn must be a non-empty string/);
+});
+
 test("every field is checked, and the throw names the field it did not like", () => {
   const bad: Array<[unknown, RegExp]> = [
     ["not an object", /the item is not valid: the reply is not a JSON object/],
@@ -392,6 +403,7 @@ test("the fallback draft is the sentence, on one line, and nothing else", () => 
     targetDate: null,
     nextTouch: null,
     nextAction: null,
+    waitingOn: null,
   });
   assert.equal(fallbackDraft("x".repeat(200)).title.length, 120);
 });
@@ -426,6 +438,17 @@ test("the issue body quotes the sentence and ends with the marker a retry finds 
   assert.equal(body.includes("@Dana"), true, "inside the fence a name notifies nobody, so it is not escaped");
   assert.equal(body.includes("#12"), true, "and #12 links to nothing");
   assert.equal(body.includes("\\"), false);
+});
+
+test("the issue body says where the item came from", () => {
+  const body = issueBody("call Dana on 8 Dec", "2026-11-25", "note:1.1", "a meeting note (https://example.test/n/1)");
+
+  assert.match(body, /^_Added by zy-assistant from a meeting note \(https:\/\/example\.test\/n\/1\) on 2026-11-25\._$/m);
+  assert.equal(
+    issueBody("call Dana", "2026-11-25", "add:1.1").includes("from Slack on 2026-11-25."),
+    true,
+    "a DM reads exactly as it always did",
+  );
 });
 
 // ---- The card ---------------------------------------------------------------
@@ -609,6 +632,15 @@ test("the card lists the item as Create would write it", () => {
   ]);
 });
 
+test("the card shows the waiting on only when the draft records one", () => {
+  assert.equal(addCard(state()).lines.length, 5, "a draft that waits on no one is the card it always was");
+
+  assert.deepEqual(addCard(withDraft({ waitingOn: "Dana's answer" })).lines, [
+    ...addCard(state()).lines,
+    "Waiting on: Dana's answer",
+  ]);
+});
+
 test("a card whose draft could not be read falls back to the sentence", () => {
   const card = addCard(state({ payload: null, sentence: "  call Dana\nabout the renewal  " }));
 
@@ -747,6 +779,16 @@ test("an edit is the draft's own values with what the modal changed", () => {
   assert.equal(draftFromEdit(draft, { status: "_none" }, CTX, TODAY).status, "Next", "a cleared status falls back to Next");
 });
 
+test("an edit keeps the waiting on the modal does not offer", () => {
+  const draft: AddDraft = { ...DRAFT, waitingOn: "Dana's answer" };
+
+  assert.deepEqual(draftFromEdit(draft, { title: "Book the Globex workshop", nextAction: "" }, CTX, TODAY), {
+    ...draft,
+    title: "Book the Globex workshop",
+    nextAction: null,
+  });
+});
+
 test("an edit is checked exactly the way the model's answer is", () => {
   assert.throws(() => draftFromEdit(DRAFT, { targetDate: "2026-11-01" }, CTX, TODAY), /targetDate must be 2026-11-25 or later/);
   assert.throws(() => draftFromEdit(DRAFT, { targetDate: "2026-02-31" }, CTX, TODAY), /targetDate must be a real date/);
@@ -797,6 +839,22 @@ test("what cannot be read is nothing, so a card says so instead of guessing", ()
     readProgress('{"issue":{"id":"I_900"}}'),
     null,
     "an issue that cannot be named cannot be adopted, so the progress is unreadable, not empty",
+  );
+});
+
+test("a waiting on that is not text is no draft, and one from before the field reads as none", () => {
+  const old: Record<string, unknown> = { ...DRAFT };
+  delete old.waitingOn;
+
+  assert.deepEqual(
+    readPayload(JSON.stringify({ draft: old, modelError: null })),
+    { draft: DRAFT, modelError: null },
+    "a stored draft from before the field reads as null",
+  );
+  assert.equal(
+    readPayload(JSON.stringify({ draft: { ...DRAFT, waitingOn: 5 }, modelError: null })),
+    null,
+    "a waiting on that is not text is no draft at all",
   );
 });
 

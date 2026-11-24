@@ -38,7 +38,7 @@ export interface Note {
   attendees: string[];
   summary: string;
   decisions: string[];
-  /** Step 2's board proposals start from here; the scribe only stores them. */
+  /** Where the board items in `note-items.ts` start from: the scribe only stores them. */
   actions: NoteAction[];
 }
 

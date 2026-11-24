@@ -21,9 +21,9 @@ import type { ProposalStatus } from "./store.ts";
 import { addDays, dayDiff, fmtDate, TZ } from "./time.ts";
 
 /** A title is one line and no longer than this, wherever it is read. */
-const TITLE_MAX = 120;
+export const TITLE_MAX = 120;
 
-/** A Next action is one line and no longer than this. */
+/** A draft's text fields, Next action and Waiting on, are each one line and no longer than this. */
 const ACTION_MAX = 300;
 
 /** Slack cuts a select option's label here. */
@@ -81,6 +81,7 @@ export interface AddDraft {
   targetDate: string | null; // YYYY-MM-DD
   nextTouch: string | null;
   nextAction: string | null;
+  waitingOn: string | null; // who owes the next move, when it is someone else
 }
 
 /** What the card shows, and what a click writes. modelError: the draft is the sentence, not the model's. */
@@ -303,6 +304,7 @@ export function validateDraft(value: unknown, ctx: AddContext, today: string): A
   }
   const status = option(value.status, ctx.statuses, "status", FIELD.status);
   const nextAction = optionalText(value.nextAction, "nextAction");
+  const waitingOn = optionalText(value.waitingOn, "waitingOn");
   // Every option is checked before the parent overrides it: an option the model
   // invented is a retry even when the parent would have supplied a good one.
   const account = option(value.account, ctx.accounts, "account", FIELD.account);
@@ -321,6 +323,7 @@ export function validateDraft(value: unknown, ctx: AddContext, today: string): A
     targetDate: date(value.targetDate, "targetDate", today),
     nextTouch: date(value.nextTouch, "nextTouch", today),
     nextAction: nextAction === null ? null : clipped(oneLine(nextAction), ACTION_MAX),
+    waitingOn: waitingOn === null ? null : clipped(oneLine(waitingOn), ACTION_MAX),
   };
 }
 
@@ -336,6 +339,7 @@ export function fallbackDraft(sentence: string): AddDraft {
     targetDate: null,
     nextTouch: null,
     nextAction: null,
+    waitingOn: null,
   };
 }
 
@@ -353,8 +357,11 @@ function fenceFor(text: string): string {
  * The marker is hidden in an HTML comment, where it changes nothing a person
  * reads and no fence can swallow it: it is what a retry looks the issue up by
  * when the create's own answer never arrived.
+ *
+ * `from` is where the item came from: a DM is Slack, and an item a meeting note
+ * proposed says so, with the note's own link. The default is the DM's.
  */
-export function issueBody(sentence: string, date: string, marker: string): string {
+export function issueBody(sentence: string, date: string, marker: string, from = "Slack"): string {
   const quoted = sentence.trim();
   const fence = fenceFor(quoted);
   return [
@@ -362,7 +369,7 @@ export function issueBody(sentence: string, date: string, marker: string): strin
     quoted,
     fence,
     "",
-    `_Added by zy-assistant from Slack on ${date}._`,
+    `_Added by zy-assistant from ${from} on ${date}._`,
     `<!-- zy-assistant:${marker} -->`,
   ].join("\n");
 }
@@ -370,7 +377,7 @@ export function issueBody(sentence: string, date: string, marker: string): strin
 // ---- The card ---------------------------------------------------------------
 
 /** An error as the card repeats it: one line, and short enough to read in a section block. */
-const ERRORS = (error: string): string => clipped(oneLine(error), ERROR_MAX);
+export const ERRORS = (error: string): string => clipped(oneLine(error), ERROR_MAX);
 
 /** A row whose stored draft cannot be read: no card, no modal, and no write. */
 export const UNREADABLE_DRAFT = "this draft could not be read";
@@ -401,13 +408,17 @@ function headOf(state: AddState): string {
 /** The item as the card lists it: what Create would write, and what it hangs under. */
 function linesOf(draft: AddDraft, parent: Engagement | null): string[] {
   const under = parent === null ? "— (no engagement matched)" : `<${parent.url}|${parent.ref}> ${oneLine(parent.title)}`;
-  return [
+  const lines = [
     `*${oneLine(draft.title)}*`,
     `Under: ${under}`,
     `Account: ${draft.account ?? "—"} · Track: ${draft.track ?? "—"} · Work type: ${draft.workType ?? "—"} · Status: ${draft.status ?? "—"}`,
     `Target date: ${dayOf(draft.targetDate)} · Next touch: ${dayOf(draft.nextTouch)}`,
     `Next action: ${draft.nextAction === null ? "—" : oneLine(draft.nextAction)}`,
   ];
+  // A draft that records no one has no line for it: every card that was already
+  // drawn stays exactly the card it was.
+  if (draft.waitingOn !== null) lines.push(`Waiting on: ${oneLine(draft.waitingOn)}`);
+  return lines;
 }
 
 /** What a click can still change is worth warning about; a card that is over is not. */
@@ -426,16 +437,16 @@ function cautionOf(state: AddState, draft: AddDraft, parent: Engagement | null):
 }
 
 /** Which step a stopped card is missing: the first thing its progress does not have. */
-type MissingStep = "board" | "fields" | "link";
+export type MissingStep = "board" | "fields" | "link";
 
-function unfinishedStep(progress: AddProgress): MissingStep {
+export function unfinishedStep(progress: AddProgress): MissingStep {
   if (progress.itemId === undefined) return "board";
   if (progress.fields === undefined) return "fields";
   return "link";
 }
 
 /** What a step is called both ways: the failure a retry continues from, and what a stopped card lacks. */
-const FAILED_STEP: Record<MissingStep, string> = {
+export const FAILED_STEP: Record<MissingStep, string> = {
   board: "adding it to the board",
   fields: "writing its fields",
   link: "linking it under its parent",
@@ -523,7 +534,7 @@ const namedOptions = (list: string[] | null): Array<{ label: string; value: stri
  * fall past the cut takes the last place instead, so what the draft already says
  * is always still chosen by leaving the field alone.
  */
-function selectOf(
+export function selectOf(
   name: string,
   label: string,
   options: Array<{ label: string; value: string }>,
@@ -555,7 +566,7 @@ export function addEditFields(draft: AddDraft, ctx: AddContext): EditField[] {
 }
 
 /** What an edit did to one field: a cleared input is null, an untouched field keeps what the draft says. */
-function edited(values: Record<string, string | null>, key: string, current: string | null): string | null {
+export function edited(values: Record<string, string | null>, key: string, current: string | null): string | null {
   if (!(key in values)) return current;
   const value: string | null | undefined = values[key];
   if (value === null || value === undefined || value === NONE || value.trim() === "") return null;
@@ -584,6 +595,9 @@ export function draftFromEdit(
       targetDate: edited(values, "targetDate", draft.targetDate),
       nextTouch: edited(values, "nextTouch", draft.nextTouch),
       nextAction: edited(values, "nextAction", draft.nextAction),
+      // The modal offers no Waiting on, by design: the field is a note item's
+      // for now, so an edit of anything else must not silently clear it.
+      waitingOn: draft.waitingOn,
     },
     ctx,
     today,
@@ -593,7 +607,7 @@ export function draftFromEdit(
 // ---- The stored JSON --------------------------------------------------------
 
 /** A stored JSON value, or null: a payload written by another version is no payload. */
-function parse(json: string | null): unknown {
+export function parse(json: string | null): unknown {
   if (json === null) return null;
   try {
     return JSON.parse(json);
@@ -603,7 +617,7 @@ function parse(json: string | null): unknown {
 }
 
 /** A field of a stored draft: a string, null, or undefined when it is neither. */
-function stored(value: unknown): string | null | undefined {
+export function stored(value: unknown): string | null | undefined {
   if (value === null || value === undefined) return null;
   return typeof value === "string" ? value : undefined;
 }
@@ -633,6 +647,9 @@ function readDraft(value: unknown): AddDraft | null {
     targetDate: stored(value.targetDate),
     nextTouch: stored(value.nextTouch),
     nextAction: stored(value.nextAction),
+    // A draft stored before Waiting on existed has no key at all: it was written
+    // when nothing recorded one, and null is what that draft says.
+    waitingOn: stored(value.waitingOn),
   };
   if (Object.values(draft).some((field) => field === undefined)) return null;
   // Every field but the title is a string or null by the check just made.
@@ -690,7 +707,11 @@ export function readContext(json: string | null): AddContext | null {
  */
 export function readProgress(json: string | null): AddProgress | null {
   if (json === null) return {};
-  const value = parse(json);
+  return readProgressValue(parse(json));
+}
+
+/** The same read of a progress already parsed: a batch's item progress is one entry of a larger JSON. */
+export function readProgressValue(value: unknown): AddProgress | null {
   if (!isRecord(value)) return null;
   const progress: AddProgress = {};
   const issue = value.issue;
