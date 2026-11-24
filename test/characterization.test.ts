@@ -107,8 +107,8 @@ test("a board with nothing due still renders the empty Today line", () => {
     }),
   ];
   assert.equal(
-    plan(quiet, "2026-11-23", "M", []).briefing,
-    "*Morning briefing, Mon 23 Nov*\n\n*Today*\nNothing due. 🎉\n\nIn progress: 1",
+    plan(quiet, "2026-11-23", "M", []).briefing?.text,
+    "*Morning briefing, Mon 23 Nov*\n\n*Today*\nNothing due. 🎉\n\n*In progress:* 1",
   );
 });
 

@@ -40,30 +40,36 @@ test("the overview is what you type, what I send you, the buttons, then the page
 
   const typed = blocks[0].text.text;
   assert.match(typed, /^\*What you can type\*\n• /);
-  assert.match(typed, /• `today`: the plan for today, the same view as the morning briefing\./);
+  assert.match(typed, /• `today`: the plan for today, the same text as the morning briefing\./);
   assert.match(typed, /• Ask me anything about your board or notes, e\.g\. `how's the Acme POC going\?` or `what's waiting on others\?` I answer from the board and your notes, and I never change anything\./);
   assert.match(typed, /• `note: <text>`: `note: Acme call, they want a POC in January\. I send the sizing by Friday\.`/);
   assert.match(typed, /• `help`, or `help <topic>`/);
-  assert.match(typed, /• Reply under a ping: marks it seen\./);
+  assert.match(typed, /• Reply under an evening ping: marks it seen\./);
   assert.match(typed, /• Anything else you write, in a new message or a thread, is read as a question\./);
   assert.doesNotMatch(typed, /one of my messages/, "no reply anywhere is an ack but a ping's");
 
   const sent = blocks[1].text.text;
   assert.match(sent, /^\*What I send you\* \(automatic; you never type these\)\n• /);
-  assert.match(sent, /• The briefing at `09:00` on weekdays: one message with everything on it\./);
+  assert.match(sent, /• The briefing at `09:00` on weekdays: ONE message, with a row per item that needs you and a `⋯` menu on each row\./);
   assert.match(
     sent,
-    /• At `17:30`, only if something needs you: a ping for each item due today, and a re-ping of anything unanswered from the morning\. A quiet evening sends nothing\./,
+    /• At `17:30`, only if something needs you: a ping for each item due today, and a re-ping of an unanswered row that is still late or still due\. A quiet evening sends nothing\./,
   );
-  assert.match(sent, /• Pings: a separate message about ONE item when it needs you now/);
-  assert.match(sent, /notes#53 Acme deck review: due in 2 days \(Thu 26 Nov\) {2}\[👍 On it\] \[Move date\] \[✅ Done\]/);
+  assert.match(sent, /• The pings of the evening are a separate message about ONE item/);
+  assert.match(
+    sent,
+    /notes#53 Acme deck review: due in 2 days \(Thu 26 Nov\)` with `⋯` on its right: \*Got it\*, \*Done\*, \*\+1 day\*, \*\+7 days\*, \*Move date…\*/,
+  );
   assert.match(sent, /Each ping has buttons\./);
 
   const buttons = blocks[2].text.text;
-  assert.match(buttons, /^\*The buttons under a ping\*/);
-  for (const label of ["👍 On it", "✅ Done", "Move date", "+7 days"]) {
+  assert.match(buttons, /^\*The buttons under a ping, and the `⋯` on a row\*/);
+  assert.match(buttons, /• \*Tomorrow\* and \*\+7 days\*: move Next touch/);
+  assert.match(buttons, /• A row's `⋯` menu has the same actions, one entry each: \*Got it\*, \*Done\*, \*\+1 day\*, \*\+7 days\*, \*Move date…\*/);
+  for (const label of ["👍 On it", "✅ Done"]) {
     assert.equal(buttons.split("\n").filter((line) => line.includes(`*${label}`)).length, 1, `one line for ${label}`);
   }
+  assert.match(buttons, /\*Move date\*: asks for the new date and a reason/);
 
   assert.equal(blocks.at(-1)?.text.text, "More: `help pings`, `help buttons`, `help note`, `help ask`, `help updates`, `help today`");
 });
@@ -152,17 +158,24 @@ test("the today page is the briefing page: when it goes out, what it holds, and 
 
   assert.match(page, /^\*Today\*/);
   assert.match(page, /\*When\*: weekdays only, Asia\/Singapore/);
-  assert.match(page, /The morning briefing goes out once at `09:00`\. The evening sweep at `17:30` sends only pings, so a quiet evening sends nothing\./);
+  assert.match(page, /The morning briefing goes out once at `09:00` and is ONE message/);
+  assert.match(page, /The evening sweep at `17:30` sends only pings, so a quiet evening sends nothing\./);
+  assert.match(page, /one row per item whose Target date is today[^\n]*whatever its status/);
+  assert.match(page, /The rows are ordered: what is late, then what is due today, then what is due soon, then a chase, then a milestone heads-up\./);
   assert.match(page, /Parents \(items with sub-issues\) don't count; their tasks do\./);
   assert.match(page, /What the morning briefing holds/);
-  assert.match(page, /`today` in a DM sends the plan for today as it would go out right now/);
+  assert.match(page, /`today` in a DM sends the plan for today as it would go out right now: the briefing's text alone, without its menus/);
   assert.doesNotMatch(page, /`briefing`/);
 });
 
-test("the pings page opens by saying that pings are not typed", () => {
+test("the pings page opens by saying that pings are not typed, and only the evening has them", () => {
   const page = helpReply(DEFAULTS, true, "pings").text;
 
-  assert.match(page, /^\*Pings\*\n\nPings are messages I send you; you don't type them\.\n\n\*When a direct ping goes out\*/);
+  assert.match(page, /^\*Pings\*\n\nPings are messages I send you; you don't type them\./);
+  assert.match(page, /The morning has none of its own: everything is in the briefing, one row per item with its `⋯` menu\./);
+  assert.match(page, /\*When a row of the briefing needs you\*: on any of these, whatever the item's status/);
+  assert.match(page, /a re-ping for a morning row that still has no answer and still has something to say/);
+  assert.match(page, /A row that is only due in a few days, a milestone heads-up and a chase do not re-ping\./);
 });
 
 test("an unknown topic is the overview with the miss on top", () => {
@@ -187,7 +200,10 @@ test("help buttons says what each button does, not more and not less", () => {
   assert.match(page, /A draft has no issue, so that line goes in the ping's thread instead/);
   assert.match(page, /a reason that cannot be left empty/);
   assert.match(page, /A ping about a touch or a chase has no \*Move date\*/);
-  assert.match(page, /A plain reply in a ping's thread acks it, and answers "Noted\."/);
+  assert.match(page, /A plain reply in an evening ping's thread acks it, and answers "Noted\."/);
+  assert.match(page, /A reply under the briefing is a question, not an ack: a row is acked by its menu\./);
+  assert.match(page, /A briefing row has a `⋯` menu on its right instead of buttons/);
+  assert.match(page, /A pick writes the board at once, with no second question/);
 });
 
 test("the note page says what a dictation becomes, and what it does not do yet", () => {
@@ -225,8 +241,8 @@ test("with no notes repo the ask page says the answer is the board alone", () =>
   assert.doesNotMatch(page, /demo\/notes/);
 });
 
-test("a reply under a ping is an ack; only a model turns the other replies into questions", () => {
-  assert.match(overviewText(BARE, false), /• Reply under a ping: marks it seen\./);
+test("a reply under an evening ping is an ack; only a model turns the other replies into questions", () => {
+  assert.match(overviewText(BARE, false), /• Reply under an evening ping: marks it seen\./);
   assert.doesNotMatch(overviewText(BARE, false), /read as a question/, "no model: an unknown DM is a hint, not a question");
   assert.match(overviewText(DEFAULTS, true), /• Anything else you write, in a new message or a thread, is read as a question\./);
 });

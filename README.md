@@ -5,19 +5,21 @@ A Slack DM bot that reminds ZY what the GitHub Project board says to do today.
 It reads a GitHub Project v2 board, applies the rules in `src/rules.ts`, and DMs
 the result at two slots on weekdays (Asia/Singapore):
 
-- **M**, `BRIEF_TIME` (09:00): one morning briefing, then a ping per In-progress
-  item that needs action (Target date within 3 days, overdue, or Next touch due).
-  A Workshop or a POC is pinged two weeks and one week out too, and a Waiting item
-  nobody touched for a few days is chased. Friday adds a Pipeline and a Learning
-  section to the briefing.
+- **M**, `BRIEF_TIME` (09:00): one morning briefing. Its *Today* rows are the
+  items that need action, whatever their status (Target date within 3 days,
+  overdue, or Next touch due; a Workshop or a POC two weeks and one week out; a
+  Waiting item nobody touched for a few days). Each row (up to the message limit) carries a ⋯ menu with the
+  ping actions, and the rows are sorted: late first, then due or touch today, then
+  soonest, chases, heads-ups. Friday adds a Pipeline and a Learning section.
 - **E**, `EOD_TIME` (17:30): a ping for every item whose Target date is today, and
-  a re-ping for every morning ping that was never acked.
+  a re-ping for every morning row that was never acked and is late or due/touch
+  today. A quiet evening sends nothing.
 
 A slot runs at most once. If Slack fails half way through, the next minute tick
 retries and sends only what never went out (the morning briefing included), and
 after three failures it closes the slot and DMs the error.
 
-A ping is acked by pressing a button, replying in its Slack thread, updating the
+A row or ping is acked by its menu or buttons, a reply in an evening ping's thread, updating the
 item on the board, or committing to `Accounts/<Account>` in the notes repo.
 Buttons write to the board (ZY's click is the approval): 👍 On it (ack),
 Move date (a modal: a new date and a reason, which becomes a comment on the
@@ -52,24 +54,25 @@ below when `NOTES_REPO` is unset. With the defaults, `help` sends exactly this:
 
 ```
 *What you can type*
-• `today`: the plan for today, the same view as the morning briefing.
+• `today`: the plan for today, the same text as the morning briefing.
 • Ask me anything about your board or notes, e.g. `how's the Acme POC going?` or `what's waiting on others?` I answer from the board and your notes, and I never change anything.
 • `note: <text>`: `note: Acme call, they want a POC in January. I send the sizing by Friday.` and I save it to the notes repo.
 • `help`, or `help <topic>`: this manual, or the page behind one topic.
-• Reply under a ping: marks it seen.
+• Reply under an evening ping: marks it seen.
 • Anything else you write, in a new message or a thread, is read as a question.
 
 *What I send you* (automatic; you never type these)
-• The briefing at `09:00` on weekdays: one message with everything on it.
-• At `17:30`, only if something needs you: a ping for each item due today, and a re-ping of anything unanswered from the morning. A quiet evening sends nothing.
-• Pings: a separate message about ONE item when it needs you now: a deadline close (Target date due in 3 days or fewer) or already passed, a Next touch due, or someone to chase (a Waiting item nobody moved for 5 days). Each ping has buttons.
-• A ping looks like this: `notes#53 Acme deck review: due in 2 days (Thu 26 Nov)  [👍 On it] [Move date] [✅ Done]`
+• The briefing at `09:00` on weekdays: ONE message, with a row per item that needs you and a `⋯` menu on each row.
+• At `17:30`, only if something needs you: a ping for each item due today, and a re-ping of an unanswered row that is still late or still due. A quiet evening sends nothing.
+• The pings of the evening are a separate message about ONE item: a deadline close (Target date due in 3 days or fewer) or already passed, a Next touch due, or someone to chase (a Waiting item nobody moved for 5 days). Each ping has buttons.
+• A row looks like this: `notes#53 Acme deck review: due in 2 days (Thu 26 Nov)` with `⋯` on its right: *Got it*, *Done*, *+1 day*, *+7 days*, *Move date…*
 
-*The buttons under a ping*
+*The buttons under a ping, and the `⋯` on a row*
 • *👍 On it*: nothing on the board changes; the ping is only marked handled.
 • *✅ Done*: sets the item's Status to `Done`.
 • *Move date*: asks for the new date and a reason, sets Target date, and posts the reason on the issue.
 • *Tomorrow* and *+7 days*: move Next touch, rolled off the weekend. The Target date stays.
+• A row's `⋯` menu has the same actions, one entry each: *Got it*, *Done*, *+1 day*, *+7 days*, *Move date…*
 
 More: `help pings`, `help buttons`, `help note`, `help ask`, `help updates`, `help today`
 ```
@@ -173,7 +176,8 @@ throw.
 
 Threads, in full:
 
-- a reply under a ping is an ack, whatever it says, exactly as before;
+- a reply under an evening ping is an ack, whatever it says (a briefing row is
+  acked with its own menu, so a reply under the briefing is a question);
 - a reply in a thread the bot has answered is a follow-up: the context is rebuilt
   from the fresh board and notes (a follow-up may name a different account), and
   the last three questions and answers of that thread ride along as conversation;

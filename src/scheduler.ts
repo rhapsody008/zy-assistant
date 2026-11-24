@@ -105,14 +105,37 @@ async function runSlot(date: string, slot: Slot, now: Date, deps: SchedulerDeps)
         })
       : undefined;
     const result = plan(board.items, date, slot, history, { policy: config.policy, activity });
+    const targets = new Map(board.items.map((i) => [i.id, i.target]));
 
+    // The morning is one message, sent once: its rows are recorded in one go, all
+    // on that message, and the briefing is recorded last so a retry after any
+    // error resends the message and nothing else.
+    let rows = 0;
     if (slot === "M" && result.briefing && !store.briefingSent(date, slot)) {
-      await sender.sendDm(result.briefing);
+      const message = await sender.sendBriefing(result.briefing, targets);
+      // Every row is recorded, menu or not (past the block cap, or a briefing
+      // Slack refused as blocks): a board update acks any of them, and the record
+      // is what keeps the evening re-ping, the ⚠ line and the chase window alive.
+      // menuKeys only says which rows can be acked from the message itself.
+      for (const row of result.briefing.rows) {
+        store.recordPing({
+          key: row.key,
+          itemId: row.itemId,
+          date,
+          slot,
+          kind: row.kind,
+          sentAt: now.toISOString(),
+          channel: message.channel,
+          ts: message.ts,
+        });
+        rows += 1;
+      }
       store.recordBriefing(date, slot, now.toISOString());
     }
 
+    // The evening's pings, one message each. The morning sends none: it is all
+    // in the briefing, so this loop only has work to do at E.
     let sent = 0;
-    const targets = new Map(board.items.map((i) => [i.id, i.target]));
     for (const ping of result.pings) {
       if (alreadySent.has(ping.key)) continue;
       const message = await sender.sendPing(ping, targets.get(ping.itemId) ?? null);
@@ -130,7 +153,7 @@ async function runSlot(date: string, slot: Slot, now: Date, deps: SchedulerDeps)
     }
 
     store.markSlotRan(date, slot, now.toISOString());
-    log(`${slot} ${date}: ${summary(sent, result.briefing !== null && slot === "M")}`);
+    log(`${slot} ${date}: ${summary(slot, sent, rows)}`);
   } catch (err) {
     const message = errMessage(err);
     const attempts = store.recordSlotFailure(date, slot, message);
@@ -148,10 +171,10 @@ async function runSlot(date: string, slot: Slot, now: Date, deps: SchedulerDeps)
   }
 }
 
-function summary(pings: number, briefing: boolean): string {
-  const parts = [`${pings} ping${pings === 1 ? "" : "s"}`];
-  if (briefing) parts.push("briefing");
-  return parts.join(", ");
+/** The log line: the morning counts its rows, the evening its pings. */
+function summary(slot: Slot, pings: number, rows: number): string {
+  if (slot === "M") return `briefing, ${rows} row${rows === 1 ? "" : "s"}`;
+  return `${pings} ping${pings === 1 ? "" : "s"}`;
 }
 
 /**

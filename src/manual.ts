@@ -75,19 +75,20 @@ function todayTopic(settings: ManualSettings): ManualTopic {
     topic: "today",
     title: "Today",
     details: [
-      `*When*: weekdays only, ${TZ}. The morning briefing goes out once at \`${settings.briefTime}\`. The evening sweep at \`${settings.eodTime}\` sends only pings, so a quiet evening sends nothing. A slot runs at most once a day; one that fails is retried on the next minute tick, and after three failures I close the slot and DM you the error.`,
+      `*When*: weekdays only, ${TZ}. The morning briefing goes out once at \`${settings.briefTime}\` and is ONE message: the sections, then a row per item that needs you, each row with its \`⋯\` menu. The evening sweep at \`${settings.eodTime}\` sends only pings, so a quiet evening sends nothing. A slot runs at most once a day; one that fails is retried on the next minute tick, and after three failures I close the slot and DM you the error.`,
       [
         "*What the morning briefing holds*, in this order:",
-        `• *Today*: an item whose Target date is today, due within ${plural(policy.pingDays, "day")} or already overdue, whose Next touch is due or past, or that is at a milestone. With nothing due it reads "Nothing due. 🎉".`,
+        `• *Today*: one row per item whose Target date is today, due within ${plural(policy.pingDays, "day")} or already overdue, whose Next touch is due or past, or that is at a milestone, whatever its status. Each row has a menu with its actions; with nothing due it reads "Nothing due. 🎉".`,
+        "The rows are ordered: what is late, then what is due today, then what is due soon, then a chase, then a milestone heads-up. Within a group the earlier date goes first, then the board's order.",
         `• *Coming up*: ${comingUp}.`,
         `• *Stale dates*: Target dates more than ${plural(policy.staleDays, "day")} overdue, to fix or close.`,
         `• *Pipeline* and *Learning*, Fridays only: an open Stage item nobody has touched for more than ${plural(policy.stageStaleDays, "day")}, and a Learn-track item with its cadence and the date of its last update.`,
-        `• *In progress: N*, the WIP count. Over the limit of ${policy.wipLimit} it names what is in flight and asks what you are dropping.`,
+        `• *In progress:* N, the WIP count. Over the limit of ${policy.wipLimit} it names what is in flight and asks what you are dropping.`,
         "• A ⚠ line at the very top for a ping from the previous workday that never got an answer (see `help pings`).",
       ].join("\n"),
       "Parents (items with sub-issues) don't count; their tasks do.",
       `A ${policy.waiting} item shows up in Today like any other, and the chase rule that repeats the ask after ${plural(policy.waitingChaseDays, "day")} is in \`help pings\`.`,
-      "`today` in a DM sends the plan for today as it would go out right now: the briefing first, then each ping it comes with. It writes nothing to the board and records nothing.",
+      "`today` in a DM sends the plan for today as it would go out right now: the briefing's text alone, without its menus. It writes nothing to the board and records nothing.",
     ],
   };
 }
@@ -99,16 +100,17 @@ function pingsTopic(settings: ManualSettings): ManualTopic {
     title: "Pings",
     details: [
       "Pings are messages I send you; you don't type them.",
-      `*When a direct ping goes out*: in the morning, for an item that is ${policy.inProgress} or ${policy.waiting}, on any of these:`,
+      "The morning has none of its own: everything is in the briefing, one row per item with its `⋯` menu. A ping of its own goes out in the evening.",
+      "*When a row of the briefing needs you*: on any of these, whatever the item's status:",
       [
         `• Target date T-${policy.pingDays} to T-0: due in ${plural(policy.pingDays, "day")} or fewer, and daily until the date, including the day it is due.`,
         `• Target date overdue: daily for up to ${plural(policy.staleDays, "day")}, and after that only the briefing's Stale dates line.`,
         `• A milestone: ${milestones(policy)}, whatever the item's status. Two weeks out is when the room gets booked.`,
         "• Next touch due today or past: daily until the date moves or the item is Done.",
-        `• ${policy.waiting} with no Next touch and no update for more than ${plural(policy.waitingChaseDays, "day")}, and no ping of it in that window: the ping asks whether to chase whoever it waits on.`,
+        `• ${policy.waiting} with no Next touch and no update for more than ${plural(policy.waitingChaseDays, "day")}, and no ping of it in that window: the row asks whether to chase whoever it waits on.`,
       ].join("\n"),
-      "One message per item per slot: when several reasons fire they are merged into one ping, and so are their buttons.",
-      `*End of day*, at \`${settings.eodTime}\`: a ping for every open item whose Target date is today (close it, or move the date with a reason), and a re-ping for every morning ping that still has no answer. A re-ping is what the next morning's ⚠ line counts.`,
+      "One row per item: when several reasons fire they are merged into one row, and so are their menu's actions.",
+      `*End of day*, at \`${settings.eodTime}\`: a ping for every open item whose Target date is today (close it, or move the date with a reason), and a re-ping for a morning row that still has no answer and still has something to say: a Target date up to ${plural(policy.staleDays, "day")} past, or a Next touch due today or past. A row that is only due in a few days, a milestone heads-up and a chase do not re-ping. A re-ping is what the next morning's ⚠ line counts.`,
       "A ping stops being re-pinged the moment it is acked: see `help updates` for what counts.",
     ],
   };
@@ -120,7 +122,7 @@ function buttonsTopic(settings: ManualSettings): ManualTopic {
     topic: "buttons",
     title: "Buttons",
     details: [
-      "Every ping has buttons under it: one message about ONE item, with its link, why it is due, and the buttons. Only your clicks count, and a click is the approval: I write to the board at once.",
+      "Every evening ping has buttons under it: one message about ONE item, with its link, why it is due, and the buttons. Only your clicks count, and a click is the approval: I write to the board at once.",
       [
         `• *👍 On it*: nothing on the board changes. The ping is marked handled and the buttons are replaced by "→ acked". That is all it does.`,
         `• *✅ Done*: sets the item's Status to \`${policy.done}\`, then closes the ping.`,
@@ -135,7 +137,8 @@ function buttonsTopic(settings: ManualSettings): ManualTopic {
         "The date is written first: if the comment fails, the thread says so and the move still counts; if the date write fails, nothing moved and the ping keeps its buttons.",
       ].join("\n"),
       "Which buttons a ping has: a ping about a Target date has *👍*, *Move date* and *✅*. A ping about a touch or a chase has no *Move date* (there is no date line to move). *Tomorrow* and *+7 days* appear on any ping whose Next touch is already due.",
-      'A plain reply in a ping\'s thread acks it, and answers "Noted." A failed board write leaves the buttons under the message with `→ failed: …`, so the click can be retried.',
+      "A briefing row has a `⋯` menu on its right instead of buttons: *Got it*, *Done*, *+1 day*, *+7 days*, and *Move date…* when the row has a date to move. A pick writes the board at once, with no second question, and replaces that row's text with `→ acked`, `→ marked Done on the board` and so on. The rest of the briefing keeps its menus.",
+      'A plain reply in an evening ping\'s thread acks it, and answers "Noted." A reply under the briefing is a question, not an ack: a row is acked by its menu. A failed board write leaves the buttons (or the row\'s menu) where they are and says `→ failed: …` in the thread, so the click can be retried.',
     ],
   };
 }
@@ -182,8 +185,8 @@ function askTopic(settings: ManualSettings): ManualTopic {
 
 function updatesTopic(settings: ManualSettings): ManualTopic {
   const acks = [
-    "• a button under the ping (see `help buttons`);",
-    "• a plain reply in the ping's thread;",
+    "• a pick from a briefing row's `⋯` menu, or a button under an evening ping (see `help buttons`);",
+    "• a plain reply in an evening ping's thread;",
     "• the board item changing after the ping: its status, its dates or its title, or a comment on its issue;",
     ...(settings.notesRepo === null
       ? []
@@ -221,7 +224,7 @@ function typedBlock(settings: ManualSettings, scribe: boolean): ManualBlock {
   return section(
     [
       "*What you can type*",
-      "• `today`: the plan for today, the same view as the morning briefing.",
+      "• `today`: the plan for today, the same text as the morning briefing.",
       ...(settings.ask
         ? [
             "• Ask me anything about your board or notes, e.g. `how's the Acme POC going?` or `what's waiting on others?` I answer from the board and your notes, and I never change anything.",
@@ -229,7 +232,7 @@ function typedBlock(settings: ManualSettings, scribe: boolean): ManualBlock {
         : []),
       ...(scribe ? ["• `note: <text>`: `note: Acme call, they want a POC in January. I send the sizing by Friday.` and I save it to the notes repo."] : []),
       "• `help`, or `help <topic>`: this manual, or the page behind one topic.",
-      "• Reply under a ping: marks it seen.",
+      "• Reply under an evening ping: marks it seen.",
       ...(settings.ask ? ["• Anything else you write, in a new message or a thread, is read as a question."] : []),
     ].join("\n"),
   );
@@ -241,10 +244,10 @@ function sentBlock(settings: ManualSettings): ManualBlock {
   return section(
     [
       "*What I send you* (automatic; you never type these)",
-      `• The briefing at \`${settings.briefTime}\` on weekdays: one message with everything on it.`,
-      `• At \`${settings.eodTime}\`, only if something needs you: a ping for each item due today, and a re-ping of anything unanswered from the morning. A quiet evening sends nothing.`,
-      `• Pings: a separate message about ONE item when it needs you now: a deadline close (Target date due in ${plural(policy.pingDays, "day")} or fewer) or already passed, a Next touch due, or someone to chase (a ${policy.waiting} item nobody moved for ${plural(policy.waitingChaseDays, "day")}). Each ping has buttons.`,
-      "• A ping looks like this: `notes#53 Acme deck review: due in 2 days (Thu 26 Nov)  [👍 On it] [Move date] [✅ Done]`",
+      `• The briefing at \`${settings.briefTime}\` on weekdays: ONE message, with a row per item that needs you and a \`⋯\` menu on each row.`,
+      `• At \`${settings.eodTime}\`, only if something needs you: a ping for each item due today, and a re-ping of an unanswered row that is still late or still due. A quiet evening sends nothing.`,
+      `• The pings of the evening are a separate message about ONE item: a deadline close (Target date due in ${plural(policy.pingDays, "day")} or fewer) or already passed, a Next touch due, or someone to chase (a ${policy.waiting} item nobody moved for ${plural(policy.waitingChaseDays, "day")}). Each ping has buttons.`,
+      "• A row looks like this: `notes#53 Acme deck review: due in 2 days (Thu 26 Nov)` with `⋯` on its right: *Got it*, *Done*, *+1 day*, *+7 days*, *Move date…*",
     ].join("\n"),
   );
 }
@@ -253,11 +256,12 @@ function sentBlock(settings: ManualSettings): ManualBlock {
 function buttonBlock(policy: Policy): ManualBlock {
   return section(
     [
-      "*The buttons under a ping*",
+      "*The buttons under a ping, and the `⋯` on a row*",
       "• *👍 On it*: nothing on the board changes; the ping is only marked handled.",
       `• *✅ Done*: sets the item's Status to \`${policy.done}\`.`,
       "• *Move date*: asks for the new date and a reason, sets Target date, and posts the reason on the issue.",
       "• *Tomorrow* and *+7 days*: move Next touch, rolled off the weekend. The Target date stays.",
+      "• A row's `⋯` menu has the same actions, one entry each: *Got it*, *Done*, *+1 day*, *+7 days*, *Move date…*",
     ].join("\n"),
   );
 }

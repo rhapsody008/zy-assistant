@@ -15,7 +15,7 @@ import { requiredProblems, STATUS, validateSchema, type SchemaReport } from "./s
 import { startScheduler } from "./scheduler.ts";
 import { extractNote, writeEntry } from "./scribe-handler.ts";
 import { renderEntry } from "./scribe.ts";
-import { SlackBot, type Sender } from "./slack.ts";
+import { SlackBot, briefingBlocks, type Block, type Sender } from "./slack.ts";
 import { ASK_RETENTION_DAYS, askCutoff, openStore } from "./store.ts";
 import { addDays, localNow, TZ } from "./time.ts";
 
@@ -87,6 +87,11 @@ function schemaLine(report: SchemaReport): string {
   if (report.missingOptions.length > 0) parts.push(`missing options: ${report.missingOptions.join(", ")}`);
   if (report.missingOptional.length > 0) parts.push(`missing optional: ${report.missingOptional.join(", ")}`);
   return parts.length === 0 ? "all fields and options present" : parts.join("; ");
+}
+
+/** The longest section of a set of blocks, in characters: what Slack's 3000 cap limits. */
+function longestSection(blocks: Block[]): number {
+  return blocks.reduce((longest, block) => (block.type === "section" ? Math.max(longest, block.text.text.length) : longest), 0);
 }
 
 /** `run` startup: a board the bot cannot read is one DM, not a crash. */
@@ -200,11 +205,20 @@ async function dryRun(args: string[]): Promise<void> {
     for (const slot of options.slot ? [options.slot] : (["M", "E"] as Slot[])) runs.push({ date, slot });
   }
 
+  const targets = new Map(project.items.map((item) => [item.id, item.target]));
   for (const run of runs) {
     const result = plan(project.items, run.date, run.slot, [], { policy: config.policy });
     console.log(`== ${run.date} ${run.slot}`);
-    if (result.briefing) console.log(`${result.briefing}\n`);
-    if (result.pings.length === 0) console.log("(no pings)\n");
+    if (result.briefing) {
+      // The text as it goes out, then what Slack would get: one block per row,
+      // with its menu, inside the two limits that matter.
+      console.log(`${result.briefing.text}\n`);
+      for (const row of result.briefing.rows) console.log(`[row ${row.itemId}] menu: ${row.actions.join(", ")}`);
+      const blocks = briefingBlocks(result.briefing, targets);
+      console.log(`blocks: ${blocks.length}, longest section: ${longestSection(blocks)} characters, rows: ${result.briefing.rows.length}\n`);
+    } else if (result.pings.length === 0) {
+      console.log("(no pings)\n");
+    }
     for (const ping of result.pings) {
       console.log(`[ping ${ping.kind}] ${ping.text}`);
       console.log(`  buttons: ${ping.actions.join(", ")}\n`);

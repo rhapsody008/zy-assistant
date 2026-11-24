@@ -3,77 +3,88 @@
     "date": "2026-11-23",
     "slot": "M",
     "plan": {
-      "briefing": "*Morning briefing, Mon 23 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 3 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 10 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/4|demo#4> Delta: *overdue* by 13 days (target Tue 10 Nov)\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: touch was Tue 17 Nov\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: touch today\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: due in 2 days (Wed 25 Nov)\n\n*Coming up*\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due Fri 27 Nov\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: touch tomorrow (waiting on vendor reply)\n\nIn progress: 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
-      "pings": [
-        {
-          "key": "2026-11-23:M:ITEM_BRAVO",
-          "itemId": "ITEM_BRAVO",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 3 days (target Fri 20 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-23:M:ITEM_CHARLIE",
-          "itemId": "ITEM_CHARLIE",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 10 days (target Fri 13 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-23:M:ITEM_DELTA",
-          "itemId": "ITEM_DELTA",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/4|demo#4> Delta: *overdue* by 13 days (target Tue 10 Nov)\nWaiting on: a Globex reply",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-23:M:ITEM_GOLF",
-          "itemId": "ITEM_GOLF",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: touch was Tue 17 Nov",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-23:M:ITEM_HOTEL",
-          "itemId": "ITEM_HOTEL",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: touch today\nNext: ping the vendor",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-23:M:ITEM_DRAFT",
-          "itemId": "ITEM_DRAFT",
-          "kind": "ping",
-          "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: due in 2 days (Wed 25 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        }
-      ]
+      "briefing": {
+        "text": "*Morning briefing, Mon 23 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/4|demo#4> Delta: *overdue* by 13 days (target Tue 10 Nov)\nWaiting on: a Globex reply\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 10 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 3 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch today*\nNext: ping the vendor\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: due in 2 days (Wed 25 Nov)\n\n*Coming up*\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due Fri 27 Nov\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: touch tomorrow (waiting on vendor reply)\n\n*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
+        "head": [
+          "*Morning briefing, Mon 23 Nov*",
+          "*Today*"
+        ],
+        "rows": [
+          {
+            "key": "2026-11-23:M:ITEM_DELTA",
+            "itemId": "ITEM_DELTA",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/4|demo#4> Delta: *overdue* by 13 days (target Tue 10 Nov)\nWaiting on: a Globex reply",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-23:M:ITEM_CHARLIE",
+            "itemId": "ITEM_CHARLIE",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 10 days (target Fri 13 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-23:M:ITEM_GOLF",
+            "itemId": "ITEM_GOLF",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-23:M:ITEM_BRAVO",
+            "itemId": "ITEM_BRAVO",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 3 days (target Fri 20 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-23:M:ITEM_HOTEL",
+            "itemId": "ITEM_HOTEL",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch today*\nNext: ping the vendor",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-23:M:ITEM_DRAFT",
+            "itemId": "ITEM_DRAFT",
+            "kind": "ping",
+            "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: due in 2 days (Wed 25 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          }
+        ],
+        "tail": [
+          "*Coming up*\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due Fri 27 Nov\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: touch tomorrow (waiting on vendor reply)",
+          "*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft"
+        ]
+      },
+      "pings": []
     }
   },
   {
@@ -88,88 +99,111 @@
     "date": "2026-11-24",
     "slot": "M",
     "plan": {
-      "briefing": "*Morning briefing, Tue 24 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 3 days (Fri 27 Nov)\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 4 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 11 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/4|demo#4> Delta: *overdue* by 14 days (target Tue 10 Nov)\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: touch was Tue 17 Nov\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: touch was Mon 23 Nov\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: due in 1 day (Wed 25 Nov)\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: touch today\n\n*Coming up*\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch tomorrow (waiting on answers from design)\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n\nIn progress: 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
-      "pings": [
-        {
-          "key": "2026-11-24:M:ITEM_ALPHA",
-          "itemId": "ITEM_ALPHA",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 3 days (Fri 27 Nov)\nNext: write the draft",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-24:M:ITEM_BRAVO",
-          "itemId": "ITEM_BRAVO",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 4 days (target Fri 20 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-24:M:ITEM_CHARLIE",
-          "itemId": "ITEM_CHARLIE",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 11 days (target Fri 13 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-24:M:ITEM_DELTA",
-          "itemId": "ITEM_DELTA",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/4|demo#4> Delta: *overdue* by 14 days (target Tue 10 Nov)\nWaiting on: a Globex reply",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-24:M:ITEM_GOLF",
-          "itemId": "ITEM_GOLF",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: touch was Tue 17 Nov",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-24:M:ITEM_HOTEL",
-          "itemId": "ITEM_HOTEL",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: touch was Mon 23 Nov\nNext: ping the vendor",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-24:M:ITEM_DRAFT",
-          "itemId": "ITEM_DRAFT",
-          "kind": "ping",
-          "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: due in 1 day (Wed 25 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        }
-      ]
+      "briefing": {
+        "text": "*Morning briefing, Tue 24 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/4|demo#4> Delta: *overdue* by 14 days (target Tue 10 Nov)\nWaiting on: a Globex reply\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 11 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 4 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch today*\nWaiting on: vendor reply\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: due in 1 day (Wed 25 Nov)\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 3 days (Fri 27 Nov)\nNext: write the draft\n\n*Coming up*\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch tomorrow (waiting on answers from design)\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n\n*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
+        "head": [
+          "*Morning briefing, Tue 24 Nov*",
+          "*Today*"
+        ],
+        "rows": [
+          {
+            "key": "2026-11-24:M:ITEM_DELTA",
+            "itemId": "ITEM_DELTA",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/4|demo#4> Delta: *overdue* by 14 days (target Tue 10 Nov)\nWaiting on: a Globex reply",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-24:M:ITEM_CHARLIE",
+            "itemId": "ITEM_CHARLIE",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 11 days (target Fri 13 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-24:M:ITEM_GOLF",
+            "itemId": "ITEM_GOLF",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-24:M:ITEM_BRAVO",
+            "itemId": "ITEM_BRAVO",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 4 days (target Fri 20 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-24:M:ITEM_HOTEL",
+            "itemId": "ITEM_HOTEL",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-24:M:ITEM_KILO",
+            "itemId": "ITEM_KILO",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch today*\nWaiting on: vendor reply",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-24:M:ITEM_DRAFT",
+            "itemId": "ITEM_DRAFT",
+            "kind": "ping",
+            "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: due in 1 day (Wed 25 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-24:M:ITEM_ALPHA",
+            "itemId": "ITEM_ALPHA",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 3 days (Fri 27 Nov)\nNext: write the draft",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          }
+        ],
+        "tail": [
+          "*Coming up*\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch tomorrow (waiting on answers from design)\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov",
+          "*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft"
+        ]
+      },
+      "pings": []
     }
   },
   {
@@ -184,89 +218,113 @@
     "date": "2026-11-25",
     "slot": "M",
     "plan": {
-      "briefing": "*Morning briefing, Wed 25 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 2 days (Fri 27 Nov)\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 5 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 12 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch today\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: touch was Tue 17 Nov\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: touch was Mon 23 Nov\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *due today*\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: touch was Tue 24 Nov\n\n*Coming up*\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n\n*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)\n\nIn progress: 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
-      "pings": [
-        {
-          "key": "2026-11-25:M:ITEM_ALPHA",
-          "itemId": "ITEM_ALPHA",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 2 days (Fri 27 Nov)\nNext: write the draft",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-25:M:ITEM_BRAVO",
-          "itemId": "ITEM_BRAVO",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 5 days (target Fri 20 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-25:M:ITEM_CHARLIE",
-          "itemId": "ITEM_CHARLIE",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 12 days (target Fri 13 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-25:M:ITEM_FOXTROT",
-          "itemId": "ITEM_FOXTROT",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch today\nWaiting on: answers from design",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-25:M:ITEM_GOLF",
-          "itemId": "ITEM_GOLF",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: touch was Tue 17 Nov",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-25:M:ITEM_HOTEL",
-          "itemId": "ITEM_HOTEL",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: touch was Mon 23 Nov\nNext: ping the vendor",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-25:M:ITEM_DRAFT",
-          "itemId": "ITEM_DRAFT",
-          "kind": "ping",
-          "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *due today*",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        }
-      ]
+      "briefing": {
+        "text": "*Morning briefing, Wed 25 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 12 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 5 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch today*\nWaiting on: answers from design\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *due today*\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 2 days (Fri 27 Nov)\nNext: write the draft\n\n*Coming up*\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n\n*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)\n\n*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
+        "head": [
+          "*Morning briefing, Wed 25 Nov*",
+          "*Today*"
+        ],
+        "rows": [
+          {
+            "key": "2026-11-25:M:ITEM_CHARLIE",
+            "itemId": "ITEM_CHARLIE",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 12 days (target Fri 13 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-25:M:ITEM_GOLF",
+            "itemId": "ITEM_GOLF",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-25:M:ITEM_BRAVO",
+            "itemId": "ITEM_BRAVO",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 5 days (target Fri 20 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-25:M:ITEM_HOTEL",
+            "itemId": "ITEM_HOTEL",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-25:M:ITEM_KILO",
+            "itemId": "ITEM_KILO",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-25:M:ITEM_FOXTROT",
+            "itemId": "ITEM_FOXTROT",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch today*\nWaiting on: answers from design",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-25:M:ITEM_DRAFT",
+            "itemId": "ITEM_DRAFT",
+            "kind": "ping",
+            "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *due today*",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-25:M:ITEM_ALPHA",
+            "itemId": "ITEM_ALPHA",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 2 days (Fri 27 Nov)\nNext: write the draft",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          }
+        ],
+        "tail": [
+          "*Coming up*\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov",
+          "*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)",
+          "*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft"
+        ]
+      },
+      "pings": []
     }
   },
   {
@@ -305,89 +363,113 @@
     "date": "2026-11-26",
     "slot": "M",
     "plan": {
-      "briefing": "*Morning briefing, Thu 26 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 1 day (Fri 27 Nov)\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 6 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 13 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch was Wed 25 Nov\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: touch was Tue 17 Nov\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: touch was Mon 23 Nov\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 1 day (target Wed 25 Nov)\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: touch was Tue 24 Nov\n\n*Coming up*\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n\n*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)\n\nIn progress: 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
-      "pings": [
-        {
-          "key": "2026-11-26:M:ITEM_ALPHA",
-          "itemId": "ITEM_ALPHA",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 1 day (Fri 27 Nov)\nNext: write the draft",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-26:M:ITEM_BRAVO",
-          "itemId": "ITEM_BRAVO",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 6 days (target Fri 20 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-26:M:ITEM_CHARLIE",
-          "itemId": "ITEM_CHARLIE",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 13 days (target Fri 13 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-26:M:ITEM_FOXTROT",
-          "itemId": "ITEM_FOXTROT",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch was Wed 25 Nov\nWaiting on: answers from design",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-26:M:ITEM_GOLF",
-          "itemId": "ITEM_GOLF",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: touch was Tue 17 Nov",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-26:M:ITEM_HOTEL",
-          "itemId": "ITEM_HOTEL",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: touch was Mon 23 Nov\nNext: ping the vendor",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-26:M:ITEM_DRAFT",
-          "itemId": "ITEM_DRAFT",
-          "kind": "ping",
-          "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 1 day (target Wed 25 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        }
-      ]
+      "briefing": {
+        "text": "*Morning briefing, Thu 26 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 13 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 6 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch was Wed 25 Nov*\nWaiting on: answers from design\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 1 day (target Wed 25 Nov)\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 1 day (Fri 27 Nov)\nNext: write the draft\n\n*Coming up*\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n\n*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)\n\n*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
+        "head": [
+          "*Morning briefing, Thu 26 Nov*",
+          "*Today*"
+        ],
+        "rows": [
+          {
+            "key": "2026-11-26:M:ITEM_CHARLIE",
+            "itemId": "ITEM_CHARLIE",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 13 days (target Fri 13 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-26:M:ITEM_GOLF",
+            "itemId": "ITEM_GOLF",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-26:M:ITEM_BRAVO",
+            "itemId": "ITEM_BRAVO",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 6 days (target Fri 20 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-26:M:ITEM_HOTEL",
+            "itemId": "ITEM_HOTEL",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-26:M:ITEM_KILO",
+            "itemId": "ITEM_KILO",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-26:M:ITEM_FOXTROT",
+            "itemId": "ITEM_FOXTROT",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch was Wed 25 Nov*\nWaiting on: answers from design",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-26:M:ITEM_DRAFT",
+            "itemId": "ITEM_DRAFT",
+            "kind": "ping",
+            "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 1 day (target Wed 25 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-26:M:ITEM_ALPHA",
+            "itemId": "ITEM_ALPHA",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 1 day (Fri 27 Nov)\nNext: write the draft",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          }
+        ],
+        "tail": [
+          "*Coming up*\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov",
+          "*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)",
+          "*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft"
+        ]
+      },
+      "pings": []
     }
   },
   {
@@ -402,89 +484,124 @@
     "date": "2026-11-27",
     "slot": "M",
     "plan": {
-      "briefing": "*Morning briefing, Fri 27 Nov*\n\n⚠ *No update* on <https://github.com/acme/demo/issues/2|demo#2> Bravo since yesterday's pings\n\n*Today*\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: *due today*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 7 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 14 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch was Wed 25 Nov\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: touch was Tue 17 Nov\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: touch was Mon 23 Nov\n• <https://github.com/acme/demo/issues/9|demo#9> India: due in 3 days (Mon 30 Nov)\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 2 days (target Wed 25 Nov)\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: touch was Tue 24 Nov\n\n*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)\n\nIn progress: 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
-      "pings": [
-        {
-          "key": "2026-11-27:M:ITEM_ALPHA",
-          "itemId": "ITEM_ALPHA",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: *due today*\nNext: write the draft",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-27:M:ITEM_BRAVO",
-          "itemId": "ITEM_BRAVO",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 7 days (target Fri 20 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-27:M:ITEM_CHARLIE",
-          "itemId": "ITEM_CHARLIE",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 14 days (target Fri 13 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-27:M:ITEM_FOXTROT",
-          "itemId": "ITEM_FOXTROT",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch was Wed 25 Nov\nWaiting on: answers from design",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-27:M:ITEM_GOLF",
-          "itemId": "ITEM_GOLF",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: touch was Tue 17 Nov",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-27:M:ITEM_HOTEL",
-          "itemId": "ITEM_HOTEL",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: touch was Mon 23 Nov\nNext: ping the vendor",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-27:M:ITEM_DRAFT",
-          "itemId": "ITEM_DRAFT",
-          "kind": "ping",
-          "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 2 days (target Wed 25 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        }
-      ]
+      "briefing": {
+        "text": "*Morning briefing, Fri 27 Nov*\n\n⚠ *No update* on <https://github.com/acme/demo/issues/2|demo#2> Bravo since yesterday's pings\n\n*Today*\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 14 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 7 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch was Wed 25 Nov*\nWaiting on: answers from design\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 2 days (target Wed 25 Nov)\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: *due today*\nNext: write the draft\n• <https://github.com/acme/demo/issues/9|demo#9> India: due in 3 days (Mon 30 Nov)\n\n*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)\n\n*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
+        "head": [
+          "*Morning briefing, Fri 27 Nov*",
+          "⚠ *No update* on <https://github.com/acme/demo/issues/2|demo#2> Bravo since yesterday's pings",
+          "*Today*"
+        ],
+        "rows": [
+          {
+            "key": "2026-11-27:M:ITEM_CHARLIE",
+            "itemId": "ITEM_CHARLIE",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 14 days (target Fri 13 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-27:M:ITEM_GOLF",
+            "itemId": "ITEM_GOLF",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-27:M:ITEM_BRAVO",
+            "itemId": "ITEM_BRAVO",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 7 days (target Fri 20 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-27:M:ITEM_HOTEL",
+            "itemId": "ITEM_HOTEL",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-27:M:ITEM_KILO",
+            "itemId": "ITEM_KILO",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-27:M:ITEM_FOXTROT",
+            "itemId": "ITEM_FOXTROT",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch was Wed 25 Nov*\nWaiting on: answers from design",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-27:M:ITEM_DRAFT",
+            "itemId": "ITEM_DRAFT",
+            "kind": "ping",
+            "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 2 days (target Wed 25 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-27:M:ITEM_ALPHA",
+            "itemId": "ITEM_ALPHA",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: *due today*\nNext: write the draft",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-27:M:ITEM_INDIA",
+            "itemId": "ITEM_INDIA",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/9|demo#9> India: due in 3 days (Mon 30 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          }
+        ],
+        "tail": [
+          "*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)",
+          "*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft"
+        ]
+      },
+      "pings": []
     }
   },
   {
@@ -511,78 +628,113 @@
     "date": "2026-11-30",
     "slot": "M",
     "plan": {
-      "briefing": "*Morning briefing, Mon 30 Nov*\n\n⚠ *No update* on <https://github.com/acme/demo/issues/3|demo#3> Charlie since yesterday's pings\n\n*Today*\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: *overdue* by 3 days (target Fri 27 Nov)\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 10 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch was Wed 25 Nov\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: touch was Tue 17 Nov\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: touch was Mon 23 Nov\n• <https://github.com/acme/demo/issues/9|demo#9> India: *due today*\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 5 days (target Wed 25 Nov)\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: touch was Tue 24 Nov\n\n*Stale dates* (more than 14 days overdue, fix or close): demo#3 (2026-11-13), demo#4 (2026-11-10)\n\nIn progress: 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
-      "pings": [
-        {
-          "key": "2026-11-30:M:ITEM_ALPHA",
-          "itemId": "ITEM_ALPHA",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: *overdue* by 3 days (target Fri 27 Nov)\nNext: write the draft",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-30:M:ITEM_BRAVO",
-          "itemId": "ITEM_BRAVO",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 10 days (target Fri 20 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-30:M:ITEM_FOXTROT",
-          "itemId": "ITEM_FOXTROT",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch was Wed 25 Nov\nWaiting on: answers from design",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-30:M:ITEM_GOLF",
-          "itemId": "ITEM_GOLF",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: touch was Tue 17 Nov",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-30:M:ITEM_HOTEL",
-          "itemId": "ITEM_HOTEL",
-          "kind": "ping",
-          "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: touch was Mon 23 Nov\nNext: ping the vendor",
-          "actions": [
-            "ack",
-            "touch1",
-            "touch7",
-            "done"
-          ]
-        },
-        {
-          "key": "2026-11-30:M:ITEM_DRAFT",
-          "itemId": "ITEM_DRAFT",
-          "kind": "ping",
-          "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 5 days (target Wed 25 Nov)",
-          "actions": [
-            "ack",
-            "move",
-            "done"
-          ]
-        }
-      ]
+      "briefing": {
+        "text": "*Morning briefing, Mon 30 Nov*\n\n⚠ *No update* on <https://github.com/acme/demo/issues/3|demo#3> Charlie since yesterday's pings\n\n*Today*\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 10 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch was Wed 25 Nov*\nWaiting on: answers from design\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 5 days (target Wed 25 Nov)\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: *overdue* by 3 days (target Fri 27 Nov)\nNext: write the draft\n• <https://github.com/acme/demo/issues/9|demo#9> India: *due today*\n\n*Stale dates* (more than 14 days overdue, fix or close): demo#3 (2026-11-13), demo#4 (2026-11-10)\n\n*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
+        "head": [
+          "*Morning briefing, Mon 30 Nov*",
+          "⚠ *No update* on <https://github.com/acme/demo/issues/3|demo#3> Charlie since yesterday's pings",
+          "*Today*"
+        ],
+        "rows": [
+          {
+            "key": "2026-11-30:M:ITEM_GOLF",
+            "itemId": "ITEM_GOLF",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-30:M:ITEM_BRAVO",
+            "itemId": "ITEM_BRAVO",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 10 days (target Fri 20 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-30:M:ITEM_HOTEL",
+            "itemId": "ITEM_HOTEL",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-30:M:ITEM_KILO",
+            "itemId": "ITEM_KILO",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-30:M:ITEM_FOXTROT",
+            "itemId": "ITEM_FOXTROT",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch was Wed 25 Nov*\nWaiting on: answers from design",
+            "actions": [
+              "ack",
+              "touch1",
+              "touch7",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-30:M:ITEM_DRAFT",
+            "itemId": "ITEM_DRAFT",
+            "kind": "ping",
+            "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 5 days (target Wed 25 Nov)",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-30:M:ITEM_ALPHA",
+            "itemId": "ITEM_ALPHA",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: *overdue* by 3 days (target Fri 27 Nov)\nNext: write the draft",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          },
+          {
+            "key": "2026-11-30:M:ITEM_INDIA",
+            "itemId": "ITEM_INDIA",
+            "kind": "ping",
+            "text": "<https://github.com/acme/demo/issues/9|demo#9> India: *due today*",
+            "actions": [
+              "ack",
+              "move",
+              "done"
+            ]
+          }
+        ],
+        "tail": [
+          "*Stale dates* (more than 14 days overdue, fix or close): demo#3 (2026-11-13), demo#4 (2026-11-10)",
+          "*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft"
+        ]
+      },
+      "pings": []
     }
   },
   {

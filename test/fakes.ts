@@ -2,8 +2,8 @@
 
 import type { Llm, LlmRequest } from "../src/llm.ts";
 import { ShaConflict, type NotesClient, type NotesFile } from "../src/notes.ts";
-import type { Ping, SentPing, Slot } from "../src/rules.ts";
-import type { Sent, Sender } from "../src/slack.ts";
+import type { Ping, SentPing, Slot, Briefing } from "../src/rules.ts";
+import type { Sent, Sender, BriefingSent } from "../src/slack.ts";
 import type { AskRecord, AskStore, Dictation, DictationPatch, DictationStatus, DictationStore, NewPing, PingRecord, PingStore } from "../src/store.ts";
 
 export class FakeStore implements PingStore {
@@ -86,9 +86,18 @@ export class FakeStore implements PingStore {
 
 export class FakeSender implements Sender {
   readonly dms: string[] = [];
+  readonly briefings: Briefing[] = [];
   readonly sent: Ping[] = []; // pings that the Slack call accepted
-  attempts = 0;
+  attempts = 0; // the pings
+  briefingAttempts = 0;
   failOnAttempt: number | null = null;
+  /** The nth briefing send fails: null for never. */
+  failBriefingOn: number | null = null;
+  alwaysFailBriefing = false;
+  /** When set, the briefing's blocks are refused and only its text goes out. */
+  invalidBlocks = false;
+  /** When set, rows beyond this many get no menu: what the 50-block limit does. */
+  menuLimit: number | null = null;
   alwaysFailPings = false;
   gate: Gate | null = null;
 
@@ -96,6 +105,23 @@ export class FakeSender implements Sender {
     if (this.gate) await this.gate.wait();
     this.dms.push(text);
     return { channel: "DM", ts: `dm-${this.dms.length}` };
+  }
+
+  async sendBriefing(briefing: Briefing): Promise<BriefingSent> {
+    if (this.gate) await this.gate.wait();
+    this.briefingAttempts += 1;
+    if (this.alwaysFailBriefing) throw new Error("slack is down");
+    if (this.failBriefingOn !== null && this.briefingAttempts === this.failBriefingOn) {
+      this.failBriefingOn = null; // only the one call fails; the retry succeeds
+      throw new Error("slack is down");
+    }
+    this.briefings.push(briefing);
+    // The keys of the rows whose row carries a ⋯ menu: the rows that can be
+    // clicked, and the only ones the scheduler records. A refused message has
+    // no menu at all, and every row is still keyed so it is not lost.
+    const keys = briefing.rows.map((row) => row.key);
+    const menuKeys = this.invalidBlocks ? keys : keys.slice(0, this.menuLimit ?? keys.length);
+    return { channel: "DM", ts: `brief-${this.briefings.length}`, menuKeys };
   }
 
   async sendPing(ping: Ping): Promise<Sent> {

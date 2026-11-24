@@ -4,12 +4,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Board, BoardSource } from "../src/github.ts";
-import { DEFAULT_POLICY, type Item, type Ping } from "../src/rules.ts";
+import { DEFAULT_POLICY, type ActionId, type Briefing, type Item, type Ping } from "../src/rules.ts";
 import type { AskInput, AskUi } from "../src/ask.ts";
 import {
   askBlocks,
+  briefingBlocks,
   dictationText,
   handleAction,
+  handleRowAction,
+  menuKeys,
+  ROW_LABELS,
+  rowEdits,
+  splitLines,
   helpRequest,
   isTodayCommand,
   selectFolders,
@@ -21,6 +27,7 @@ import {
   type Block,
   type HandlerDeps,
   type MoveSubmit,
+  type RowClick,
   type AskDispatch,
   type PostMessageArgs,
   type ScribeDispatch,
@@ -106,6 +113,7 @@ class FakeBoard implements BoardSource {
 }
 
 const KEY = "2026-11-25:M:ITEM_1";
+const ROW_KEY = "2026-11-27:M:ITEM_1";
 const PING_TEXT = "notes#52 A: due today";
 const MESSAGE_TEXT = `${PING_TEXT}`;
 const TARGET = "2026-11-25";
@@ -182,16 +190,30 @@ function harness(item: Item | null = null) {
     now: () => new Date("2026-11-27T01:00:00Z"), // Friday 09:00 in Singapore
     log: (line) => logs.push(line),
     manual,
+    rows: rowEdits(),
   };
+  // An evening ping: a reply in its thread is an ack.
   store.recordPing({
     key: KEY,
     itemId: "ITEM_1",
     date: "2026-11-25",
-    slot: "M",
+    slot: "E",
     kind: "ping",
-    sentAt: "2026-11-25T01:00:00.000Z",
+    sentAt: "2026-11-25T09:30:00.000Z",
     channel: "D",
     ts: "111.1",
+  });
+  // A morning briefing's row: recorded so its menu finds it, but a reply under
+  // the briefing is no ack at all.
+  store.recordPing({
+    key: ROW_KEY,
+    itemId: "ITEM_1",
+    date: "2026-11-27",
+    slot: "M",
+    kind: "ping",
+    sentAt: "2026-11-27T01:00:00.000Z",
+    channel: "D",
+    ts: "111.6",
   });
   return { deps, client, board, store, logs, manual };
 }
@@ -568,6 +590,17 @@ test("a note: DM reaches the scribe in the background, without the prefix", asyn
   assert.deepEqual(client.posts, [], "the handler returns at once: the flow does the talking");
 });
 
+test("a note: dictated under the briefing gets no item hint: that thread is every row's", async () => {
+  const { deps } = harness(boardItem({ title: "Acme VPC sizing" }));
+  const scribe = recordScribe();
+  deps.scribe = scribe.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.6", threadTs: "111.6", text: "note: ten nodes is enough" });
+  await scribe.settled;
+
+  assert.deepEqual(scribe.calls, [{ ts: "222.6", text: "ten nodes is enough", hint: null }], "the briefing's ts names many rows, so it names no item");
+});
+
 test("a note: in a ping's thread is about that item, and is not an ack", async () => {
   const { deps, store } = harness(boardItem({ title: "Acme VPC sizing" }));
   const scribe = recordScribe();
@@ -779,7 +812,7 @@ test("help <topic> answers that page, and an unknown topic keeps the overview wi
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.3", threadTs: null, text: "help Pings" });
   await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.4", threadTs: null, text: "help horoscope" });
 
-  assert.match(client.posts[0].text, /^\*Buttons\*\n\nEvery ping has buttons under it/, "the page, not the overview");
+  assert.match(client.posts[0].text, /^\*Buttons\*\n\nEvery evening ping has buttons under it/, "the page, not the overview");
   assert.doesNotMatch(client.posts[0].text, /More: `help pings`/);
   assert.match(client.posts[1].text, /^\*Pings\*/, "the topic is matched however it is typed");
   assert.match(client.posts[2].text, /^No topic `horoscope`\. Here is the overview\./);
@@ -888,4 +921,395 @@ test("the folder select is capped at 100 options with short values, Accounts fir
 
   assert.deepEqual(selectFolders(["Partners/B", "Accounts/B", "Accounts/A"]), ["Accounts/A", "Accounts/B", "Partners/B"]);
   assert.equal(selectFolders(Array.from({ length: 150 }, (_, i) => `Accounts/A${i}`)).length, 100);
+});
+
+// ---- the briefing's rows: their menus, and what a pick does ------------------
+
+const rowPing = (itemId: string, actions: ActionId[] = ["ack", "move", "done"]): Ping => ({
+  key: `2026-11-27:M:${itemId}`,
+  itemId,
+  kind: "ping",
+  text: `notes#${itemId} Work ${itemId}: *due today*`,
+  actions,
+});
+
+const briefingOf = (
+  rows: Ping[],
+  head: string[] = ["*Morning briefing, Fri 27 Nov*", "*Today*"],
+  tail: string[] = ["*In progress:* 2"],
+): Briefing => ({
+  text: [...head, ...rows.map((row) => `• ${row.text}`), ...tail].join("\n\n"),
+  head,
+  rows,
+  tail,
+});
+
+/** The blocks as Slack receives them, so a test reads them without the types. */
+const asJson = (blocks: Block[]): Array<Record<string, any>> => JSON.parse(JSON.stringify(blocks)) as Array<Record<string, any>>;
+
+/** A message as it stands now: one entry per section, in order, and its menu. */
+const messageRows = (blocks: Block[] | undefined): Array<{ text: string; menu: boolean }> =>
+  (blocks ?? []).flatMap((block) => (block.type === "section" ? [{ text: block.text.text, menu: block.accessory !== undefined }] : []));
+
+/** The same, with the sections around the rows in place: nothing else may move. */
+const BRIEFING_HEAD = [
+  { text: "*Morning briefing, Fri 27 Nov*", menu: false },
+  { text: "*Today*", menu: false },
+];
+const BRIEFING_TAIL = [{ text: "*In progress:* 2", menu: false }];
+
+/** A briefing of two rows at ts 111.6, both recorded in the store. */
+function twoRows() {
+  const h = harness(boardItem());
+  h.store.recordPing({
+    key: "2026-11-27:M:ITEM_2",
+    itemId: "ITEM_2",
+    date: "2026-11-27",
+    slot: "M",
+    kind: "ping",
+    sentAt: "2026-11-27T01:00:00.000Z",
+    channel: "D",
+    ts: "111.6",
+  });
+  const blocks = briefingBlocks(briefingOf([rowPing("ITEM_1"), rowPing("ITEM_2", ["ack", "done"])]), new Map([["ITEM_1", TARGET]]));
+  return { ...h, blocks };
+}
+
+function rowClick(overrides: Partial<RowClick> = {}): RowClick {
+  return {
+    value: "ack",
+    blockId: `zy_row:${ROW_KEY}`,
+    userId: "U_ZY",
+    channel: "D",
+    ts: "111.6",
+    blocks: null,
+    triggerId: "TRIGGER_2",
+    ...overrides,
+  };
+}
+
+test("a row's menu carries short values and the labels a person reads", () => {
+  const blocks = briefingBlocks(briefingOf([rowPing("52", ["ack", "move", "touch1", "touch7", "done"])]), new Map([["52", "2026-12-02"]]));
+  const row = asJson(blocks).find((block) => block.block_id === "zy_row:2026-11-27:M:52");
+  assert.ok(row !== undefined);
+
+  assert.equal(row.type, "section");
+  assert.equal(row.accessory.type, "overflow");
+  assert.equal(row.accessory.action_id, "zy_row");
+  assert.deepEqual(row.accessory.options.map((option: Record<string, any>) => option.value), [
+    "ack",
+    "move|2026-12-02",
+    "touch1",
+    "touch7",
+    "done",
+  ]);
+  assert.deepEqual(row.accessory.options.map((option: Record<string, any>) => option.text.text), [
+    "Got it",
+    "Move date…",
+    "+1 day",
+    "+7 days",
+    "Done",
+  ]);
+});
+
+test("a row with no Target date still offers a move, with nothing to fill in", () => {
+  const blocks = briefingBlocks(briefingOf([rowPing("53", ["ack", "move"])]), new Map());
+  const row = asJson(blocks).find((block) => block.block_id === "zy_row:2026-11-27:M:53");
+  assert.ok(row !== undefined);
+  assert.equal(row.accessory.options[1].value, "move|");
+});
+
+test("the row menu has at most five options: a sixth action has to deal with this first", () => {
+  assert.ok(Object.keys(ROW_LABELS).length <= 5, "Slack takes five overflow options");
+  assert.deepEqual(Object.keys(ROW_LABELS).sort(), ["ack", "done", "move", "touch1", "touch7"]);
+});
+
+test("a briefing fits Slack: 50 blocks, 3000-character sections, five options a menu", () => {
+  const many = Array.from({ length: 45 }, (_, at) => rowPing(`r${at}`));
+  const blocks = briefingBlocks(briefingOf(many), new Map());
+
+  assert.ok(blocks.length <= 50, `${blocks.length} blocks is over Slack's 50`);
+  for (const block of blocks) {
+    if (block.type !== "section") continue;
+    assert.ok(block.text.text.length <= 3000, `a section of ${block.text.text.length} characters`);
+    if (block.accessory) assert.ok(block.accessory.options.length <= 5, "a menu of more than five options");
+  }
+});
+
+test("only the first thirty rows carry a menu, and the rest are listed as text", () => {
+  const rows = Array.from({ length: 32 }, (_, at) => rowPing(`r${at}`));
+  const blocks = briefingBlocks(briefingOf(rows), new Map());
+
+  const menus = blocks.filter((block) => block.type === "section" && block.accessory !== undefined);
+  assert.equal(menus.length, 30);
+  assert.deepEqual(
+    menuKeys(blocks),
+    rows.slice(0, 30).map((row) => row.key),
+    "the keys the scheduler records are the rows that got a menu, and only those",
+  );
+
+  const sections = blocks.flatMap((block) => (block.type === "section" ? [block.text.text] : []));
+  const heading = sections.indexOf("…2 more (no menu: message limit)");
+  assert.ok(heading >= 0, "a heading says what happened to the rest");
+  assert.equal(
+    sections[heading + 1],
+    `• ${rows[30].text}\n• ${rows[31].text}`,
+    "the rows nobody can click are still there to read",
+  );
+  assert.ok(blocks.length <= 50, `${blocks.length} blocks is over Slack's 50`);
+});
+
+test("a large head and tail shrink the menu cap, and the message still fits in 50 blocks", () => {
+  const head = ["*Morning briefing, Fri 27 Nov*", ...Array.from({ length: 10 }, () => "h".repeat(2900))];
+  const tail = Array.from({ length: 10 }, () => "t".repeat(2900));
+  const rows = Array.from({ length: 40 }, (_, at) => rowPing(`r${at}`));
+  const blocks = briefingBlocks(briefingOf(rows, head, tail), new Map());
+
+  const menus = blocks.filter((block) => block.type === "section" && block.accessory !== undefined);
+  assert.ok(blocks.length <= 50, `${blocks.length} blocks is over Slack's 50`);
+  assert.ok(menus.length < 30, `the ten head and ten tail sections leave room for ${menus.length} menus, not 30`);
+  assert.deepEqual(menuKeys(blocks), rows.slice(0, menus.length).map((row) => row.key));
+
+  // Every row is still in the message: with a menu, or as text under the heading.
+  const text = blocks.flatMap((block) => (block.type === "section" ? [block.text.text] : [])).join("\n");
+  for (const row of rows) assert.ok(text.includes(rowPing(row.itemId).text), `${row.itemId} is in the message`);
+  assert.ok(text.includes(`…${40 - menus.length} more (no menu: message limit)`), "the heading counts what it lists");
+});
+
+test("a head or a tail over a section's limit is split at a line break, never truncated", () => {
+  const line = "x".repeat(1400);
+  const head = ["*Morning briefing, Fri 27 Nov*", [line, line, line, line].join("\n")];
+  const blocks = briefingBlocks(briefingOf([rowPing("52")], head, []), new Map());
+
+  const sections = blocks.flatMap((block) => (block.type === "section" ? [block.text.text] : []));
+  assert.deepEqual(sections.slice(1, -1), splitLines(head[1]), "one section per chunk, in order");
+  assert.equal(splitLines(head[1]).join("\n"), head[1], "nothing was dropped");
+  for (const section of sections) assert.ok(section.length <= 2900, `a section of ${section.length} characters`);
+});
+
+test("a menu pick of ack marks the ping handled and edits only its row", async () => {
+  const { deps, client, store, logs, blocks } = twoRows();
+  await handleRowAction(deps, rowClick({ value: "ack", blocks }));
+
+  assert.equal(store.findByKey(ROW_KEY)?.ackedAt, "2026-11-27T01:00:00.000Z");
+  assert.equal(store.findByKey("2026-11-27:M:ITEM_2")?.ackedAt, null, "the other row is untouched");
+  assert.deepEqual(logs, ["button ack on ITEM_1 by U_ZY"]);
+
+  assert.equal(client.updates.length, 1);
+  assert.equal(client.updates[0].channel, "D");
+  assert.equal(client.updates[0].ts, "111.6");
+  assert.deepEqual(messageRows(client.updates[0].blocks), [
+    ...BRIEFING_HEAD,
+    { text: "notes#ITEM_1 Work ITEM_1: *due today*\n→ acked", menu: false },
+    { text: "notes#ITEM_2 Work ITEM_2: *due today*", menu: true },
+    ...BRIEFING_TAIL,
+  ]);
+});
+
+test("a menu pick of Done writes the Status field and closes the row", async () => {
+  const { deps, client, board, blocks } = twoRows();
+  await handleRowAction(deps, rowClick({ value: "done", blocks }));
+
+  assert.deepEqual(board.singleSelects, [{ projectId: "PVT_1", itemId: "ITEM_1", fieldId: "F_STATUS", optionId: "O_DONE" }]);
+  assert.deepEqual(messageRows(client.updates[0].blocks)[2], {
+    text: "notes#ITEM_1 Work ITEM_1: *due today*\n→ marked Done on the board",
+    menu: false,
+  });
+});
+
+test("a menu pick of +1 day moves to Monday, and +7 days a week out", async () => {
+  const monday = twoRows();
+  await handleRowAction(monday.deps, rowClick({ value: "touch1", blocks: monday.blocks }));
+  assert.deepEqual(monday.board.dates, [{ projectId: "PVT_1", itemId: "ITEM_1", fieldId: "F_TOUCH", date: "2026-11-30" }]);
+  assert.match(messageRows(monday.client.updates[0].blocks)[2].text, /→ next touch Mon 30 Nov$/);
+
+  const week = twoRows();
+  await handleRowAction(week.deps, rowClick({ value: "touch7", blocks: week.blocks }));
+  assert.deepEqual(week.board.dates, [{ projectId: "PVT_1", itemId: "ITEM_1", fieldId: "F_TOUCH", date: "2026-12-04" }]);
+});
+
+test("two picks on two rows both persist: the second edit keeps the first", async () => {
+  const { deps, client, store, blocks } = twoRows();
+  await handleRowAction(deps, rowClick({ value: "ack", blocks }));
+  // Slack hands the second click the message as it was before the first edit.
+  await handleRowAction(deps, rowClick({ value: "done", blockId: "zy_row:2026-11-27:M:ITEM_2", blocks }));
+
+  assert.equal(client.updates.length, 2);
+  assert.deepEqual(messageRows(client.updates[1].blocks), [
+    ...BRIEFING_HEAD,
+    { text: "notes#ITEM_1 Work ITEM_1: *due today*\n→ acked", menu: false },
+    { text: "notes#ITEM_2 Work ITEM_2: *due today*\n→ marked Done on the board", menu: false },
+    ...BRIEFING_TAIL,
+  ]);
+  assert.equal(store.findByKey(ROW_KEY)?.ackedAt, "2026-11-27T01:00:00.000Z");
+  assert.equal(store.findByKey("2026-11-27:M:ITEM_2")?.ackedAt, "2026-11-27T01:00:00.000Z");
+});
+
+test("a failed chat.update leaves the cache alone, and the next pick still finds its row", async () => {
+  const { deps, client, blocks } = twoRows();
+  client.failUpdate = true;
+  await handleRowAction(deps, rowClick({ value: "ack", blocks }));
+
+  assert.deepEqual(messageRows(deps.rows.blocks.get("111.6")), [
+    ...BRIEFING_HEAD,
+    { text: "notes#ITEM_1 Work ITEM_1: *due today*", menu: true },
+    { text: "notes#ITEM_2 Work ITEM_2: *due today*", menu: true },
+    ...BRIEFING_TAIL,
+  ], "the edit that never landed is not in the cache");
+
+  client.failUpdate = false;
+  // Slack hands the second click the message as it was before the failed edit.
+  await handleRowAction(deps, rowClick({ value: "done", blockId: "zy_row:2026-11-27:M:ITEM_2", blocks }));
+
+  assert.equal(client.updates.length, 2);
+  assert.deepEqual(messageRows(client.updates[1].blocks), [
+    ...BRIEFING_HEAD,
+    { text: "notes#ITEM_1 Work ITEM_1: *due today*", menu: true },
+    { text: "notes#ITEM_2 Work ITEM_2: *due today*\n→ marked Done on the board", menu: false },
+    ...BRIEFING_TAIL,
+  ], "the second pick found its row, and the lost edit is not carried along");
+});
+
+test("a row pick with no blocks to edit says its result in the thread", async () => {
+  const { deps, client, store } = harness(boardItem());
+  await handleRowAction(deps, rowClick({ value: "done", blocks: null }));
+
+  assert.deepEqual(client.updates, [], "there is no message to edit");
+  assert.equal(client.posts.length, 1);
+  assert.equal(client.posts[0].thread_ts, "111.6", "the briefing's own thread");
+  assert.equal(client.posts[0].text, "→ marked Done on the board");
+  assert.equal(store.findByKey(ROW_KEY)?.ackedAt, "2026-11-27T01:00:00.000Z", "the board write happened, so it is acked");
+});
+
+test("a pick on a row already handled writes nothing and says so in the thread", async () => {
+  const { deps, client, store, logs, blocks } = twoRows();
+  store.markAcked(ROW_KEY, "2026-11-27T02:00:00.000Z");
+  await handleRowAction(deps, rowClick({ value: "done", blocks }));
+
+  assert.deepEqual(client.updates, [], "the row is left as it is");
+  assert.deepEqual(client.posts.map((post) => post.text), ["already handled"], "the same words the move submit uses");
+  assert.equal(client.posts[0].thread_ts, "111.6");
+  assert.equal(store.findByKey(ROW_KEY)?.ackedAt, "2026-11-27T02:00:00.000Z", "the first ack stands");
+  assert.deepEqual(logs, ["row done on 2026-11-27:M:ITEM_1: already handled, this pick does nothing"]);
+});
+
+test("the blocks cache keeps the last twenty messages, and forgets the oldest", async () => {
+  const { deps, store } = harness(boardItem());
+  for (let at = 0; at < 21; at += 1) {
+    const ping = rowPing(`K${at}`);
+    const ts = `ts-${at}`;
+    store.recordPing({
+      key: ping.key,
+      itemId: "ITEM_1",
+      date: "2026-11-27",
+      slot: "M",
+      kind: "ping",
+      sentAt: "2026-11-27T01:00:00.000Z",
+      channel: "D",
+      ts,
+    });
+    await handleRowAction(deps, rowClick({ blockId: `zy_row:${ping.key}`, ts, blocks: briefingBlocks(briefingOf([ping]), new Map()) }));
+  }
+
+  assert.equal(deps.rows.blocks.size, 20, "no more than twenty messages are kept");
+  assert.equal(deps.rows.blocks.has("ts-0"), false, "the oldest message is the one forgotten");
+  assert.equal(deps.rows.blocks.has("ts-20"), true, "the message just edited is kept");
+  assert.equal(deps.rows.queues.size, 0, "a settled edit leaves no queue entry behind");
+});
+
+test("a menu pick whose board write fails keeps the menu and says so in the thread", async () => {
+  const { deps, client, board, store, logs, blocks } = twoRows();
+  board.failWrites = true;
+  await handleRowAction(deps, rowClick({ value: "done", blocks }));
+
+  assert.deepEqual(client.updates, [], "the message is left as it is");
+  assert.equal(client.posts.length, 1);
+  assert.equal(client.posts[0].thread_ts, "111.6");
+  assert.equal(client.posts[0].text, "→ failed: board is down");
+  assert.equal(store.findByKey(ROW_KEY)?.ackedAt, null, "nothing was written, so nothing is acked");
+  assert.match(logs.join("\n"), /row done on 2026-11-27:M:ITEM_1 failed: board is down/);
+});
+
+test("a row pick from anyone but ZY does nothing, and an unknown row is logged", async () => {
+  const other = twoRows();
+  await handleRowAction(other.deps, rowClick({ userId: "U_OTHER", blocks: other.blocks }));
+  assert.deepEqual(other.client.updates, []);
+  assert.equal(other.store.findByKey(ROW_KEY)?.ackedAt, null);
+
+  const unknown = twoRows();
+  await handleRowAction(unknown.deps, rowClick({ blockId: "zy_row:2026-11-27:M:NOPE", blocks: unknown.blocks }));
+  assert.deepEqual(unknown.client.updates, []);
+  assert.match(unknown.logs.join("\n"), /row ack: unknown ping 2026-11-27:M:NOPE/);
+
+  const noBlock = twoRows();
+  await handleRowAction(noBlock.deps, rowClick({ blockId: "some_other_block", blocks: noBlock.blocks }));
+  assert.deepEqual(noBlock.client.updates, []);
+});
+
+test("a Move date pick opens the modal on the row's own date, and its submit edits the row", async () => {
+  const { deps, client, board, store, blocks } = twoRows();
+  await handleRowAction(deps, rowClick({ value: `move|${TARGET}`, blocks }));
+
+  assert.equal(client.modals.length, 1);
+  assert.equal(client.modals[0].trigger_id, "TRIGGER_2");
+  assert.equal(board.reads, 0, "the board is not read before views.open");
+  const view = asSent(client.modals[0]);
+  assert.equal(view.blocks[0].element.initial_date, TARGET);
+  const meta = JSON.parse(view.private_metadata) as Record<string, unknown>;
+  assert.equal(meta.row, true, "the submit edits the row, not the whole message");
+  assert.equal(meta.key, ROW_KEY);
+  assert.equal(meta.text, "notes#ITEM_1 Work ITEM_1: *due today*", "the row's own words, not the briefing's title");
+  assert.equal(store.findByKey(ROW_KEY)?.ackedAt, null, "only the submit acks it");
+
+  await handleMoveSubmit(deps, { userId: "U_ZY", metadata: view.private_metadata, date: "2026-12-02", reason: "the Acme workshop moved" });
+
+  assert.deepEqual(board.dates, [{ projectId: "PVT_1", itemId: "ITEM_1", fieldId: "F_TARGET", date: "2026-12-02" }]);
+  assert.deepEqual(messageRows(client.updates[0].blocks)[2], {
+    text: "notes#ITEM_1 Work ITEM_1: *due today*\n→ Moved to Wed 2 Dec (the Acme workshop moved)",
+    menu: false,
+  });
+  assert.equal(store.findByKey(ROW_KEY)?.ackedAt, "2026-11-27T01:00:00.000Z");
+});
+
+test("a row move submitted after a restart leaves the row and answers in the thread", async () => {
+  const { deps, client, board, store } = harness(boardItem());
+  const meta = JSON.stringify({ channel: "D", ts: "111.6", key: ROW_KEY, text: "notes#52 A: *due today*", row: true });
+  await handleMoveSubmit(deps, { userId: "U_ZY", metadata: meta, date: "2026-12-02", reason: "moved" });
+
+  assert.deepEqual(board.dates, [{ projectId: "PVT_1", itemId: "ITEM_1", fieldId: "F_TARGET", date: "2026-12-02" }]);
+  assert.deepEqual(client.updates, [], "there are no blocks to edit");
+  assert.equal(client.posts.length, 1);
+  assert.equal(client.posts[0].thread_ts, "111.6");
+  assert.equal(client.posts[0].text, "→ Moved to Wed 2 Dec (moved)");
+  assert.equal(store.findByKey(ROW_KEY)?.ackedAt, "2026-11-27T01:00:00.000Z");
+});
+
+test("an old Done button, whose value is the bare key, still works", async () => {
+  const { deps, client, board } = harness();
+  await handleAction(deps, click({ actionId: "zy_done", value: KEY, blocks: OLD_MESSAGE_BLOCKS }));
+
+  assert.deepEqual(board.singleSelects, [{ projectId: "PVT_1", itemId: "ITEM_1", fieldId: "F_STATUS", optionId: "O_DONE" }]);
+  assert.match(client.updates[0].text, /→ marked Done on the board/);
+});
+
+test("a reply under the briefing is a question: a row is acked by its menu", async () => {
+  const { deps, client, store } = harness();
+  const ask = recordAsk();
+  deps.ask = ask.dispatch;
+
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.5", threadTs: "111.6", text: "what's waiting on others?" });
+  await ask.settled;
+
+  assert.deepEqual(ask.calls, [{ ts: "222.5", question: "what's waiting on others?", threadTs: "111.6" }]);
+  assert.deepEqual(client.posts, [], "nothing says Noted.");
+  assert.equal(store.findByKey(ROW_KEY)?.ackedAt, null);
+});
+
+test("today sends the briefing's text alone: no menus, no separate ping", async () => {
+  const { deps, client } = harness(boardItem({ target: "2026-11-27" }));
+  await handleMessage(deps, { userId: "U_ZY", channel: "D", ts: "222.2", threadTs: null, text: "today" });
+
+  assert.equal(client.posts.length, 1, "one message, whatever it holds");
+  assert.equal(client.posts[0].blocks, undefined);
+  assert.match(client.posts[0].text, /• <https:\/\/[^>]*notes#52> A: \*due today\*/);
 });

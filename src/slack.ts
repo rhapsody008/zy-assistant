@@ -9,7 +9,7 @@ import { askQuestion, type AskDeps, type AskInput, type AskUi } from "./ask.ts";
 import { errMessage } from "./errors.ts";
 import type { BoardSource } from "./github.ts";
 import { helpReply, type ManualSettings } from "./manual.ts";
-import { plan, type ActionId, type Ping } from "./rules.ts";
+import { plan, type ActionId, type Briefing, type Ping } from "./rules.ts";
 import { STATUS } from "./schema.ts";
 import {
   FOLDER_BLOCK_PREFIX,
@@ -29,15 +29,36 @@ export interface Sent {
   ts: string;
 }
 
+/** A briefing's message, and the rows the scheduler has to record. */
+export interface BriefingSent extends Sent {
+  /**
+   * The ping keys to record: the rows whose row carries a ⋯ menu, and only
+   * those, since a row nobody can click has nothing to handle. A message whose
+   * blocks were refused carries every row here instead (see sendBriefing).
+   */
+  menuKeys: string[];
+}
+
 export interface Sender {
   sendDm(text: string): Promise<Sent>;
   /** target: the item's Target date now, so the move modal opens on it. */
   sendPing(ping: Ping, target: string | null): Promise<Sent>;
+  /** targets: itemId -> the item's Target date now, for the rows' move menu. */
+  sendBriefing(briefing: Briefing, targets: ReadonlyMap<string, string | null>): Promise<BriefingSent>;
+}
+
+/** The ⋯ menu of a row: one section with an overflow on it, nothing more. */
+interface OverflowElement {
+  type: "overflow";
+  action_id: string;
+  options: Array<{ text: { type: "plain_text"; text: string }; value: string }>;
 }
 
 interface SectionBlock {
   type: "section";
   text: { type: "mrkdwn"; text: string };
+  block_id?: string;
+  accessory?: OverflowElement;
 }
 
 interface ContextBlock {
@@ -126,6 +147,20 @@ const MAX_SECTION_TEXT = 2900;
 /** Its private_metadata has a hard cap too, and the ping text rides in it. */
 const MAX_METADATA_TEXT = 2000;
 
+/** The action_id of a row's ⋯ menu, and the prefix of the block that carries its key. */
+export const ROW_ACTION = "zy_row";
+const ROW_PREFIX = "zy_row:";
+
+/** Slack takes at most 50 blocks in a message. */
+const MAX_BLOCKS = 50;
+
+/**
+ * The most rows that can carry a menu. Head, tail and the rest of the rows have
+ * to fit in the same 50 blocks, so how many rows really get one is worked out
+ * from what those leave over, and is never more than this.
+ */
+const MAX_MENU_ROWS = 30;
+
 /** The callback_id of the move-date modal. */
 const MOVE_CALLBACK = "zy_move";
 
@@ -135,6 +170,20 @@ const LABELS: Record<ActionId, string> = {
   done: "✅ Done",
   touch1: "Tomorrow",
   touch7: "+7 days",
+};
+
+/**
+ * The row menu's labels, one per action. A menu is a list, not a row of buttons,
+ * so the words are the plain ones; the buttons under an evening ping keep theirs.
+ * A new ActionId has to be added here, and the five-option limit in the tests
+ * then fails until it is dealt with.
+ */
+export const ROW_LABELS: Record<ActionId, string> = {
+  ack: "Got it",
+  done: "Done",
+  touch1: "+1 day",
+  touch7: "+7 days",
+  move: "Move date…",
 };
 
 /** Slack rejects a select with more than 100 options. */
@@ -226,6 +275,115 @@ export function pingBlocks(ping: Ping, target: string | null): Block[] {
   return [section(truncate(ping.text)), actions(buttonValue(ping.key, target), ping.actions)];
 }
 
+/** One entry of a row's ⋯ menu: the words a person reads, and what the click carries. */
+export interface RowOption {
+  label: string;
+  value: string;
+}
+
+/**
+ * A section with a ⋯ menu on it. It knows nothing about items: the caller gives
+ * the words, the block_id it wants back, and the options. The briefing is its
+ * first use; the proposal cards will be its next one.
+ */
+export function rowBlock(text: string, blockId: string, options: readonly RowOption[]): SectionBlock {
+  return {
+    type: "section",
+    block_id: blockId,
+    text: { type: "mrkdwn", text },
+    // Slack takes five, and a sixth would make the whole message invalid: the
+    // options come from the ActionIds, and the labels test fails on a sixth one
+    // long before a menu can be built from it.
+    accessory: {
+      type: "overflow",
+      action_id: ROW_ACTION,
+      options: options.map((option) => ({
+        text: { type: "plain_text", text: option.label },
+        value: option.value,
+      })),
+    },
+  };
+}
+
+/**
+ * A row's menu, in the order its actions came in. The values are short and fixed:
+ * `ack`, `done`, `touch1`, `touch7`, and `move|<the date the modal opens on>`.
+ */
+export function rowOptions(actionIds: readonly ActionId[], target: string | null): RowOption[] {
+  return actionIds.map((id) => ({ label: ROW_LABELS[id], value: id === "move" ? `move|${target ?? ""}` : id }));
+}
+
+/**
+ * The blocks of a briefing: the sections above it, one block per row, the rows
+ * that got no menu, then the sections under it.
+ *
+ * A menu costs a block and Slack takes 50, so only as many rows carry one as the
+ * sections above and below leave room for, at most MAX_MENU_ROWS. The rest are
+ * listed as text: a row nobody can click is still a row to read.
+ */
+export function briefingBlocks(briefing: Briefing, targets: ReadonlyMap<string, string | null>): Block[] {
+  const head: Block[] = [];
+  for (const text of briefing.head) pushSections(head, text);
+  const tail: Block[] = [];
+  for (const text of briefing.tail) pushSections(tail, text);
+
+  for (let menus = Math.min(MAX_MENU_ROWS, briefing.rows.length); ; menus -= 1) {
+    const blocks = [
+      ...head,
+      ...briefing.rows
+        .slice(0, menus)
+        .map((row) => rowBlock(truncate(row.text), `${ROW_PREFIX}${row.key}`, rowOptions(row.actions, targets.get(row.itemId) ?? null))),
+      ...restBlocks(briefing.rows.slice(menus)),
+      ...tail,
+    ];
+    // At no menu at all there is nothing left to give up: head and tail over 50
+    // blocks are a message Slack refuses before any row is in it.
+    if (blocks.length <= MAX_BLOCKS || menus === 0) return blocks;
+  }
+}
+
+/** The rows that got no menu: a heading, then their own lines at a section's length. */
+function restBlocks(rows: readonly Ping[]): Block[] {
+  if (rows.length === 0) return [];
+  const blocks: Block[] = [section(`…${rows.length} more (no menu: message limit)`)];
+  for (const chunk of splitLines(rows.map((row) => `• ${row.text}`).join("\n"))) blocks.push(section(chunk));
+  return blocks;
+}
+
+/** The ping keys whose row carries a menu: the rows that can be clicked at all. */
+export function menuKeys(blocks: readonly Block[]): string[] {
+  return blocks.flatMap((block) =>
+    block.type === "section" && block.block_id?.startsWith(ROW_PREFIX) ? [block.block_id.slice(ROW_PREFIX.length)] : [],
+  );
+}
+
+/** Sections of at most `max` characters, split at a line break: no text is dropped. */
+function pushSections(blocks: Block[], text: string): void {
+  for (const chunk of splitLines(text)) blocks.push(section(chunk));
+}
+
+/** `text` in chunks of at most `max` characters, cut at line breaks where it can. */
+export function splitLines(text: string, max = MAX_SECTION_TEXT): string[] {
+  const chunks: string[] = [];
+  let chunk = "";
+  for (const piece of text.split("\n").flatMap((line) => (line.length <= max ? [line] : sliceLine(line, max)))) {
+    if (chunk !== "" && chunk.length + 1 + piece.length > max) {
+      chunks.push(chunk);
+      chunk = "";
+    }
+    chunk = chunk === "" ? piece : `${chunk}\n${piece}`;
+  }
+  if (chunk !== "" || chunks.length === 0) chunks.push(chunk);
+  return chunks;
+}
+
+/** A line longer than a section takes, cut anywhere: nothing is lost. */
+function sliceLine(line: string, max: number): string[] {
+  const pieces: string[] = [];
+  for (let at = 0; at < line.length; at += max) pieces.push(line.slice(at, at + max));
+  return pieces;
+}
+
 /** The buttons of a message we sent, so a failed click can keep them. */
 function keptActions(blocks: unknown, value: ButtonValue): ActionsBlock | null {
   const ids: ActionId[] = [];
@@ -281,10 +439,32 @@ export interface HandlerDeps {
   log: (line: string) => void;
   /** What the manual quotes: the two slot times, the notes repo, the live policy. */
   manual: ManualSettings;
+  /** The last blocks of each briefing we still edit, and one edit at a time per message. */
+  rows: RowEdits;
   /** The scribe, when LLM_BASE_URL and friends are set: null turns "note: ..." off. */
   scribe?: ScribeDispatch | null;
   /** The ask, when the LLM is set: null answers a question with the hint again. */
   ask?: AskDispatch | null;
+}
+
+/**
+ * A briefing's rows are edited in place, so the blocks of the message have to be
+ * kept: `blocks` is the last state written per message ts (the last
+ * CACHED_MESSAGES of them, oldest dropped), and `queues` serializes the updates
+ * of one message so two quick clicks cannot each write a stale copy.
+ * It is in memory only: after a restart the click's own copy is the fallback, and
+ * a move submitted from a menu it cannot place is said in the thread instead.
+ */
+export interface RowEdits {
+  blocks: Map<string, Block[]>;
+  queues: Map<string, Promise<void>>;
+}
+
+/** How many messages have their blocks kept: one edit each, and no unbounded map. */
+const CACHED_MESSAGES = 20;
+
+export function rowEdits(): RowEdits {
+  return { blocks: new Map(), queues: new Map() };
 }
 
 /** The scribe, called without being awaited: Slack wants its three seconds. */
@@ -323,44 +503,267 @@ const askOn = (deps: HandlerDeps): boolean => deps.ask !== null && deps.ask !== 
 /** True when a dictation would be scribed: the note topic and the note: line. */
 const scribeOn = (deps: HandlerDeps): boolean => deps.scribe !== null && deps.scribe !== undefined;
 
-/** A button click. Only ZY's clicks do anything; ZY's click is the board approval. */
-export async function handleAction(deps: HandlerDeps, click: ActionClick): Promise<void> {
-  if (click.userId !== deps.userId) return;
-  const actionId = parseActionId(click.actionId);
-  const button = parseButtonValue(click.value);
-  if (!actionId || !button || !click.channel || !click.ts) return;
+/**
+ * What a click has in common with a menu pick once it is parsed: the action and
+ * the ping it is about, and where the message is. `row` says which of the two it
+ * is, since only a row has a menu to keep and a row to edit.
+ */
+interface Pick {
+  action: ActionId;
+  key: string;
+  target: string | null; // the date a move modal opens on
+  userId: string;
+  channel: string;
+  ts: string;
+  blocks: unknown; // the message as Slack sent it
+  text: string | null; // the message's own text, for a button's move modal
+  triggerId: string | null;
+  row: boolean;
+}
 
-  const ping = deps.store.findByKey(button.key);
+/** How a pick's outcome is shown: a button redraws its message, a row edits itself. */
+interface PickUi {
+  /** The board write is done: `result` is the line it earned. */
+  done(result: string): Promise<void>;
+  /** The board write failed: the buttons stay for a retry, or the thread says so. */
+  failed(error: string): Promise<void>;
+}
+
+/**
+ * The work behind a button and behind a menu pick: whose click it is, which ping
+ * it is about, the move modal, the board write, the ack and the log line. Only
+ * how the outcome is shown differs (PickUi).
+ *
+ * A pick on a row already handled writes nothing: the first pick is what counts.
+ * The buttons path predates that guard and keeps its old behaviour: a second
+ * press writes the board again, which is idempotent for all five actions.
+ */
+async function runPick(deps: HandlerDeps, pick: Pick, ui: PickUi): Promise<void> {
+  if (pick.userId !== deps.userId) return;
+  const what = pick.row ? "row" : "button";
+
+  const ping = deps.store.findByKey(pick.key);
   if (!ping) {
-    deps.log(`button ${actionId}: unknown ping ${button.key}`);
+    deps.log(`${what} ${pick.action}: unknown ping ${pick.key}`);
+    return;
+  }
+
+  if (pick.row && ping.ackedAt) {
+    deps.log(`row ${pick.action} on ${pick.key}: already handled, this pick does nothing`);
+    await replyInThread(deps, pick.channel, pick.ts, "already handled");
     return;
   }
 
   // Moving a date needs a date and a reason: the modal collects both, and the
   // ping is only acked when its own view is submitted.
-  if (actionId === "move") {
-    await openMoveModal(deps, click, ping, button.target);
+  if (pick.action === "move") {
+    await openMoveModal(deps, {
+      triggerId: pick.triggerId,
+      channel: pick.channel,
+      ts: pick.ts,
+      key: ping.key,
+      target: pick.target,
+      // A row carries its own words; a button's message carries its text.
+      text: pick.row ? rowText(deps.rows, pick.ts, pick.key, pick.blocks) : truncate(originalText(pick.blocks, pick.text), MAX_METADATA_TEXT),
+      ...(pick.row ? { row: true } : {}),
+    });
     return;
   }
 
-  const text = originalText(click.blocks, click.text);
   let result: string;
   try {
-    result = await applyAction(deps, actionId, ping);
+    result = await applyAction(deps, pick.action, ping);
   } catch (err) {
-    // The board write failed: say so and keep the buttons so the click can be retried.
-    const failure = `→ failed: ${errMessage(err)}`;
-    deps.log(`button ${actionId} on ${button.key} failed: ${errMessage(err)}`);
-    const kept = keptActions(click.blocks, button);
-    await updateMessage(deps, click.channel, click.ts, `${text}\n${failure}`, [section(text), ...(kept ? [kept] : []), context(failure)]);
+    deps.log(`${what} ${pick.action} on ${pick.key} failed: ${errMessage(err)}`);
+    await ui.failed(errMessage(err));
     return;
   }
 
-  deps.store.markAcked(button.key, deps.now().toISOString());
-  deps.log(`button ${actionId} on ${ping.itemId} by ${click.userId}`);
-  // The write is done: if the message update fails it is only cosmetic.
-  await updateMessage(deps, click.channel, click.ts, `${text}\n→ ${result}`, [section(text), context(`→ ${result}`)]);
+  deps.store.markAcked(pick.key, deps.now().toISOString());
+  deps.log(`button ${pick.action} on ${ping.itemId} by ${pick.userId}`);
+  await ui.done(result);
 }
+
+/** A button click. Only ZY's clicks do anything; ZY's click is the board approval. */
+export async function handleAction(deps: HandlerDeps, click: ActionClick): Promise<void> {
+  const actionId = parseActionId(click.actionId);
+  const button = parseButtonValue(click.value);
+  const { channel, ts } = click;
+  if (!actionId || !button || !channel || !ts) return;
+  const text = originalText(click.blocks, click.text);
+
+  await runPick(
+    deps,
+    { action: actionId, key: button.key, target: button.target, userId: click.userId, channel, ts, blocks: click.blocks, text: click.text, triggerId: click.triggerId, row: false },
+    {
+      async done(result) {
+        // The write is done: if the message update fails it is only cosmetic.
+        await updateMessage(deps, channel, ts, `${text}\n→ ${result}`, [section(text), context(`→ ${result}`)]);
+      },
+      async failed(error) {
+        // Say so and keep the buttons, so the click can be retried.
+        const failure = `→ failed: ${error}`;
+        const kept = keptActions(click.blocks, button);
+        await updateMessage(deps, channel, ts, `${text}\n${failure}`, [section(text), ...(kept ? [kept] : []), context(failure)]);
+      },
+    },
+  );
+}
+
+/**
+ * A pick from a row's ⋯ menu. The ping key rides in the block_id, the action and
+ * the date a move opens on in the option's value. The row is replaced in place,
+ * so the rest of the briefing keeps its menus.
+ */
+export async function handleRowAction(deps: HandlerDeps, click: RowClick): Promise<void> {
+  const pick = parseRowValue(click.value);
+  const key = rowKeyOf(click.blockId);
+  const { channel, ts } = click;
+  if (!pick || key === null || !channel || !ts) return;
+
+  await runPick(
+    deps,
+    { action: pick.action, key, target: pick.target, userId: click.userId, channel, ts, blocks: click.blocks, text: null, triggerId: click.triggerId, row: true },
+    {
+      async done(result) {
+        // The row is edited where it stands. Without the blocks (a restart in
+        // between) the row is left as it is and the thread carries the line.
+        if (!(await markRow(deps, channel, ts, key, `→ ${result}`, click.blocks))) {
+          await replyInThread(deps, channel, ts, `→ ${result}`);
+        }
+      },
+      async failed(error) {
+        // The board write failed: the menu stays, so the pick can be made again.
+        await replyInThread(deps, channel, ts, `→ failed: ${error}`);
+      },
+    },
+  );
+}
+
+/** What a menu pick carries: the ping key is in the block, the rest in the value. */
+export interface RowClick {
+  value: string | null; // selected_option.value: "ack", "move|2026-12-02"
+  blockId: string | null; // "zy_row:<ping key>"
+  userId: string;
+  channel: string | null;
+  ts: string | null;
+  blocks: unknown; // the message as Slack sent it, for a row the cache has forgotten
+  triggerId: string | null; // needed to open the move modal from the menu
+}
+
+interface RowValue {
+  action: ActionId;
+  target: string | null;
+}
+
+/** "ack" -> ack, "move|2026-12-02" -> move on that date, anything else -> null. */
+function parseRowValue(raw: string | null): RowValue | null {
+  if (!raw) return null;
+  const [word, date = ""] = raw.split("|");
+  if (!isActionId(word)) return null;
+  return { action: word, target: date === "" ? null : date };
+}
+
+const isActionId = (word: string): word is ActionId => Object.prototype.hasOwnProperty.call(ROW_LABELS, word);
+
+/** The ping key in a row's block_id, or null when the block is no row of ours. */
+function rowKeyOf(blockId: string | null): string | null {
+  if (!blockId || !blockId.startsWith(ROW_PREFIX)) return null;
+  const key = blockId.slice(ROW_PREFIX.length);
+  return key === "" ? null : key;
+}
+
+/**
+ * Replaces one row of a message with its text and `line` under it, and leaves the
+ * other rows alone. The blocks come from the last state we wrote, or from the
+ * click when the cache has none (a restarted bot still gets the click's copy).
+ * Updates of one message are serialized: two quick clicks cannot each write over
+ * the other's edit with a copy that has forgotten it.
+ */
+async function markRow(
+  deps: HandlerDeps,
+  channel: string,
+  ts: string,
+  key: string,
+  line: string,
+  fallback: unknown,
+): Promise<boolean> {
+  const previous = deps.rows.queues.get(ts) ?? Promise.resolve();
+  const edit = previous.then(() => replaceRow(deps, channel, ts, key, line, fallback));
+  // The queue holds one entry per message while an edit is in flight, and no
+  // entry once it is done: a bot that runs for weeks would otherwise keep a
+  // settled promise for every message it ever edited.
+  const entry: Promise<void> = edit.then(
+    () => {},
+    () => {},
+  );
+  deps.rows.queues.set(ts, entry);
+  void entry.finally(() => {
+    if (deps.rows.queues.get(ts) === entry) deps.rows.queues.delete(ts);
+  });
+  return edit;
+}
+
+/** One row's edit, unless that row is not in the blocks we can see. */
+async function replaceRow(
+  deps: HandlerDeps,
+  channel: string,
+  ts: string,
+  key: string,
+  line: string,
+  fallback: unknown,
+): Promise<boolean> {
+  const blocks = cachedBlocks(deps.rows, ts, fallback);
+  if (!blocks) return false;
+  const at = blocks.findIndex((block) => block.type === "section" && block.block_id === `${ROW_PREFIX}${key}`);
+  const before = blocks[at];
+  if (at < 0 || before?.type !== "section") return false;
+
+  const next = blocks.slice();
+  next[at] = section(`${before.text.text}\n${line}`);
+  try {
+    await deps.client.chat.update({ channel, ts, text: blocksText(next), blocks: next });
+  } catch (err) {
+    // The board write is done; a failed edit only leaves the menu showing. The
+    // cache keeps the message as it is: an edit Slack never took must not be
+    // built on, and the next pick finds its row where it was.
+    deps.log(`chat.update failed for message ${ts}: ${errMessage(err)}`);
+    return false;
+  }
+  keepBlocks(deps.rows, ts, next);
+  return true;
+}
+
+/** The blocks last written for a message, or the click's own copy the first time. */
+function cachedBlocks(rows: RowEdits, ts: string, fallback: unknown): Block[] | null {
+  const cached = rows.blocks.get(ts);
+  if (cached) return cached;
+  if (!Array.isArray(fallback)) return null;
+  // Slack's own blocks: the platform checked them, so only the shape is asserted.
+  const blocks = fallback as Block[];
+  keepBlocks(rows, ts, blocks);
+  return blocks;
+}
+
+/** Keeps a message's blocks, and forgets the oldest message once there are too many. */
+function keepBlocks(rows: RowEdits, ts: string, blocks: Block[]): void {
+  rows.blocks.set(ts, blocks);
+  for (const oldest of rows.blocks.keys()) {
+    if (rows.blocks.size <= CACHED_MESSAGES) break;
+    if (oldest !== ts) rows.blocks.delete(oldest);
+  }
+}
+
+/** A row's own words, for a modal that has to carry them. "" when it is not there. */
+function rowText(rows: RowEdits, ts: string, key: string, fallback: unknown): string {
+  const blocks = cachedBlocks(rows, ts, fallback);
+  const block = blocks?.find((entry) => entry.type === "section" && entry.block_id === `${ROW_PREFIX}${key}`);
+  return block?.type === "section" ? truncate(block.text.text, MAX_METADATA_TEXT) : "";
+}
+
+/** A message's fallback text, rebuilt from its blocks: what a notification shows. */
+const blocksText = (blocks: readonly Block[]): string =>
+  truncate(blocks.flatMap((block) => (block.type === "section" ? [block.text.text] : [])).join("\n\n"));
 
 /** "note: the workshop settled on x" -> "the workshop settled on x"; else null. */
 export function dictationText(text: string): string | null {
@@ -371,7 +774,7 @@ export function dictationText(text: string): string | null {
 }
 
 /**
- * A DM from ZY, in this order: a dictation is scribed; a reply under a ping acks
+ * A DM from ZY, in this order: a dictation is scribed; a reply under an evening ping acks
  * that ping; `today` and the manual answer; anything else is a question when a
  * model is set, and the one-line hint when it is not.
  */
@@ -386,11 +789,11 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
   }
 
   // A ping's thread is an ack, whatever the words: that is what "Noted." means.
-  // Any other thread (an answer's, a briefing's, a dictation's, a help message's)
-  // is no ack at all, and the question below answers it in that same thread.
+  // Only the evening's pings are one: a briefing row is acked with its own menu,
+  // so a reply under the briefing goes on to be a question like any other.
   if (message.threadTs) {
     const parent = deps.store.findByMessage(message.channel, message.threadTs);
-    if (parent) {
+    if (parent && parent.slot === "E") {
       deps.store.markAcked(parent.key, deps.now().toISOString());
       deps.log(`reply ack ${parent.itemId}`);
       await postMessage(deps, { channel: message.channel, text: "Noted.", thread_ts: message.threadTs });
@@ -423,15 +826,14 @@ export async function handleMessage(deps: HandlerDeps, message: DmMessage): Prom
 }
 
 /**
- * "today": the morning plan as it would go out right now, the briefing first and
- * then each ping it comes with. It writes nothing to the board and records nothing.
+ * "today": the morning briefing as it would go out right now, text only: no
+ * menu, nothing to click, nothing recorded.
  */
 async function sendToday(deps: HandlerDeps, channel: string): Promise<void> {
   const board = await deps.board.fetchBoard(deps.owner, deps.number);
   const today = localNow(deps.now(), TZ).date;
   const preview = plan(board.items, today, "M", []);
-  await postMessage(deps, { channel, text: ["(preview)", preview.briefing ?? ""].join("\n\n").trim() });
-  for (const ping of preview.pings) await postMessage(deps, { channel, text: ping.text });
+  await postMessage(deps, { channel, text: ["(preview)", preview.briefing?.text ?? ""].join("\n\n").trim() });
 }
 
 /**
@@ -479,7 +881,9 @@ async function runScribe(deps: HandlerDeps, message: DmMessage, text: string): P
 async function pingHint(deps: HandlerDeps, message: DmMessage): Promise<string | null> {
   if (!message.threadTs) return null;
   const parent = deps.store.findByMessage(message.channel, message.threadTs);
-  if (!parent) return null;
+  // Only an evening ping's thread names one item: every row of a briefing is
+  // recorded on the briefing's own ts, so that thread names no item in particular.
+  if (!parent || parent.slot !== "E") return null;
   try {
     const board = await deps.board.fetchBoard(deps.owner, deps.number);
     return board.items.find((item) => item.id === parent.itemId)?.title ?? null;
@@ -604,6 +1008,19 @@ export interface MoveMetadata {
   ts: string;
   key: string;
   text: string;
+  /** True when the click came from a briefing row: the row is edited, not the message. */
+  row?: boolean;
+}
+
+/** What opens the modal: the click's trigger_id, where the ping is, and what it says. */
+interface MoveOpen {
+  triggerId: string | null;
+  channel: string | null;
+  ts: string | null;
+  key: string;
+  target: string | null;
+  text: string;
+  row?: boolean;
 }
 
 /** The modal opened by a "Move date" click: a date, and a reason it cannot do without. */
@@ -649,7 +1066,7 @@ function parseMetadata(raw: string | null): MoveMetadata | null {
   if (!isRecord(parsed)) return null;
   const { channel, ts, key, text } = parsed;
   if (typeof channel !== "string" || typeof ts !== "string" || typeof key !== "string" || typeof text !== "string") return null;
-  return { channel, ts, key, text };
+  return { channel, ts, key, text, ...(parsed.row === true ? { row: true } : {}) };
 }
 
 /**
@@ -657,19 +1074,23 @@ function parseMetadata(raw: string | null): MoveMetadata | null {
  * ack(): a trigger_id is good for three seconds, so there is no board read in
  * front of it: the date it opens on rides in the button's value.
  */
-async function openMoveModal(deps: HandlerDeps, click: ActionClick, ping: PingRecord, target: string | null): Promise<void> {
-  const triggerId = click.triggerId;
-  const channel = click.channel;
-  const ts = click.ts;
+async function openMoveModal(deps: HandlerDeps, args: MoveOpen): Promise<void> {
+  const { triggerId, channel, ts } = args;
   if (!triggerId || !channel || !ts) {
-    deps.log(`move ${ping.key}: the click carries no trigger_id`);
+    deps.log(`move ${args.key}: the click carries no trigger_id`);
     return;
   }
-  const meta: MoveMetadata = { channel, ts, key: ping.key, text: truncate(originalText(click.blocks, click.text), MAX_METADATA_TEXT) };
+  const meta: MoveMetadata = {
+    channel,
+    ts,
+    key: args.key,
+    text: args.text,
+    ...(args.row ? { row: true } : {}),
+  };
   try {
-    await deps.client.views.open({ trigger_id: triggerId, view: moveView(meta, target) });
+    await deps.client.views.open({ trigger_id: triggerId, view: moveView(meta, args.target) });
   } catch (err) {
-    deps.log(`move ${ping.key}: views.open failed: ${errMessage(err)}`);
+    deps.log(`move ${args.key}: views.open failed: ${errMessage(err)}`);
   }
 }
 
@@ -749,6 +1170,14 @@ export async function handleMoveSubmit(deps: HandlerDeps, submit: MoveSubmit): P
 
   deps.store.markAcked(meta.key, deps.now().toISOString());
   const line = `Moved to ${fmtDate(date)} (${note})`;
+  if (meta.row) {
+    // A row: edit it where it stands. Without the blocks (a restart in between)
+    // the row is left as it is and the thread carries the line instead.
+    if (!(await markRow(deps, meta.channel, meta.ts, meta.key, `→ ${line}`, null))) {
+      await replyInThread(deps, meta.channel, meta.ts, `→ ${line}`);
+    }
+    return;
+  }
   await updateMessage(deps, meta.channel, meta.ts, `${meta.text}\n→ ${line}`, [section(meta.text), context(`→ ${line}`)]);
 }
 
@@ -788,10 +1217,14 @@ export interface SlackBotOptions {
   ask?: AskDeps | null;
 }
 
+/** Slack's "the blocks you sent are no good", as Bolt throws it. */
+const invalidBlocks = (err: unknown): boolean => isRecord(err) && isRecord(err.data) && err.data.error === "invalid_blocks";
+
 export class SlackBot implements Sender {
   readonly app: App;
   #userId: string;
   #scribe: ScribeDeps | null;
+  #rows: RowEdits;
   #deps: Omit<HandlerDeps, "client">;
 
   constructor(options: SlackBotOptions) {
@@ -799,6 +1232,7 @@ export class SlackBot implements Sender {
     const scribe = options.scribe ?? null;
     const ask = options.ask ?? null;
     this.#scribe = scribe;
+    this.#rows = rowEdits();
     this.#deps = {
       store: options.store,
       board: options.board,
@@ -808,6 +1242,7 @@ export class SlackBot implements Sender {
       now: options.now,
       log: options.log,
       manual: options.manual,
+      rows: this.#rows,
       scribe: scribe === null ? null : (dictation, ui) => scribeHandler(scribe, dictation, ui),
       ask: ask === null ? null : (input, ui) => askQuestion(ask, input, ui),
     };
@@ -825,6 +1260,26 @@ export class SlackBot implements Sender {
       await ack();
       if (body.type !== "block_actions") return;
       if (!("action_id" in action) || typeof action.action_id !== "string") return;
+      if (action.action_id === ROW_ACTION) {
+        // A row's ⋯ menu: the key is in the block, the action in the option.
+        const selected =
+          "selected_option" in action && isRecord(action.selected_option) && typeof action.selected_option.value === "string"
+            ? action.selected_option.value
+            : null;
+        await handleRowAction(
+          { ...this.#deps, client },
+          {
+            value: selected,
+            blockId: "block_id" in action && typeof action.block_id === "string" ? action.block_id : null,
+            userId: body.user.id,
+            channel: body.channel?.id ?? null,
+            ts: body.message?.ts ?? null,
+            blocks: body.message?.blocks,
+            triggerId: body.trigger_id ?? null,
+          },
+        );
+        return;
+      }
       if (action.action_id.startsWith("zy_scribe_")) {
         // A folder choice: a GitHub commit follows, so it is not awaited here.
         if (this.#scribe === null) return;
@@ -933,6 +1388,28 @@ export class SlackBot implements Sender {
     });
     if (!res.ts) throw new Error("chat.postMessage returned no ts");
     return { channel, ts: res.ts };
+  }
+
+  async sendBriefing(briefing: Briefing, targets: ReadonlyMap<string, string | null>): Promise<BriefingSent> {
+    const channel = await this.#dmChannel();
+    const text = truncate(briefing.text);
+    const blocks = briefingBlocks(briefing, targets);
+    try {
+      const res = await this.app.client.chat.postMessage({ channel, text, blocks });
+      if (!res.ts) throw new Error("chat.postMessage returned no ts");
+      // Kept, so a row can be replaced later without rebuilding the message.
+      keepBlocks(this.#rows, res.ts, blocks);
+      return { channel, ts: res.ts, menuKeys: menuKeys(blocks) };
+    } catch (err) {
+      if (!invalidBlocks(err)) throw err;
+      // Slack refused the blocks: the text alone is still the briefing, without
+      // a menu to click. Every row is named all the same, so it is recorded on
+      // this message's ts: the evening's re-ping, the ⚠ line and the chase
+      // window all read the history, and a board update still acks a row.
+      const res = await this.app.client.chat.postMessage({ channel, text });
+      if (!res.ts) throw new Error("chat.postMessage returned no ts");
+      return { channel, ts: res.ts, menuKeys: briefing.rows.map((row) => row.key) };
+    }
   }
 
   async #dmChannel(): Promise<string> {
