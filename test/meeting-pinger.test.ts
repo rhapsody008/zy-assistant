@@ -244,8 +244,10 @@ test("a failed send logs one line, does not throw, and the next run retries only
 });
 
 test("the cap counts the store's own keys: a seventh ask is not made", async () => {
-  // The earliest end first: id 1 ended twelve minutes ago, id 7 six minutes ago.
-  const events = Array.from({ length: 7 }, (_, i) => ended(12 - i, { id: id(i + 1) }));
+  // Thirteen meetings so the cap really is six: a day that full is ceil(13 / 2),
+  // cut at perDay. The earliest end first: id 1 ended forty-four minutes ago, id 13
+  // eight minutes ago.
+  const events = Array.from({ length: 13 }, (_, i) => ended(44 - i * 3, { id: id(i + 1) }));
   const h = await harness(events);
   await h.pinger.run(NOW);
 
@@ -254,6 +256,28 @@ test("the cap counts the store's own keys: a seventh ask is not made", async () 
 
   await h.pinger.run(NOW);
   assert.equal(h.dm.dms.length, 6, "the seventh waits for a day it never gets: the cap is the whole run's");
+  h.store.close();
+});
+
+test("six asks stored under yesterday's date do not shrink today's cap", async () => {
+  const h = await harness([ended(30, { id: id(1) }), ended(20, { id: id(2) }), ended(10, { id: id(3) })]);
+  // Yesterday's six, still in the store: the keys are read for the tick's own date,
+  // so a crowded yesterday is not today's spent cap.
+  const yesterday = (n: number): NewMeetingPing => ({
+    key: `meeting:${id(100 + n)}`,
+    eventId: id(100 + n),
+    date: "2026-11-30",
+    title: "Acme weekly sync",
+    sentAt: "2026-11-30T02:00:00.000Z",
+    channel: "DM",
+    ts: `old-${n}`,
+  });
+  for (let n = 1; n <= 6; n += 1) h.store.recordMeetingPing(yesterday(n));
+
+  await h.pinger.run(NOW);
+  assert.equal(h.dm.dms.length, 3, "today's three meetings, three asks");
+  assert.deepEqual(h.store.meetingPingKeys("2026-12-01"), new Set([`meeting:${id(1)}`, `meeting:${id(2)}`, `meeting:${id(3)}`]));
+  assert.equal(h.store.meetingPingKeys("2026-11-30").size, 6, "and yesterday's six are still there");
   h.store.close();
 });
 

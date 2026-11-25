@@ -50,6 +50,7 @@ import {
   type ViewsOpenArgs,
 } from "../src/slack.ts";
 import type { ManualSettings } from "../src/manual.ts";
+import { MEETING_POLICY } from "../src/meeting-pings.ts";
 import {
   cardText,
   proposalValue,
@@ -206,6 +207,7 @@ function harness(item: Item | null = null) {
     ask: false,
     calendar: false,
     calendarPings: false,
+    meetings: MEETING_POLICY,
     policy: DEFAULT_POLICY,
   };
   const deps: HandlerDeps = {

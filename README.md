@@ -126,7 +126,7 @@ or a time.
 | `ADD_REPO` | `run` | – (owner/repo: where an `add:` item's issue is created; with the three `LLM_*` variables it turns `add:` on) |
 | `NOTE_ITEMS` | `run` | – (`on`: a committed note's actions are offered as board items; any other value is off. It needs the scribe and `ADD_REPO`, and without either it is a startup error) |
 | `CALENDAR_FILE` | `run`, `ask`, `calendar` | – (an absolute path to the calendar snapshot the Mac pushes as a ConfigMap; the ask reads it too; unset turns the calendar off) |
-| `CALENDAR_PINGS` | `run` | – (`on`: one DM asking how each meeting that has ended went, and the day's meetings in the briefing; any other value is off. It needs `CALENDAR_FILE` and the scribe, and without either it is a startup error naming what is missing) |
+| `CALENDAR_PINGS` | `run` | – (`on`: DMs asking how some of the day's meetings went, the longest first, and the day's meetings in the briefing; any other value is off. It needs `CALENDAR_FILE` and the scribe, and without either it is a startup error naming what is missing) |
 | `WAITING_CHASE_DAYS` | | `5` (a Waiting item with no update for longer is chased) |
 | `STAGE_STALE_DAYS` | | `21` (a pipeline item with no update for longer is nagged on Friday) |
 | `LLM_BASE_URL` | `scribe`, `ask`, `check`, `run` | – (an OpenAI-compatible gateway, e.g. `https://<host>/enterpriseai/gateway/v1`) |
@@ -475,21 +475,34 @@ value is exactly `on`: on without `CALENDAR_FILE`, or without the scribe, is a
 startup error naming what is missing, because the ask needs a snapshot to ask
 about and a note to file the answer as.
 
-*The ask.* When a meeting that the Mac exported has ended, the bot sends one DM
-about it:
+*The ask.* When a meeting that the Mac exported has ended, the bot may send one
+DM about it:
 
 ```
 「Acme weekly sync」 ended at 09:30 (09:00–09:30, 6 attendees). How did it go? Reply in this thread and I'll file it as a note about that meeting.
 ```
 
-A meeting is asked about when it is today's, on a weekday, not all-day, has at
-least one attendee, ended 5 to 45 minutes ago, and ended between 08:00 and 19:00
-local: at most six a day, earliest first, and never twice — the `meeting_pings`
-table holds each ask, so a restart does not re-ask. A reply in that thread is
-filed as a note by the scribe, with the meeting's title as the note's topic, and
-the note's `### Actions` become board items as in **Board items from a note**.
-Any words count: the ask is not a menu, and a `note:` or an `add:` typed in that
-thread still wins.
+Not every meeting gets one. The day's askable meetings are what the cap counts:
+today's, on a weekday, not all-day, with at least one attendee, 20 minutes or
+longer, and ending between 08:00 and 19:00 local. An invitation ZY never answered
+is neither counted nor asked about. The set is the whole day's rather than what
+happens to be due when the bot looks, so a meeting whose ask was missed while the
+bot was down still uses up its place. The cap is
+`min(6, max(4, ceil(askable / 2)))`: 8 or fewer askable meetings leave the cap at
+4, 9 or 10 put it at 5, and 11 or more at 6.
+
+The cap is spent on the longest of them first, a tie going to the more attended,
+then to the earlier end, then to the event id, so the same day is chosen the same
+way whatever order the Mac's pushes arrive in. When an ask goes out is a separate
+question: only a meeting that ended 5 to 45 minutes ago is asked about now,
+because a fresher one has ZY still walking out of the room and an older one is
+news the bot missed while it was down. The asks go out in the order the meetings
+ended, and never twice, because the `meeting_pings` table holds each ask, so a
+restart does not re-ask. A short meeting that was only a check-in is never a
+question at all. A reply in that thread is filed as a note by the scribe, with the
+meeting's title as the note's topic, and the note's `### Actions` become board
+items as in **Board items from a note**. Any words count: the ask is not a menu,
+and a `note:` or an `add:` typed in that thread still wins.
 
 An expired or never-pushed snapshot asks nothing: an expired window holds
 yesterday's meetings, and asking how yesterday's went is worse than silence.

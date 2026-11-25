@@ -6,8 +6,9 @@
 // An ask is a question, so every limit here is about not asking a false one: a
 // meeting that has just ended needs a few minutes before "how did it go?" means
 // anything, one that ended while the bot was down is a stale ask that reads as
-// the bot inventing news, and a Saturday asks nothing because the scheduler's
-// slots are weekdays only.
+// the bot inventing news, a Saturday asks nothing because the scheduler's slots
+// are weekdays only, and a meeting of a few minutes was a check-in that was
+// answered by being held, so it is not a question at all.
 //
 // The snapshot is the intake's, so its freshness decides what is worth saying: an
 // expired window holds yesterday's meetings and "how did it go?" about yesterday
@@ -50,18 +51,28 @@ export interface MeetingPolicy {
   catchUpMinutes: number; // and give up after this long (default 45)
   earliestEnd: string; // HH:MM; a meeting ending before this is not asked about (default "08:00")
   latestEnd: string; // HH:MM; nor after this (default "19:00")
-  perDay: number; // at most this many asks a day (default 6)
+  perDay: number; // at most this many asks a day, however full the day (default 6)
+  perDayFloor: number; // and room for at least this many, however light the day (default 4)
+  meetingsPerAsk: number; // one ask for every this many askable meetings of the day, rounded up (default 2)
   minAttendees: number; // skip what looks like a personal block (default 1)
+  minMinutes: number; // a meeting shorter than this is a check-in, not a question (default 20)
 }
 
-/** Today's behaviour, as data: the caller may override any of it. */
-const DEFAULT_POLICY: MeetingPolicy = {
+/**
+ * Today's behaviour, as data: the caller may override any of it. It is exported
+ * because the manual quotes these numbers instead of a second copy of them, so
+ * what the bot does and what it says it does cannot drift apart.
+ */
+export const MEETING_POLICY: MeetingPolicy = {
   graceMinutes: 5,
   catchUpMinutes: 45,
   earliestEnd: "08:00",
   latestEnd: "19:00",
   perDay: 6,
+  perDayFloor: 4,
+  meetingsPerAsk: 2,
   minAttendees: 1,
+  minMinutes: 20,
 };
 
 /** "HH:MM" from minutes since local midnight. */
@@ -106,6 +117,52 @@ function pingText(event: CalendarEvent): string {
 }
 
 /**
+ * Whether an event is ever a candidate for an ask today, apart from how long ago
+ * it ended: an all-day block and a solo hold are not meetings, an invitation ZY
+ * never answered is nothing to ask about, a meeting too short to have been a
+ * conversation is a check-in, and only a meeting that ended on `today`, inside
+ * the workday, is a question about work. Pure.
+ */
+function askable(event: CalendarEvent, today: string, policy: MeetingPolicy): boolean {
+  // An all-day block has no "how did it go", and a solo hold is not a meeting.
+  if (event.allDay || event.attendees < policy.minAttendees) return false;
+  // An invitation ZY never answered is no meeting to ask "how did it go?" about:
+  // there is nothing to ask about a meeting that may not happen. The briefing is
+  // the other way round and keeps every status, `none` included: it is his day,
+  // and an unanswered invite is exactly what he needs to see there.
+  if (event.status === "none") return false;
+  // A meeting of a few minutes is a check-in that was answered by being held, so
+  // there is nothing left to ask. A start or an end that does not parse cannot
+  // reach here at all: the snapshot is validated whole before it is held, so a
+  // value that does not parse is refused there and never becomes an event.
+  if (Date.parse(event.end) - Date.parse(event.start) < policy.minMinutes * MINUTE) return false;
+  // The local date of the end, never of the start: a meeting that began yesterday
+  // and ends today is today's, and one still running at midnight is not.
+  const end = localNow(new Date(event.end), TZ);
+  if (end.date !== today) return false;
+  // A meeting ending before the workday or after it is not a question about work.
+  if (end.minutes < parseHHMM(policy.earliestEnd) || end.minutes > parseHHMM(policy.latestEnd)) return false;
+  return true;
+}
+
+/**
+ * The day's meetings in the order the cap is spent on them: the longest first,
+ * then the most attended, then the earliest end, then the id. The id last is what
+ * makes the order total, so no pair of meetings can fall back to the snapshot's
+ * order, which is the Mac's push order and can swap two double-booked meetings
+ * between one push and the next. The same day ranks the same way, at 09:00 and at
+ * 17:00, whatever order it arrives in. Pure.
+ */
+function byWorth(a: CalendarEvent, b: CalendarEvent): number {
+  return (
+    Date.parse(b.end) - Date.parse(b.start) - (Date.parse(a.end) - Date.parse(a.start)) ||
+    b.attendees - a.attendees ||
+    Date.parse(a.end) - Date.parse(b.end) ||
+    (a.id < b.id ? -1 : 1)
+  );
+}
+
+/**
  * The asks this moment owes, earliest end first. `sent` is the keys the caller
  * has already stored, and it is the only memory of the day: a key that is in it
  * is never offered again, and the day's cap counts the meeting ones in it.
@@ -122,7 +179,7 @@ export function planMeetingPings(args: {
   // that is already a note. A stale one is used as it stands.
   if (state === null || state.freshness === "expired") return { pings: [] };
 
-  const policy: MeetingPolicy = { ...DEFAULT_POLICY, ...args.policy };
+  const policy: MeetingPolicy = { ...MEETING_POLICY, ...args.policy };
   const today = localNow(now, TZ).date;
   // The scheduler's slots are weekdays only: asking on a Saturday about a Saturday
   // meeting would be the bot inventing work.
@@ -131,28 +188,46 @@ export function planMeetingPings(args: {
   const nowMs = now.getTime();
   const graceMs = nowMs - policy.graceMinutes * MINUTE;
   const catchUpMs = nowMs - policy.catchUpMinutes * MINUTE;
-  const earliest = parseHHMM(policy.earliestEnd);
-  const latest = parseHHMM(policy.latestEnd);
+
+  // The day's cap comes from the whole day, not from the asks in flight: a ceiling
+  // counted from what is due this minute would drift as the day went on, and the
+  // same day would answer differently at 09:00 and at 17:00. What it counts is the
+  // meetings that can be asked about at all, so the number the briefing lists is
+  // not the number this uses: the briefing keeps the short meetings and the
+  // unanswered invites on purpose. A meeting whose ask was missed while the bot was
+  // down is still one of the day's meetings, so it counts here even though it is
+  // never asked about now.
+  const askableToday = state.snapshot.events.filter((event) => askable(event, today, policy));
+  const cap = Math.min(
+    policy.perDay,
+    Math.max(policy.perDayFloor, Math.ceil(askableToday.length / policy.meetingsPerAsk)),
+  );
+
+  // Which of the day's meetings the cap is spent on: the ones worth a note. Not by
+  // lateness, which is how the day used to be taken: the cap first binds at five
+  // askable meetings, and slicing the earliest ends spent it on the morning while the
+  // afternoon was silently never asked about. The longest meeting of the day is the
+  // one a note is worth most, so length ranks first, and a tie falls back to
+  // attendees, then to the end, then to the id, so the order is never the snapshot's.
+  // What that costs is a short meeting that has already ended, outranked by a longer
+  // one later in the same day that has not happened yet: it is never asked about, and
+  // it is still in the briefing. Fewer asks is the point of the release.
+  const chosen = new Set(
+    // A copy of the day's list, not the snapshot's array: the snapshot is the intake's.
+    [...askableToday]
+      .sort(byWorth)
+      .slice(0, cap)
+      .map((event) => event.id),
+  );
 
   const due: CalendarEvent[] = [];
-  for (const event of state.snapshot.events) {
-    // An all-day block has no "how did it go", and a solo hold is not a meeting.
-    if (event.allDay || event.attendees < policy.minAttendees) continue;
-    // An invitation ZY never answered is no meeting to ask "how did it go?" about:
-    // there is nothing to ask about a meeting that may not happen. The briefing is
-    // the other way round and keeps every status, `none` included: it is his day,
-    // and an unanswered invite is exactly what he needs to see there.
-    if (event.status === "none") continue;
-    // The local date of the end, never of the start: a meeting that began yesterday
-    // and ends today is today's, and one still running at midnight is not.
-    const end = localNow(new Date(event.end), TZ);
-    if (end.date !== today) continue;
-    const endMs = Date.parse(event.end);
+  for (const event of askableToday) {
     // Too soon and ZY is still walking out of the room; too late and the bot was
     // down, and a stale ask is worse than none.
+    const endMs = Date.parse(event.end);
     if (endMs > graceMs || endMs < catchUpMs) continue;
-    // A meeting ending before the workday or after it is not a question about work.
-    if (end.minutes < earliest || end.minutes > latest) continue;
+    // Not one of the day's chosen few: the cap is for the meetings worth a note.
+    if (!chosen.has(event.id)) continue;
     // Already asked about: the key is the ask, so a second one is a second DM.
     if (args.sent.has(`${KEY_PREFIX}${event.id}`)) continue;
     due.push(event);
@@ -164,7 +239,7 @@ export function planMeetingPings(args: {
   // ones is counting today's asks: a key carries no date of its own to read twice,
   // and the set starts again empty at the day's first tick.
   const asked = [...args.sent].filter((key) => key.startsWith(KEY_PREFIX)).length;
-  const room = Math.max(0, policy.perDay - asked);
+  const room = Math.max(0, cap - asked);
 
   const pings = due.slice(0, room).map(
     (event): MeetingPing => ({
@@ -212,7 +287,7 @@ export function meetingSection(state: CalendarState | null, today: string): stri
     // The status is not filtered at all, and that part differs on purpose: every
     // answer, `none` included, is ZY's day, and an invitation he has not answered is
     // exactly what the section is for. The asks skip `none`.
-    .filter((event) => event.attendees >= DEFAULT_POLICY.minAttendees)
+    .filter((event) => event.attendees >= MEETING_POLICY.minAttendees)
     // Ordered by start: the day as it runs, whatever order the snapshot holds.
     .sort((a, b) => Date.parse(a.start) - Date.parse(b.start) || Date.parse(a.end) - Date.parse(b.end));
   if (events.length === 0) return [];

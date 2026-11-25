@@ -31,7 +31,7 @@ import { Health } from "./health.ts";
 import { openaiCompatible } from "./llm.ts";
 import type { ManualSettings } from "./manual.ts";
 import { createMeetingPinger } from "./meeting-pinger.ts";
-import { meetingSection } from "./meeting-pings.ts";
+import { MEETING_POLICY, meetingSection } from "./meeting-pings.ts";
 import { createNotesClient } from "./notes.ts";
 import { DEFAULT_POLICY, plan, type Slot } from "./rules.ts";
 import { requiredProblems, STATUS, validateSchema, type SchemaReport } from "./schema.ts";
@@ -59,6 +59,7 @@ function manualSettings(config: Config): ManualSettings {
     ask: config.llm !== null,
     calendar: config.calendarFile !== null,
     calendarPings: config.calendarPings,
+    meetings: MEETING_POLICY,
     policy: { ...DEFAULT_POLICY, ...config.policy },
   };
 }

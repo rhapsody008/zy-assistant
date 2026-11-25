@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { helpReply, manualTopics, overviewBlocks, overviewText, type ManualSettings } from "../src/manual.ts";
+import { MEETING_POLICY } from "../src/meeting-pings.ts";
 import { DEFAULT_POLICY, type Policy } from "../src/rules.ts";
 
 /** What the bot runs with when nothing overrides it. */
@@ -19,6 +20,7 @@ const DEFAULTS: ManualSettings = {
   ask: true,
   calendar: false,
   calendarPings: false,
+  meetings: MEETING_POLICY,
   policy: DEFAULT_POLICY,
 };
 
@@ -372,10 +374,9 @@ test("the meeting ask and the briefing's meetings are only there when CALENDAR_P
   const settings: ManualSettings = { ...DEFAULTS, calendarPings: true };
   const on = overviewText(settings, true);
   assert.match(on, /• It also lists today's meetings under the rows, one line each: `• 09:00 Acme weekly sync`, an all-day one as `• all day Offsite`\./);
-  assert.match(
-    on,
-    /• When a meeting the calendar exported has ended, one DM about it: `「Acme weekly sync」 ended at 09:30 \(09:00–09:30, 6 attendees\)\. How did it go\?` Your reply in that thread is filed as a note about that meeting, and the note's actions are offered as board items\./,
-  );
+  const ask =
+    "• When a meeting the calendar exported has ended, I ask about some of them: only a meeting of 20 minutes or more that ended on a weekday between `08:00` and `19:00`, and the day has a cap of 4 to 6 asks, spent on the longest meetings first, so a full day gets fewer asks than meetings. The DM looks like this: `「Acme weekly sync」 ended at 09:30 (09:00–09:30, 6 attendees). How did it go?` Your reply in that thread is filed as a note about that meeting, and the note's actions are offered as board items.";
+  assert.ok(on.split("\n").includes(ask), "the ask line, whole and on a line of its own");
 
   const today = helpReply(settings, true, "today").text;
   assert.match(today, /• \*Today's meetings\*, from the calendar snapshot: one line per meeting today/);
@@ -390,6 +391,23 @@ test("the meeting ask and the briefing's meetings are only there when CALENDAR_P
 
   fits(overviewBlocks(settings, true));
   fits(helpReply(settings, true, "today").blocks);
+});
+
+test("the ask line quotes the meeting limits it is built with, never a copy of the defaults", () => {
+  const settings: ManualSettings = {
+    ...DEFAULTS,
+    calendarPings: true,
+    meetings: { ...MEETING_POLICY, minMinutes: 30, perDayFloor: 2, perDay: 4 },
+  };
+  const line =
+    overviewText(settings, true)
+      .split("\n")
+      .find((text) => text.startsWith("• When a meeting the calendar exported has ended")) ?? "";
+
+  assert.match(line, /only a meeting of 30 minutes or more/);
+  assert.match(line, /a cap of 2 to 4 asks/);
+  assert.doesNotMatch(line, /20 minutes|4 to 6/, "nothing of the defaults survives, and the line is still one line");
+  fits(overviewBlocks(settings, true));
 });
 
 test("the README quotes the overview the bot sends", () => {

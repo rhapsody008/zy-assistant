@@ -4,18 +4,22 @@
 // the 0.4.1 overview listed the automatic messages next to the commands and ZY
 // tried to type a ping. Then "help <topic>" opens the page behind a topic. Every
 // number the text quotes is taken from the settings it is built with (the live
-// policy and the two slot times), so the manual cannot drift from what the bot
-// does. The note line and the note topic exist only when the scribe is on, the add
-// line and the add topic only when ADD_REPO is set, the ask line and the ask topic
-// only when a model is set, the calendar in both only when CALENDAR_FILE is, the
-// notes-repo ack line in "updates" only when NOTES_REPO is set, and the ask after a
-// meeting and the briefing's meetings only when CALENDAR_PINGS is: the manual
-// describes this deployment, not every deployment.
+// policy, the meeting limits and the two slot times), so the manual cannot drift
+// from what the bot does. The note line and the note topic exist only when the
+// scribe is on, the add line and the add topic only when ADD_REPO is set, the ask
+// line and the ask topic only when a model is set, the calendar in both only when
+// CALENDAR_FILE is, the notes-repo ack line in "updates" only when NOTES_REPO is
+// set, and the ask after a meeting and the briefing's meetings only when
+// CALENDAR_PINGS is: the manual describes this deployment, not every deployment.
 
+import type { MeetingPolicy } from "./meeting-pings.ts";
 import type { Policy } from "./rules.ts";
 import { TZ } from "./time.ts";
 
-/** The live setup the manual quotes: the two slot times and the policy. */
+/**
+ * The live setup the manual quotes: the two slot times, the policy and the meeting
+ * limits.
+ */
 export interface ManualSettings {
   briefTime: string; // HH:MM, BRIEF_TIME
   eodTime: string; // HH:MM, EOD_TIME
@@ -36,6 +40,12 @@ export interface ManualSettings {
    * briefing's meetings block. Off, the two are what the manual said before them.
    */
   calendarPings: boolean;
+  /**
+   * The limits the post-meeting ask runs with: the min minutes, the day's cap and
+   * its floor, and the workday's ends. The ask line quotes these, so the manual
+   * says what the planner does rather than a copy of it.
+   */
+  meetings: MeetingPolicy;
   policy: Policy;
 }
 
@@ -304,6 +314,7 @@ function typedBlock(settings: ManualSettings, scribe: boolean): ManualBlock {
 /** The overview's second part: what arrives on its own. Nothing here is a command. */
 function sentBlock(settings: ManualSettings): ManualBlock {
   const policy = settings.policy;
+  const meetings = settings.meetings;
   return section(
     [
       "*What I send you* (automatic; you never type these)",
@@ -316,7 +327,7 @@ function sentBlock(settings: ManualSettings): ManualBlock {
       "• A row looks like this: `notes#53 Acme deck review: due in 2 days (Thu 26 Nov)` with `⋯` on its right: *Got it*, *Done*, *+1 day*, *+7 days*, *Move date…*",
       ...(settings.calendarPings
         ? [
-            "• When a meeting the calendar exported has ended, one DM about it: `「Acme weekly sync」 ended at 09:30 (09:00–09:30, 6 attendees). How did it go?` Your reply in that thread is filed as a note about that meeting, and the note's actions are offered as board items.",
+            `• When a meeting the calendar exported has ended, I ask about some of them: only a meeting of ${meetings.minMinutes} minutes or more that ended on a weekday between \`${meetings.earliestEnd}\` and \`${meetings.latestEnd}\`, and the day has a cap of ${meetings.perDayFloor} to ${meetings.perDay} asks, spent on the longest meetings first, so a full day gets fewer asks than meetings. The DM looks like this: \`「Acme weekly sync」 ended at 09:30 (09:00–09:30, 6 attendees). How did it go?\` Your reply in that thread is filed as a note about that meeting, and the note's actions are offered as board items.`,
           ]
         : []),
     ].join("\n"),

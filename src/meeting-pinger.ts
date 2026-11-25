@@ -1,6 +1,7 @@
-// Sending the asks after meetings: one DM per meeting that has ended, recorded
-// the moment it goes out, so a crash between two asks never re-asks the ones
-// already sent. It rides the scheduler's tick, which is why nothing here throws.
+// Sending the asks after meetings: one DM per meeting the day's cap picked, and
+// recorded the moment it goes out, so a crash between two asks never re-asks the
+// ones already sent. It rides the scheduler's tick, which is why nothing here
+// throws.
 //
 // What is owed is the planner's business (meeting-pings.ts); this is the side
 // that touches Slack and SQLite. A log line carries ids and counts only: the
