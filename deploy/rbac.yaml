@@ -1,0 +1,47 @@
+# The Mac's calendar push needs to write one ConfigMap and nothing else.
+#
+# Until 0.12.1 the launchd job pushed with ZY's cluster-admin kubeconfig: a laptop
+# holding admin over the whole cluster so it could patch one object. This is that
+# permission, and only that permission. The credential is a bound ServiceAccount
+# token ZY generates by hand (README, "The Mac side"), because a token in a
+# manifest would be a token in git.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: zy-calendar-push
+  labels:
+    app.kubernetes.io/name: zy-assistant
+    app.kubernetes.io/component: calendar-push
+---
+# `get` and `patch` on the one ConfigMap: `kubectl apply --server-side` is a patch,
+# and reading back is what makes a failed push say why. No `create`, because a
+# create cannot be restricted by name, and no other object in the namespace is
+# touched by the push. If the ConfigMap is ever deleted, it is recreated by hand
+# (or by the next admin push), not by widening this role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: zy-calendar-push
+  labels:
+    app.kubernetes.io/name: zy-assistant
+    app.kubernetes.io/component: calendar-push
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["zy-calendar"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: zy-calendar-push
+  labels:
+    app.kubernetes.io/name: zy-assistant
+    app.kubernetes.io/component: calendar-push
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: zy-calendar-push
+subjects:
+  - kind: ServiceAccount
+    name: zy-calendar-push

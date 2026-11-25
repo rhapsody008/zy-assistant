@@ -26,6 +26,31 @@ the missed slot when it wakes. To push on demand, `launchctl kickstart -k` below
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.zy.assistant.calendar.plist
 ```
 
+The kubeconfig it asks for should be the scoped one, not your admin one: the push
+only needs to patch the ConfigMap `zy-calendar` (ServiceAccount `zy-calendar-push`,
+from `deploy/rbac.yaml` in the repo). Build it from a bound token, with the server
+and CA copied out of the admin kubeconfig so the token is the only credential in
+the file:
+
+```sh
+SRC=~/zyworkspace/zy-ops/kubeconfigs/zy-all-in-one.conf
+DST=~/.config/zy-assistant/zy-calendar-push.conf
+SERVER=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}' --kubeconfig "$SRC")
+CA=$(kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' --kubeconfig "$SRC")
+TOKEN=$(kubectl create token zy-calendar-push -n zy-assistant --duration=8760h --kubeconfig "$SRC")
+kubectl config set-cluster zy-all-in-one --server="$SERVER" --certificate-authority-data="$CA" --kubeconfig "$DST"
+kubectl config set-credentials zy-calendar-push --token="$TOKEN" --kubeconfig "$DST"
+kubectl config set-context zy-calendar-push --cluster=zy-all-in-one --user=zy-calendar-push --namespace=zy-assistant --kubeconfig "$DST"
+kubectl config use-context zy-calendar-push --kubeconfig "$DST"
+chmod 600 "$DST"
+```
+
+Prove it is only what it claims: `kubectl get secrets -n zy-assistant --kubeconfig "$DST"`
+must be refused, and `launchctl kickstart -k` must still print a `pushed:` line. The
+token lasts a year, so put the rotation in the calendar before it lapses; a lapsed
+token fails the push with a 401 and the ConfigMap stays at its last snapshot.
+```
+
 `./build.sh` must be run from a GUI session (Terminal is one) and the first run
 raises the Calendar permission dialog. **It is built into a `.app` bundle for that
 reason**: a bare binary started from a shell has no GUI session to own the TCC
