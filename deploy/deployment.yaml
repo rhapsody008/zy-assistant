@@ -29,7 +29,7 @@ spec:
       containers:
         - name: app
           # Tag pinned in kustomization.yaml (images:).
-          image: ghcr.io/rhapsody008/zy-assistant:0.11.0
+          image: ghcr.io/rhapsody008/zy-assistant:0.12.0
           envFrom:
             # Created outside this repo: GITHUB_TOKEN, SLACK_BOT_TOKEN,
             # SLACK_APP_TOKEN, SLACK_USER_ID.
