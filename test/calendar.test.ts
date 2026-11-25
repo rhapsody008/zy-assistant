@@ -13,6 +13,7 @@ import {
   CalendarIntake,
   calendarFreshnessLine,
   calendarRefreshLine,
+  foreignZone,
   parseSnapshot,
   snapshotLines,
   SNAPSHOT_MAX_BYTES,
@@ -49,6 +50,22 @@ function snapshotFile(over: Record<string, unknown> = {}): string {
     events: [event()],
     ...over,
   });
+}
+
+/** The file a version 2 Mac writes: a version 1 file and the zone its window was built in. */
+function zonedFile(tz: unknown, over: Record<string, unknown> = {}): string {
+  return snapshotFile({ v: 2, tz, ...over });
+}
+
+/** The reason a snapshot file is refused: the message the caller would log. */
+function refused(text: string): string {
+  try {
+    parseSnapshot(text, NOW);
+  } catch (err) {
+    assert.ok(err instanceof Error, "a refusal is an Error");
+    return err.message;
+  }
+  assert.fail("the snapshot parsed, so there is no refusal to read");
 }
 
 /** The file with one event, that event changed. */
@@ -138,10 +155,66 @@ test("text that is not JSON, or not a JSON object, is refused without an echo", 
   assert.throws(() => parseSnapshot("null", NOW), /^Error: snapshot: not a JSON object$/);
 });
 
-test("a snapshot that is not version 1 is refused", () => {
-  assert.throws(() => parseSnapshot(snapshotFile({ v: 2 }), NOW), /^Error: v: not 1$/);
-  assert.throws(() => parseSnapshot(snapshotFile({ v: "1" }), NOW), /^Error: v: not 1$/);
-  assert.throws(() => parseSnapshot(snapshotFile({ v: undefined }), NOW), /^Error: v: not 1$/);
+test("a snapshot that is not version 1 or 2 is refused", () => {
+  // A version 3 file may mean anything, so it is refused rather than read as the
+  // nearest version this parser knows.
+  assert.throws(() => parseSnapshot(snapshotFile({ v: 3 }), NOW), /^Error: v: not 1 or 2$/);
+  assert.throws(() => parseSnapshot(snapshotFile({ v: "1" }), NOW), /^Error: v: not 1 or 2$/);
+  assert.throws(() => parseSnapshot(snapshotFile({ v: undefined }), NOW), /^Error: v: not 1 or 2$/);
+  assert.throws(() => parseSnapshot(snapshotFile({ v: 0 }), NOW), /^Error: v: not 1 or 2$/);
+});
+
+test("a version 2 file parses, and keeps the zone it declares", () => {
+  const snapshot = parseSnapshot(zonedFile("Asia/Singapore"), NOW);
+  assert.equal(snapshot.tz, "Asia/Singapore");
+  // The zone is the whole difference: every other field parses as version 1 parses it.
+  assert.deepEqual(snapshot, { ...parseSnapshot(snapshotFile(), NOW), tz: "Asia/Singapore" });
+});
+
+test("a version 1 file holds no zone at all, and a tz key in one is ignored", () => {
+  const plain = parseSnapshot(snapshotFile(), NOW);
+  // Absent, not defaulted: a version 1 file declared nothing, so there is nothing for
+  // a caller to compare, and a whole-snapshot compare still sees the same fields.
+  assert.ok(!("tz" in plain), "a version 1 parse carries no tz key");
+  const withKey = parseSnapshot(snapshotFile({ tz: "Europe/London" }), NOW);
+  assert.ok(!("tz" in withKey), "the version says what a file means, so a tz key in version 1 is an unknown key");
+  assert.deepEqual(withKey, plain);
+});
+
+test("tz has to be a zone name, and no refusal repeats one", () => {
+  const cases: Array<[unknown, string]> = [
+    [7, "tz: not a string"],
+    // Exact, so it proves the empty value the reason is about is not echoed: there is
+    // nothing of it to echo.
+    ["", "tz: empty"],
+    ["Mars/Base", "tz: unknown time zone"],
+    // The shape is checked before Intl, so a newline never reaches a log line.
+    ["Asia/Singapore\n", "tz: not a zone name"],
+    ["a".repeat(65), "tz: not a zone name"],
+  ];
+  for (const [value, reason] of cases) {
+    const message = refused(zonedFile(value));
+    assert.equal(message, reason, JSON.stringify(value));
+    assert.ok(!message.includes("\n"), `a refusal is one line: ${JSON.stringify(message)}`);
+    if (typeof value === "string" && value !== "") {
+      assert.ok(!message.includes(value), `the message repeats the zone: ${JSON.stringify(message)}`);
+    }
+  }
+  // 64 characters passes the shape check and reaches Intl, which is what knows a zone
+  // name from a string of letters.
+  assert.equal(refused(zonedFile("a".repeat(64))), "tz: unknown time zone");
+  // A zone with a space around it is a bad name, not one quietly repaired: nothing is
+  // trimmed, so a trailing newline is a bad character rather than whitespace.
+  assert.equal(refused(zonedFile(" Asia/Singapore")), "tz: not a zone name");
+});
+
+test("foreignZone names a declared zone only when it is not this bot's", () => {
+  assert.equal(foreignZone(parseSnapshot(snapshotFile(), NOW)), null, "a version 1 file declared no zone");
+  assert.equal(foreignZone(parseSnapshot(zonedFile("Asia/Singapore"), NOW)), null, "the bot's own zone agrees with itself");
+  assert.equal(foreignZone(parseSnapshot(zonedFile("Europe/London"), NOW)), "Europe/London");
+  // The same offset as Singapore all year, and still a mismatch: what the two sides
+  // disagree about is where the day starts and ends, not what the clock reads now.
+  assert.equal(foreignZone(parseSnapshot(zonedFile("Asia/Kuala_Lumpur"), NOW)), "Asia/Kuala_Lumpur");
 });
 
 test("a text over 256 KiB is refused before anything parses it", () => {
@@ -504,6 +577,21 @@ test("freshness is generatedAt's, never the read's: a restart does not make an o
   assert.equal(state.freshness, "stale", "and pushed last evening all the same");
 });
 
+test("a snapshot from another zone, pushed today, still reads fresh", async () => {
+  // Its days are not this bot's, and that is a disagreement to state, not an age: a
+  // foreign snapshot was pushed and it parsed, so it is neither stale nor expired.
+  const file = fakeFile(
+    zonedFile("Europe/London", {
+      generatedAt: sg("2026-12-01T07:30").toISOString(),
+      window: { start: new Date(TUE).toISOString(), end: new Date(TUE + 2 * DAY).toISOString() },
+    }),
+  );
+  assert.equal((await file.intake.refresh(sg("2026-12-01T07:31"))).kind, "accepted");
+  const state = heldState(file.intake, sg("2026-12-01T07:31"));
+  assert.equal(state.freshness, "fresh");
+  assert.equal(foreignZone(state.snapshot), "Europe/London", "and the zone is still the one it declared");
+});
+
 // ---- The lines --------------------------------------------------------------
 
 test("the calendar mode's lines are a summary and one line per event, ids only", async () => {
@@ -536,6 +624,55 @@ test("a refresh is worth a line only when it has news", async () => {
   );
 });
 
+/** The three line builders' output for one file, read at one instant. */
+async function linesFor(text: string, at: Date): Promise<{ refresh: string | null; summary: string; freshness: string }> {
+  const file = fakeFile(text);
+  const refresh = await file.intake.refresh(at);
+  const state = heldState(file.intake, at);
+  return {
+    refresh: calendarRefreshLine(refresh),
+    summary: snapshotLines(state, at)[0],
+    freshness: calendarFreshnessLine(state, at),
+  };
+}
+
+/** Seven events, so the counts on the line are not the single-event fixture's. */
+const SEVEN = { events: manyEvents(7) };
+
+test("the lines say nothing about a zone a version 1 file did not declare", async () => {
+  assert.deepEqual(
+    await linesFor(snapshotFile(SEVEN), NOW),
+    {
+      refresh: "calendar: snapshot 2026-12-01T02:15:03Z: 7 events, 0 all-day",
+      summary:
+        "snapshot 2026-12-01T02:15:03Z, window 2026-11-30T16:00:00Z..2026-12-02T16:00:00Z, 7 events, 0 all-day, fresh, age 10m",
+      freshness: "calendar: fresh, snapshot 2026-12-01T02:15:03Z (age 10m)",
+    },
+    "a version 1 file's lines are 0.12.0's, character for character",
+  );
+});
+
+test("the lines name the zone a matching version 2 file declares", async () => {
+  assert.deepEqual(await linesFor(zonedFile("Asia/Singapore", SEVEN), NOW), {
+    refresh: "calendar: snapshot 2026-12-01T02:15:03Z: 7 events, 0 all-day, tz Asia/Singapore",
+    summary:
+      "snapshot 2026-12-01T02:15:03Z, window 2026-11-30T16:00:00Z..2026-12-02T16:00:00Z, 7 events, 0 all-day, fresh, age 10m, tz Asia/Singapore",
+    freshness: "calendar: fresh, snapshot 2026-12-01T02:15:03Z (age 10m)",
+  });
+});
+
+test("the lines state a foreign zone, and say its meetings and asks are off", async () => {
+  // Zone identifiers, counts and instants: the snapshot's twice-pushed and titled
+  // events stay out of every line, however far wrong its zone is.
+  assert.deepEqual(await linesFor(zonedFile("Europe/London", SEVEN), NOW), {
+    refresh:
+      "calendar: snapshot 2026-12-01T02:15:03Z: 7 events, 0 all-day, tz Europe/London, not Asia/Singapore: its meetings and asks are off",
+    summary:
+      "snapshot 2026-12-01T02:15:03Z, window 2026-11-30T16:00:00Z..2026-12-02T16:00:00Z, 7 events, 0 all-day, fresh, age 10m, tz Europe/London, not Asia/Singapore: its meetings and asks are off",
+    freshness: "calendar: fresh, snapshot 2026-12-01T02:15:03Z (age 10m)",
+  });
+});
+
 // ---- The tick ---------------------------------------------------------------
 
 /** A watcher over one file, with the clock and the log the test controls. */
@@ -548,15 +685,107 @@ function watcherOver(
   return calendarWatcher({ intake: file.intake, record, now: clock, log: (line) => lines.push(line) });
 }
 
+/** The file a version 2 Mac writes at a local wall-clock time, over today and tomorrow. */
+const zonedPush = (tz: string, at: Date): string =>
+  zonedFile(tz, {
+    generatedAt: at.toISOString(),
+    window: { start: new Date(TUE).toISOString(), end: new Date(TUE + 2 * DAY).toISOString() },
+  });
+
+/** The watcher's zone lines: the mismatch, the way back, and the version 1 file on the way out. */
+const zoneLines = (lines: string[]): string[] =>
+  lines.filter((line) => line.includes("snapshot in ") || line.includes("snapshot has no zone "));
+
+test("the startup read states the opening zone, and the watcher says a later change", async () => {
+  const lines: string[] = [];
+  const clock = sg("2026-12-01T07:35");
+  const file = fakeFile(zonedPush("Europe/London", sg("2026-12-01T07:30")));
+  const watcher = watcherOver(file, () => clock, lines);
+
+  // The run line names this zone, so the opening read and a second push in the same
+  // foreign zone say nothing: one disagreement, one line.
+  await watcher.start();
+  file.set(zonedPush("Europe/London", sg("2026-12-01T07:31")));
+  await watcher.tick({ at: clock });
+  assert.deepEqual(zoneLines(lines), [], "the opening zone and a repeat of it say nothing");
+
+  file.set(zonedPush("Asia/Singapore", sg("2026-12-01T07:32")));
+  await watcher.tick({ at: clock });
+  file.set(zonedPush("Europe/London", sg("2026-12-01T07:33")));
+  await watcher.tick({ at: clock });
+
+  assert.deepEqual(zoneLines(lines), [
+    "calendar: snapshot in Asia/Singapore again",
+    "calendar: snapshot in Europe/London, not Asia/Singapore: its meetings and asks are off",
+  ]);
+});
+
+test("leaving a foreign zone for a version 1 file says the zone is assumed again", async () => {
+  const lines: string[] = [];
+  const clock = sg("2026-12-01T07:35");
+  const file = fakeFile(zonedPush("Europe/London", sg("2026-12-01T07:30")));
+  const watcher = watcherOver(file, () => clock, lines);
+  await watcher.start();
+
+  file.set(push(sg("2026-12-01T07:31")));
+  await watcher.tick({ at: clock });
+  // A second version 1 push declares nothing either: the assumption has not changed.
+  file.set(push(sg("2026-12-01T07:32")));
+  await watcher.tick({ at: clock });
+
+  assert.deepEqual(zoneLines(lines), ["calendar: snapshot has no zone again, assuming Asia/Singapore"]);
+});
+
+test("a foreign zone is said once, and coming back is said once", async () => {
+  const lines: string[] = [];
+  const clock = sg("2026-12-01T07:35");
+  const file = fakeFile(zonedPush("Europe/London", sg("2026-12-01T07:30")));
+  const watcher = watcherOver(file, () => clock, lines);
+
+  await watcher.tick({ at: clock });
+  await watcher.tick({ at: clock });
+  // A new push that disagrees in the same way is the same disagreement: no line.
+  file.set(zonedPush("Europe/London", sg("2026-12-01T07:31")));
+  await watcher.tick({ at: clock });
+  file.set(zonedPush("Asia/Singapore", sg("2026-12-01T07:32")));
+  await watcher.tick({ at: clock });
+  await watcher.tick({ at: clock });
+  file.set(zonedPush("Europe/London", sg("2026-12-01T07:33")));
+  await watcher.tick({ at: clock });
+
+  assert.deepEqual(
+    lines.filter((line) => line.includes("snapshot in ")),
+    [
+      "calendar: snapshot in Europe/London, not Asia/Singapore: its meetings and asks are off",
+      "calendar: snapshot in Asia/Singapore again",
+      "calendar: snapshot in Europe/London, not Asia/Singapore: its meetings and asks are off",
+    ],
+    "one line per change of zone, on a file read six times",
+  );
+});
+
+test("a version 1 file and a matched version 2 one say nothing about a zone", async () => {
+  const lines: string[] = [];
+  const clock = sg("2026-12-01T07:35");
+  for (const text of [push(sg("2026-12-01T07:30")), zonedPush("Asia/Singapore", sg("2026-12-01T07:30"))]) {
+    const watcher = watcherOver(fakeFile(text), () => clock, lines);
+    await watcher.tick({ at: clock });
+    await watcher.tick({ at: clock });
+  }
+
+  assert.deepEqual(lines.filter((line) => line.includes("snapshot in ")), [], "no disagreement, no line");
+  assert.ok(lines.length > 0, "and the tick still says what it always said");
+});
+
 test("a rejection that repeats is logged once over three ticks", async () => {
   const lines: string[] = [];
-  // "{}" is refused at its first field, v: not 1, on every read: the same rejection.
+  // "{}" is refused at its first field, v: not 1 or 2, on every read: the same rejection.
   const file = fakeFile("{}");
   const watcher = watcherOver(file, () => NOW, lines);
   await watcher.tick({ at: NOW });
   await watcher.tick({ at: NOW });
   await watcher.tick({ at: NOW });
-  assert.deepEqual(lines, ["calendar: snapshot rejected: v: not 1"], "the second and third say nothing");
+  assert.deepEqual(lines, ["calendar: snapshot rejected: v: not 1 or 2"], "the second and third say nothing");
   assert.equal(file.intake.current(NOW), null, "and nothing is held");
 });
 

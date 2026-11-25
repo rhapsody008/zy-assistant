@@ -13,10 +13,12 @@
 // The snapshot is the intake's, so its freshness decides what is worth saying: an
 // expired window holds yesterday's meetings and "how did it go?" about yesterday
 // is worse than silence, while a stale one is worked from as it stands (the
-// caller already logs the staleness).
+// caller already logs the staleness). A snapshot exported in another zone is
+// neither stale nor expired, and its days are still not this bot's, so it gets the
+// same silence with a reason the watcher has already given.
 
 import { escapeData } from "./ask.ts";
-import type { CalendarEvent, CalendarState } from "./calendar.ts";
+import { foreignZone, type CalendarEvent, type CalendarState } from "./calendar.ts";
 import { oneLine } from "./scribe.ts";
 import { addDays, isWeekend, localNow, parseHHMM, TZ } from "./time.ts";
 
@@ -178,6 +180,12 @@ export function planMeetingPings(args: {
   // window holds yesterday's meetings, so every ask in it would be about a day
   // that is already a note. A stale one is used as it stands.
   if (state === null || state.freshness === "expired") return { pings: [] };
+  // A snapshot exported in another zone keeps another zone's days, while everything
+  // below is measured against this bot's: the 08:00-19:00 window, "today" and
+  // "ended 5 to 45 minutes ago" would each read another zone's clock, so an ask
+  // would go out at the wrong hour or be about the wrong day. Silence with a reason
+  // beats a wrong ask, and the watcher already says which two zones disagree.
+  if (foreignZone(state.snapshot) !== null) return { pings: [] };
 
   const policy: MeetingPolicy = { ...MEETING_POLICY, ...args.policy };
   const today = localNow(now, TZ).date;
@@ -280,6 +288,17 @@ function onDay(event: CalendarEvent, today: string): boolean {
 export function meetingSection(state: CalendarState | null, today: string): string[] {
   // No snapshot is nothing to say, and an expired window holds another day's.
   if (state === null || state.freshness === "expired") return [];
+  // The snapshot's days are another zone's, so "today" is not a day this file can
+  // answer: one line carries the reason instead of a list that would be another
+  // zone's meetings under this zone's date. It is still worth a line, because a
+  // silent section reads as a day with nothing on it. The line names no day of its
+  // own, because the section is also asked for a date that is not today.
+  const foreign = foreignZone(state.snapshot);
+  if (foreign !== null) {
+    return [
+      `• Your calendar was exported in ${foreign} and I keep days in ${TZ}, so I am not listing or asking about meetings that day.`,
+    ];
+  }
   const events = state.snapshot.events
     .filter((event) => onDay(event, today))
     // A solo hold is no more a meeting here than it is to the asks: this is the

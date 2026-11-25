@@ -6,6 +6,12 @@ Calendar.app with EventKit, prints a small JSON snapshot for today and tomorrow
 it as one ConfigMap through the kubeconfig you already have. The bot mounts that
 ConfigMap as a file and reads it on its own tick.
 
+The snapshot also names the zone the window was cut in (`"v": 2` plus `tz`, from
+the same `TimeZone.current` the window used). That is what lets the bot say so
+plainly when your Mac's zone and its own disagree, instead of filing meetings
+under the wrong day: while the two differ, the bot stops using the snapshot's
+days and asks nothing about them.
+
 It pushes **twice a day**, at 07:30 and 18:30 local time, plus once at login.
 A calendar does not change much between two runs, and either snapshot starts at
 today's midnight, so both cover today and tomorrow: 07:30 is there for the 09:00

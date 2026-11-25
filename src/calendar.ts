@@ -3,9 +3,14 @@
 // one bad event is no snapshot, so the intake never half-believes a file.
 //
 // Nothing here prints: every function returns what it found and the caller owns
-// the log. What leaves this module is ids, counts, timestamps and field paths; a
-// title is never rendered on a line built here, and a domain names a customer, so
-// both stay inside the held snapshot and off every line built here.
+// the log. What leaves this module is ids, counts, timestamps, zone identifiers and
+// field paths; a title is never rendered on a line built here, and a domain names a
+// customer, so both stay inside the held snapshot and off every line built here.
+//
+// A version 2 file also declares the zone the Mac built its window in, and where the
+// bot's own zone is elsewhere the two disagree about where a day starts and ends. The
+// snapshot is still held: a declared zone that is not this bot's is a disagreement to
+// state, never a fault to reject.
 //
 // Freshness is read off generatedAt, never off when the file was read: a pod
 // that restarts does not make an hour-old snapshot look new. And a snapshot is
@@ -43,6 +48,12 @@ const FUTURE_MS = 5 * 60_000;
 /** A 16-hex-character id: what a log line and a later ping name a meeting by. */
 const ID_RE = /^[0-9a-f]{16}$/;
 
+/** The longest a zone identifier may be: an IANA name is far shorter, and a zone identifier reaches a log line. */
+const ZONE_MAX = 64;
+
+/** A zone identifier is letters, digits and these four separators, and nothing else. */
+const ZONE_CHARS_RE = /^[A-Za-z0-9_+/-]+$/;
+
 /** The four answers an invitation can have. */
 export const CALENDAR_STATUSES = ["accepted", "tentative", "organizer", "none"] as const;
 
@@ -67,13 +78,17 @@ export interface CalendarEvent {
 }
 
 /**
- * A parsed snapshot. There is no `v` here: a snapshot that parses is version 1,
- * and anything else never becomes one.
+ * A parsed snapshot. There is no `v` here: the version is what the parse read, and
+ * what a caller holds is the snapshot itself. A version 1 file says nothing about
+ * the zone it was built in, so `tz` is absent rather than defaulted: absent is the
+ * file saying nothing, while a default here would be this module guessing.
  */
 export interface CalendarSnapshot {
   generatedAt: string;
   window: CalendarWindow;
   events: CalendarEvent[];
+  /** The IANA zone the Mac built the window in, from a version 2 file only. */
+  tz?: string;
 }
 
 export type CalendarFreshness = "fresh" | "stale" | "expired";
@@ -112,6 +127,27 @@ function timestamp(value: unknown, path: string): { text: string; ms: number } {
   // 13 or a day of 32 parses to NaN, and is no timestamp at all.
   if (!Number.isFinite(ms)) fail(path, "not a timestamp");
   return { text: value, ms };
+}
+
+/**
+ * The zone a version 2 file declares: an IANA identifier, and nothing that could
+ * forge a line. The shape is checked before Intl sees the name, because Intl's own
+ * refusal quotes what it was given, and a zone name is calendar-shaped input. An
+ * empty name is refused on its own, before the shape check: it is a Mac that meant
+ * to declare a zone and lost it, not one writing a string with a bad character in it.
+ * Nothing is trimmed, so a name with a space around it is a bad name rather than a
+ * quietly repaired one.
+ */
+function zone(value: unknown, path: string): string {
+  if (typeof value !== "string") fail(path, "not a string");
+  if (value === "") fail(path, "empty");
+  if (value.length > ZONE_MAX || !ZONE_CHARS_RE.test(value)) fail(path, "not a zone name");
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+  } catch {
+    fail(path, "unknown time zone");
+  }
+  return value;
 }
 
 function domainList(value: unknown, path: string): string[] {
@@ -181,7 +217,15 @@ export function parseSnapshot(text: string, now: Date): CalendarSnapshot {
     fail("snapshot", "not JSON");
   }
   if (!isRecord(value)) fail("snapshot", "not a JSON object");
-  if (value.v !== 1) fail("v", "not 1");
+  // The version decides how the rest of the file is read, so it is asked first, and
+  // a version this parser does not know is refused rather than read as the nearest
+  // one it does: a version 3 file may mean anything, and half-believing it is worse
+  // than holding the previous snapshot.
+  if (value.v !== 1 && value.v !== 2) fail("v", "not 1 or 2");
+  // A version 2 file is a version 1 file plus the zone the Mac built the window in.
+  // A `tz` key in a version 1 file is ignored, the way every unknown key is: the
+  // version says what the file means, and nothing else does.
+  const declared = value.v === 2 ? zone(value.tz, "tz") : undefined;
 
   const generatedAt = timestamp(value.generatedAt, "generatedAt");
   if (generatedAt.ms - now.getTime() > FUTURE_MS) fail("generatedAt", `more than ${FUTURE_MS / 60_000} minutes in the future`);
@@ -204,7 +248,28 @@ export function parseSnapshot(text: string, now: Date): CalendarSnapshot {
     events.push(parsed);
   }
 
-  return { generatedAt: generatedAt.text, window: { start: start.text, end: end.text }, events };
+  // The spread is what keeps a version 1 parse free of a `tz` key: `tz: undefined`
+  // would still be a key, and a caller comparing whole snapshots would see it.
+  return {
+    generatedAt: generatedAt.text,
+    window: { start: start.text, end: end.text },
+    events,
+    ...(declared === undefined ? {} : { tz: declared }),
+  };
+}
+
+/**
+ * The zone a snapshot declared, when it is not this bot's; null when there is no
+ * disagreement to state. A version 1 file declared nothing, so it never disagrees.
+ * The compare is exact and case-sensitive on purpose: an alias, or a sibling zone
+ * that happens to share an offset, still counts as a mismatch, because what the two
+ * sides disagree about is where the day boundaries fall, not what the clock reads at
+ * one instant. Nothing is concluded here: a foreign snapshot is not stale, and not
+ * expired. It was pushed, it parsed, and its days are simply not this bot's.
+ */
+export function foreignZone(snapshot: CalendarSnapshot): string | null {
+  const declared = snapshot.tz;
+  return declared !== undefined && declared !== TZ ? declared : null;
 }
 
 export interface CalendarIntakeOptions {
@@ -317,13 +382,32 @@ function ageMinutes(generatedAt: string, now: Date): number {
 }
 
 /**
+ * What a line says about the zone the snapshot declared: nothing at all for a
+ * version 1 file, the zone when it is this bot's, and the disagreement when it is
+ * not. The refresh line and the startup line both end with it, so the one I read
+ * after a deploy says the same thing as the push that made it. Zone identifiers,
+ * counts and instants only, on the same rule as the rest of this module: a title
+ * never reaches a line, and a mismatched snapshot's meetings and asks are not this
+ * bot's to state, so the line says they are off rather than naming one.
+ */
+export function zoneSuffix(snapshot: CalendarSnapshot): string {
+  if (snapshot.tz === undefined) return "";
+  const foreign = foreignZone(snapshot);
+  if (foreign === null) return `, tz ${TZ}`;
+  return `, tz ${foreign}, not ${TZ}: its meetings and asks are off`;
+}
+
+/**
  * What a refresh is worth logging: an accepted snapshot and a first-time
  * rejection say something; the same push again, the same rejection again and a
  * file that is not there yet say nothing.
  */
 export function calendarRefreshLine(refresh: CalendarRefresh): string | null {
   if (refresh.kind === "accepted") {
-    return `calendar: snapshot ${refresh.snapshot.generatedAt}: ${count(refresh.events, "event")}, ${refresh.allDay} all-day`;
+    return (
+      `calendar: snapshot ${refresh.snapshot.generatedAt}: ${count(refresh.events, "event")}, ${refresh.allDay} all-day` +
+      zoneSuffix(refresh.snapshot)
+    );
   }
   if (refresh.kind === "rejected" && !refresh.repeat) return `calendar: snapshot rejected: ${refresh.reason}`;
   return null;
@@ -343,7 +427,8 @@ export function snapshotLines(state: CalendarState, now: Date): string[] {
   const allDay = snapshot.events.filter((e) => e.allDay).length;
   const lines = [
     `snapshot ${snapshot.generatedAt}, window ${snapshot.window.start}..${snapshot.window.end}, ` +
-      `${count(snapshot.events.length, "event")}, ${allDay} all-day, ${freshness}, age ${ageMinutes(snapshot.generatedAt, now)}m`,
+      `${count(snapshot.events.length, "event")}, ${allDay} all-day, ${freshness}, age ${ageMinutes(snapshot.generatedAt, now)}m` +
+      zoneSuffix(snapshot),
   ];
   for (const e of snapshot.events) {
     lines.push(`${e.id} ${e.start} ${e.end} ${String(e.allDay)} ${e.status} domains=${e.domains.length}`);

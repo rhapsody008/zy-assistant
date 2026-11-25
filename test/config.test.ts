@@ -275,7 +275,7 @@ test("every other mode still demands GITHUB_TOKEN, as it did before", () => {
 });
 
 /** A one-event snapshot for the run line: the parser is the only way a state exists. */
-function heldState(events: number): CalendarState {
+function heldState(events: number, tz?: string): CalendarState {
   const one = {
     id: "9f2c41d07ab3e6c1",
     start: "2026-12-01T03:00:00Z",
@@ -287,7 +287,8 @@ function heldState(events: number): CalendarState {
     status: "accepted",
   };
   const text = JSON.stringify({
-    v: 1,
+    v: tz === undefined ? 1 : 2,
+    ...(tz === undefined ? {} : { tz }),
     generatedAt: "2026-12-01T02:15:03Z",
     window: { start: "2026-11-30T16:00:00Z", end: "2026-12-02T16:00:00Z" },
     events: Array.from({ length: events }, (_, i) => ({ ...one, id: i.toString(16).padStart(16, "0") })),
@@ -307,6 +308,26 @@ test("the run line names the file and the snapshot the first read found, or says
     "calendar: on, /var/lib/zy/calendar.json: snapshot 2026-12-01T02:15:03Z, 4 events",
   );
   assert.equal(calendarRunLine(config, null), "calendar: on, /var/lib/zy/calendar.json: no snapshot yet");
+});
+
+test("the run line states the zone the snapshot declared, and a disagreement, the way the refresh line does", () => {
+  // The first line read after a deploy is this one, so a foreign snapshot has to be
+  // named here and not only on the push that brought it.
+  const config = loadConfig("dry-run", { ...BASE, ...CALENDAR });
+  assert.equal(
+    calendarRunLine(config, heldState(7, "Asia/Singapore")),
+    "calendar: on, /var/lib/zy/calendar.json: snapshot 2026-12-01T02:15:03Z, 7 events, tz Asia/Singapore",
+  );
+  assert.equal(
+    calendarRunLine(config, heldState(7, "Europe/London")),
+    "calendar: on, /var/lib/zy/calendar.json: snapshot 2026-12-01T02:15:03Z, 7 events, tz Europe/London, " +
+      "not Asia/Singapore: its meetings and asks are off",
+  );
+  assert.equal(
+    calendarRunLine(config, heldState(7)),
+    "calendar: on, /var/lib/zy/calendar.json: snapshot 2026-12-01T02:15:03Z, 7 events",
+    "a version 1 snapshot keeps the line 0.12.0 printed",
+  );
 });
 
 /** Everything the meeting pings need at once: the snapshot and the scribe that files the reply. */

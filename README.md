@@ -93,14 +93,21 @@ title: `scribe <ts>: committed in <ms> ms (<n> actions) <url>`,
 `note-items <ts>: proposed <n> items (<k> not created, parent <ref>)`,
 `note-items <ts>: item <n>: created <repo>#<n> as <itemId>, under <parentItemId>`,
 `note items: on -> <ADD_REPO>` (and `note items: off, a note's actions are only listed`
-at startup), `calendar: on, <path>: snapshot <iso>, <n> events`, `calendar: snapshot
-<iso>: <n> events, <n> all-day`, `calendar: snapshot rejected: <field path>: <why>`,
-`calendar: <fresh|stale|expired>, snapshot <iso> (age <n>)`, `calendar: the tick failed: <why>`,
+at startup), `calendar: on, <path>: snapshot <iso>, <n> events` at startup, with `, tz
+<zone>` when the snapshot declares one and `, tz <zone>, not <ASSISTANT_TZ>: its
+meetings and asks are off` when it declares another,
+`calendar: snapshot <iso>: <n> events, <n> all-day` when a tick accepts a push, with
+the same `tz` suffix, `calendar: snapshot rejected: <field path>: <why>`,
+`calendar: <fresh|stale|expired>, snapshot <iso> (age <n>)` when the freshness changes,
+`calendar: snapshot in <zone>, not <ASSISTANT_TZ>: its meetings and asks are off`,
+`calendar: snapshot in <ASSISTANT_TZ> again` and
+`calendar: snapshot has no zone again, assuming <ASSISTANT_TZ>`, each said once when
+the declared zone changes after startup, `calendar: the tick failed: <why>`,
 `calendar pings: on` at startup, `meeting ping <eventId>: sent`,
 `meeting ping <eventId>: failed: <reason>`, `meeting pings: <reason>`,
 `proposal <id>: apply failed`, `button <action> on <item> by <user>`,
 `move <item>: <old> -> <new>`, `reply ack <item>`, `help <topic>`,
-`ask <ts>: answered in <ms> ms (<n> items, calendar: <n events|expired|not synced>, notes: <folders>)` and
+`ask <ts>: answered in <ms> ms (<n> items, calendar: <n events|expired|not synced|other zone>, notes: <folders>)` and
 `ask <ts>: failed: <reason>`. A question's text and an answer's text are never
 logged, and neither is an `add:` sentence or the title drafted from it. Nor is a
 meeting's title or a reply's words: the note itself carries them to the notes
@@ -196,7 +203,9 @@ in the attributes), so a title or a README that holds `</board>`, `</calendar>`
 or `</notes>` cannot end the block it is in. The model gets no tools. An expired
 snapshot is not shown at all: the block says the last sync does not cover today,
 because its window holds yesterday's meetings and reading those as tomorrow's
-would be a lie. A snapshot that has not arrived says so too.
+would be a lie. A snapshot that has not arrived says so too, and a snapshot the
+Mac exported in a zone other than `ASSISTANT_TZ` is shown as `unavailable="other
+zone"` with no meetings, because its day boundaries are not the bot's days.
 
 The answer comes back at most 8 lines of Slack mrkdwn, at most 2900 characters,
 with dates written as `Thu 26 Nov`, board items cited as their ref linked to the
@@ -436,8 +445,16 @@ whether it is `accepted`, `tentative`, `organizer` or `none`. Exchange sources
 only by default; cancelled events and declined invites are left out. The window
 starts at midnight, not at the push, so a meeting that ended an hour ago is still
 in the snapshot — the follow-up after a meeting needs that. The window and the
-all-day ends are midnights in the Mac's time zone while the block writes
-`ASSISTANT_TZ`: one zone is assumed, and a zone field in the snapshot is the fix.
+all-day ends are midnights in the Mac's time zone, and a **v2** snapshot says which
+zone that is (`"v": 2` plus a top-level `tz` holding the IANA identifier), so the
+bot can compare it with `ASSISTANT_TZ` instead of assuming the two agree. A v1
+snapshot has no `tz` and is read exactly as it always was: the zone is then
+assumed to be `ASSISTANT_TZ`. While the two differ the snapshot's **days** are not
+used — no post-meeting asks, no meetings in the ask's block, and one line in the
+briefing saying why — because the 08:00 to 19:00 window, "today" and "ended 5 to
+45 minutes ago" would all be measured against another zone's day. A foreign zone
+is a disagreement, not a fault: the snapshot is still fresh, still valid, and
+still worth reading the next time the Mac is back in `ASSISTANT_TZ`.
 
 *Fresh, stale, expired.* Fresh while `generatedAt` falls on the local date the
 bot is reading it on, which is what a Mac pushing at 07:30 and 18:30 can honestly
@@ -453,9 +470,9 @@ names tomorrow's date just before midnight still reads fresh.
 *Nothing is trusted.* The whole snapshot is rejected, never half of it, and the
 reason names a field path, never a value: `events[3].end: not a timestamp`.
 Titles and domains are never logged, and `node src/main.ts calendar` prints the
-summary plus one line per event with no title at all. It exits 1 for an expired
-snapshot — the window has closed, so the pipe is dead — and 0 when the snapshot
-is only stale.
+summary, which ends with the same `tz` suffix, plus one line per event with no
+title at all. It exits 1 for an expired snapshot — the window has closed, so the
+pipe is dead — and 0 when the snapshot is only stale.
 
 The Mac's half is documented in `mac/calendar/README.md`: build once (a `.app`
 bundle, because a bare binary never gets the Calendar permission dialog), install
@@ -466,7 +483,9 @@ the launchd job, and it pushes from then on.
 (`• 09:00 Acme weekly sync`, an all-day one as `• all day Offsite`), at most 8
 lines and ending with `• and N more meetings` when the day has more; a day with
 no meetings gets no block at all. Like the ask, it says nothing when the snapshot
-is expired or was never pushed.
+is expired or was never pushed, and on a snapshot exported in another zone it
+says one line instead: the calendar was exported in that zone and days are kept
+in `ASSISTANT_TZ`, so meetings that day are neither listed nor asked about.
 
 ## Post-meeting asks
 
@@ -505,7 +524,9 @@ items as in **Board items from a note**. Any words count: the ask is not a menu,
 and a `note:` or an `add:` typed in that thread still wins.
 
 An expired or never-pushed snapshot asks nothing: an expired window holds
-yesterday's meetings, and asking how yesterday's went is worse than silence.
+yesterday's meetings, and asking how yesterday's went is worse than silence. Nor
+does a snapshot exported in another zone ask anything: the window and the day
+boundaries would be measured against the wrong day.
 
 Everything here and the briefing's meetings block are off unless the flag is on,
 and turning them quiet is turning the flag off: one commit, nothing lost, and the

@@ -226,7 +226,11 @@ if records.count > 200 {
 // ---- The snapshot ----------------------------------------------------------
 
 let snapshot: [String: Any] = [
-  "v": 1,
+  "v": 2,
+  // The zone the window and the day boundaries were cut in, from the same object
+  // that cut them: the bot keeps days in its own zone, so it needs to know when
+  // the two disagree instead of guessing that the laptop never travels.
+  "tz": calendar.timeZone.identifier,
   "generatedAt": iso.string(from: now),
   "window": ["start": iso.string(from: startOfToday), "end": iso.string(from: windowEnd)],
   "events": records,

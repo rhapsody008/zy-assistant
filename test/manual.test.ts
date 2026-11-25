@@ -381,7 +381,7 @@ test("the meeting ask and the briefing's meetings are only there when CALENDAR_P
   const today = helpReply(settings, true, "today").text;
   assert.match(today, /• \*Today's meetings\*, from the calendar snapshot: one line per meeting today/);
   assert.match(today, /`• and N more meetings`/);
-  assert.match(today, /A day with no meetings has no block at all\./);
+  assert.match(today, /A day with no meetings has no block at all, and a snapshot exported in another zone gets one line saying why instead\./);
 
   // The flag adds its lines and moves nothing else: strip them from the on text and
   // the off text is what is left, character for character.

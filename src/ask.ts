@@ -13,12 +13,14 @@
 //
 // The calendar is the one part that can be worth nothing: an expired snapshot is
 // said to be unavailable rather than shown, because its window holds yesterday's
-// meetings, and calling those "tomorrow" would be a lie.
+// meetings, and calling those "tomorrow" would be a lie. A snapshot exported in
+// another zone is unavailable the same way: its days are real days, just not the
+// ones this bot keeps, so no meeting in it can be named as today's.
 //
 // The whole file is the pipeline both the DM and `ask` in main.ts run: build,
 // ask, clean up the reply. The Slack side only supplies the thread to talk in.
 
-import type { CalendarEvent, CalendarIntake, CalendarState } from "./calendar.ts";
+import { foreignZone, type CalendarEvent, type CalendarIntake, type CalendarState } from "./calendar.ts";
 import { errMessage } from "./errors.ts";
 import type { BoardSource } from "./github.ts";
 import { OutputTruncated, stripReasoning, UnclosedReasoning, type Llm, type LlmRequest } from "./llm.ts";
@@ -79,11 +81,11 @@ export type NotesReader = Pick<NotesClient, "listFolders" | "readFile">;
 export type CalendarReader = Pick<CalendarIntake, "current">;
 
 /**
- * What the calendar part of an answer is: meetings, an expired window, or nothing
- * yet. Not called CalendarStatus: calendar.ts's CalendarStatus is an invitation's
- * answer, and this is the snapshot's availability.
+ * What the calendar part of an answer is: meetings, an expired window, nothing yet,
+ * or a window exported in another zone. Not called CalendarStatus: calendar.ts's
+ * CalendarStatus is an invitation's answer, and this is the snapshot's availability.
  */
-export type CalendarAvailability = "events" | "expired" | "not-synced";
+export type CalendarAvailability = "events" | "expired" | "not-synced" | "other-zone";
 
 /** How many meetings the block rendered, and nothing about any of them: a count is not a title. */
 export interface CalendarSummary {
@@ -285,6 +287,18 @@ function dayHeading(day: string, i: number): string {
 }
 
 /**
+ * An unavailable block's body when the snapshot was exported in another zone: the
+ * two zones that disagree, and the reason no day is shown. Data, escaped like the
+ * rest of a block's text, though a zone name is already letters and separators.
+ */
+function otherZoneBody(foreign: string): string {
+  return (
+    `(calendar not visible: it was exported in ${escapeData(foreign)} and I keep days in ${escapeData(TZ)}, ` +
+    `so I cannot tell which day its meetings are on)`
+  );
+}
+
+/**
  * The calendar for the model: one heading per local day the snapshot covers, one
  * line per meeting under it, and how many meetings got in. A meeting is shown once,
  * under the later of its start day and today, so a window that starts at midnight
@@ -297,7 +311,8 @@ function dayHeading(day: string, i: number): string {
  * meeting fitted: a dropped day is still a cut, whatever the count says.
  *
  * The window and the all-day ends are midnights in the Mac's zone and this block
- * renders in TZ: one zone is assumed, and a zone field in the snapshot is the fix.
+ * renders in TZ, which is why a snapshot exported elsewhere is answered with the
+ * mismatch above rather than rendered: one zone is all these headings can mean.
  * Pure.
  */
 export function calendarBlock(state: CalendarState | null, today: string): { text: string; summary: CalendarSummary } {
@@ -315,6 +330,17 @@ export function calendarBlock(state: CalendarState | null, today: string): { tex
     return {
       text: `<calendar unavailable="expired" pushed="${escapeAttr(pushed)}">\n${EXPIRED_BODY}\n</calendar>`,
       summary: { status: "expired", count: 0 },
+    };
+  }
+  const foreign = foreignZone(snapshot);
+  if (foreign !== null) {
+    // Its days are another zone's, so no heading and no meeting under it could be the
+    // right one: the block says the two zones and why, and shows nothing else.
+    return {
+      text:
+        `<calendar unavailable="other zone" pushed="${escapeAttr(pushed)}" exported-in="${escapeAttr(foreign)}" ` +
+        `timezone="${escapeAttr(TZ)}">\n${otherZoneBody(foreign)}\n</calendar>`,
+      summary: { status: "other-zone", count: 0 },
     };
   }
 
@@ -718,6 +744,7 @@ function calendarPart(summary: CalendarSummary | null): string | null {
   if (summary === null) return null;
   if (summary.status === "expired") return "expired";
   if (summary.status === "not-synced") return "not synced";
+  if (summary.status === "other-zone") return "other zone";
   return `${summary.count} event${summary.count === 1 ? "" : "s"}`;
 }
 

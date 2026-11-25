@@ -8,6 +8,7 @@ import {
   CalendarIntake,
   calendarFreshnessLine,
   calendarRefreshLine,
+  foreignZone,
   snapshotLines,
   type CalendarFreshness,
 } from "./calendar.ts";
@@ -424,8 +425,12 @@ export interface CalendarWatcherOptions {
  */
 export function calendarWatcher(options: CalendarWatcherOptions): CalendarWatcher {
   let freshness: CalendarFreshness | null = null;
+  // The foreign zone the last read reported, so a zone is named when it changes and
+  // not on every push. The startup read is the opening state: the run line states it
+  // and this remembers it without a word.
+  let foreign: string | null = null;
 
-  async function refresh(reportAccepted: boolean): Promise<void> {
+  async function refresh(reportAccepted: boolean, opening = false): Promise<void> {
     const at = options.now();
     const result = await options.intake.refresh(at);
     // At startup the run line below already names the accepted snapshot, so only a
@@ -440,10 +445,21 @@ export function calendarWatcher(options: CalendarWatcherOptions): CalendarWatche
     // still what the bot uses.
     if (state.freshness !== freshness) options.log(calendarFreshnessLine(state, at));
     freshness = state.freshness;
+    // One line per change of zone, never per tick, and none at startup: the refresh
+    // line and the run line already carry the suffix, so this speaks only when a
+    // later push changes the declaration. Leaving a foreign zone is said either way,
+    // because a version 1 file assumes a zone it does not name.
+    const mismatch = foreignZone(state.snapshot);
+    if (!opening && mismatch !== foreign) {
+      if (mismatch !== null) options.log(`calendar: snapshot in ${mismatch}, not ${TZ}: its meetings and asks are off`);
+      else if (foreign !== null && state.snapshot.tz !== undefined) options.log(`calendar: snapshot in ${TZ} again`);
+      else if (foreign !== null) options.log(`calendar: snapshot has no zone again, assuming ${TZ}`);
+    }
+    foreign = mismatch;
   }
 
   return {
-    start: () => refresh(false),
+    start: () => refresh(false, true),
     tick: (report) => {
       options.record(report);
       return refresh(true).catch((err: unknown) => options.log(`calendar: the tick failed: ${errMessage(err)}`));

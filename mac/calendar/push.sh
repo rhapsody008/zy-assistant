@@ -31,4 +31,7 @@ size=$(wc -c < "$tmp" | tr -d ' ')
   | "$KUBECTL" apply --server-side --force-conflicts --field-manager=zy-calendar-export \
       --request-timeout=20s --namespace "$NAMESPACE" -f - \
       --kubeconfig "$KUBECONFIG_PATH" > /dev/null
-echo "pushed: $size bytes"
+# Timestamped, because this log is the only record of whether a 07:30 or 18:30
+# launchd run happened: without it a missed slot is invisible and has to be
+# inferred from the ConfigMap's generatedAt.
+echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) pushed: $size bytes"

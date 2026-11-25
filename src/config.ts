@@ -2,7 +2,7 @@
 // loudly at startup and names itself. No tokens are ever logged.
 
 import { isAbsolute } from "node:path";
-import type { CalendarState } from "./calendar.ts";
+import { zoneSuffix, type CalendarState } from "./calendar.ts";
 import { DEFAULT_POLICY, type Policy } from "./rules.ts";
 import { parseHHMM } from "./time.ts";
 
@@ -280,14 +280,17 @@ export function calendarCheckLine(config: Config): string | null {
 
 /**
  * What `run` logs at startup: the file, and the snapshot the first read found in
- * it. Nothing at all when it is off, so a deployment without it is quiet.
+ * it, with the zone it declared for the same reason the refresh line names it. The
+ * line I read after a deploy is the one that has to state a disagreement. Nothing
+ * at all when it is off, so a deployment without it is quiet.
  */
 export function calendarRunLine(config: Config, state: CalendarState | null): string | null {
   if (config.calendarFile === null) return null;
   const held =
     state === null
       ? "no snapshot yet"
-      : `snapshot ${state.snapshot.generatedAt}, ${state.snapshot.events.length} event${state.snapshot.events.length === 1 ? "" : "s"}`;
+      : `snapshot ${state.snapshot.generatedAt}, ${state.snapshot.events.length} event${state.snapshot.events.length === 1 ? "" : "s"}` +
+        zoneSuffix(state.snapshot);
   return `calendar: on, ${config.calendarFile}: ${held}`;
 }
 

@@ -62,6 +62,15 @@ function held(events: CalendarEvent[], over: Partial<CalendarState> = {}): Calen
   };
 }
 
+/**
+ * The same day as a version 2 Mac exported it in `tz`: the snapshot is valid and
+ * fresh, and its days are that zone's rather than this bot's.
+ */
+function heldIn(tz: string, events: CalendarEvent[], over: Partial<CalendarState> = {}): CalendarState {
+  const state = held(events, over);
+  return { ...state, snapshot: { ...state.snapshot, tz } };
+}
+
 /** The plan, defaulted to the test's clock and to nothing sent yet. */
 function planned(args: {
   state: CalendarState | null;
@@ -498,6 +507,24 @@ test("a stale snapshot is worked from as it stands", () => {
   assert.deepEqual(meetingSection(held([event()], { freshness: "stale" }), "2026-12-01"), ["• 09:00 Acme weekly sync"]);
 });
 
+test("a snapshot exported in another zone asks nothing, however due its meetings look", () => {
+  // Long enough to be a question, answered, and ended ten minutes ago inside the
+  // workday: measured against this bot's day it is asked about, so only the
+  // disagreement about where a day starts and ends can leave it out.
+  const meeting = ended(10);
+  assert.equal(planned({ state: held([meeting]) }).pings.length, 1, "this bot's day asks about it");
+  assert.deepEqual(planned({ state: heldIn("Europe/London", [meeting]) }), { pings: [] });
+});
+
+test("a matched version 2 snapshot and a version 1 one are worked from alike", () => {
+  // A zone this bot keeps is no disagreement to state: the same ask and the same
+  // section as a file that declared nothing at all.
+  assert.deepEqual(keys(planned({ state: heldIn("Asia/Singapore", [ended(10)]) })), ["meeting:9f2c41d07ab3e6c1"]);
+  assert.deepEqual(keys(planned({ state: held([ended(10)]) })), ["meeting:9f2c41d07ab3e6c1"]);
+  assert.deepEqual(meetingSection(heldIn("Asia/Singapore", [event()]), "2026-12-01"), ["• 09:00 Acme weekly sync"]);
+  assert.deepEqual(meetingSection(held([event()]), "2026-12-01"), ["• 09:00 Acme weekly sync"]);
+});
+
 // ---- The text --------------------------------------------------------------
 
 test("a title is escaped, collapsed to one line, and clipped when it is absurd", () => {
@@ -594,4 +621,26 @@ test("the section escapes a title and says nothing for a day with no meetings", 
   assert.deepEqual(meetingSection(held([event()]), "2026-12-02"), []);
   assert.deepEqual(meetingSection(held([]), "2026-12-01"), []);
   assert.deepEqual(meetingSection(held([event({ start: at("2026-11-30T09:00"), end: at("2026-11-30T09:30") })]), "2026-12-01"), []);
+});
+
+test("the section says the two zones in place of the day it cannot list", () => {
+  // One line, in the section's own bullet style: the two identifiers, and why the
+  // meetings are not listed. It names no day, because the section also answers for
+  // dates that are not today. No title of the snapshot's reaches it.
+  assert.deepEqual(meetingSection(heldIn("Europe/London", [event()]), "2026-12-01"), [
+    "• Your calendar was exported in Europe/London and I keep days in Asia/Singapore, so I am not listing or asking about meetings that day.",
+  ]);
+  assert.deepEqual(
+    meetingSection(heldIn("Europe/London", [event()]), "2026-12-02"),
+    meetingSection(heldIn("Europe/London", [event()]), "2026-12-01"),
+    "the same line for a date that is not today: dry-run --week asks for other days",
+  );
+});
+
+test("a foreign snapshot that has also expired says nothing at all", () => {
+  // Expiry is the stronger word: its window is over, so there is nothing to explain
+  // about zones, and a snapshot that asks nothing and lists nothing logs nothing.
+  const expired: Partial<CalendarState> = { freshness: "expired" };
+  assert.deepEqual(meetingSection(heldIn("Europe/London", [event()], expired), "2026-12-01"), []);
+  assert.deepEqual(planned({ state: heldIn("Europe/London", [ended(10)], expired) }), { pings: [] });
 });

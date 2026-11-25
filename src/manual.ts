@@ -108,7 +108,7 @@ function todayTopic(settings: ManualSettings): ManualTopic {
         "The rows are ordered: what is late, then what is due today, then what is due soon, then a chase, then a milestone heads-up. Within a group the earlier date goes first, then the board's order.",
         ...(settings.calendarPings
           ? [
-              "• *Today's meetings*, from the calendar snapshot: one line per meeting today, `• 09:00 Acme weekly sync`, an all-day one as `• all day Offsite`, at most 8 lines and ending with `• and N more meetings` when the day has more. A day with no meetings has no block at all.",
+              "• *Today's meetings*, from the calendar snapshot: one line per meeting today, `• 09:00 Acme weekly sync`, an all-day one as `• all day Offsite`, at most 8 lines and ending with `• and N more meetings` when the day has more. A day with no meetings has no block at all, and a snapshot exported in another zone gets one line saying why instead.",
             ]
           : []),
         `• *Coming up*: ${comingUp}.`,

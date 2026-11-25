@@ -232,6 +232,15 @@ function held(
   };
 }
 
+/**
+ * The same snapshot as a version 2 Mac exported it in `tz`: valid and fresh, with
+ * days that are that zone's rather than this bot's.
+ */
+function heldIn(tz: string, events: Array<Record<string, unknown>> = [meeting()]): CalendarState {
+  const state = held(events);
+  return { ...state, snapshot: { ...state.snapshot, tz } };
+}
+
 /** A calendar the ask can only read: whatever the tick last held. */
 const calendarOf = (state: CalendarState | null): CalendarReader => ({ current: () => state });
 
@@ -549,6 +558,39 @@ test("no snapshot yet is a block that says not synced", () => {
 
   assert.equal(block.text, '<calendar unavailable="not synced">\n(calendar not visible: no snapshot has arrived)\n</calendar>');
   assert.deepEqual(block.summary, { status: "not-synced", count: 0 });
+});
+
+test("a snapshot exported in another zone is a block that says so and shows no meeting", () => {
+  const block = calendarBlock(heldIn("Europe/London", meetings(2)), TODAY);
+
+  assert.equal(
+    block.text,
+    [
+      '<calendar unavailable="other zone" pushed="Fri 27 Nov 08:30" exported-in="Europe/London" timezone="Asia/Singapore">',
+      "(calendar not visible: it was exported in Europe/London and I keep days in Asia/Singapore, so I cannot tell which day its meetings are on)",
+      "</calendar>",
+    ].join("\n"),
+  );
+  assert.deepEqual(block.summary, { status: "other-zone", count: 0 });
+  assert.doesNotMatch(block.text, /\| /, "no meeting line");
+  assert.doesNotMatch(block.text, /\(today\)|\(tomorrow\)/, "and no heading for one to sit under");
+  assert.doesNotMatch(block.text, /Kickoff/, "no title, though the snapshot holds one");
+
+  // Expiry is asked first: a window that is over has no day left to explain.
+  assert.equal(
+    calendarBlock({ ...heldIn("Europe/London", meetings(2)), freshness: "expired" }, TODAY).text,
+    '<calendar unavailable="expired" pushed="Fri 27 Nov 08:30">\n(calendar not visible: the last sync does not cover today)\n</calendar>',
+  );
+});
+
+test("a version 2 snapshot in this bot's zone makes the block a version 1 one makes", () => {
+  // The golden block's own test pins the version 1 text: a zone this bot keeps has no
+  // disagreement to state, so it is that block and not a line about zones.
+  const g = golden();
+  const matched: CalendarState = { ...g, snapshot: { ...g.snapshot, tz: "Asia/Singapore" } };
+
+  assert.equal(calendarBlock(matched, GOLDEN_TODAY).text, calendarBlock(g, GOLDEN_TODAY).text);
+  assert.deepEqual(calendarBlock(matched, GOLDEN_TODAY).summary, { status: "events", count: 3 });
 });
 
 test("a README cannot close the notes block, and its folder and url are escaped", () => {
@@ -932,14 +974,20 @@ test("the sources line puts the calendar between the board and the notes", () =>
   assert.equal(line({ status: "events", count: 1 }), "Sources: 69 board items, calendar: 1 event, notes: Acme · 830 ms");
   assert.equal(line({ status: "expired", count: 0 }), "Sources: 69 board items, calendar: expired, notes: Acme · 830 ms");
   assert.equal(line({ status: "not-synced", count: 0 }), "Sources: 69 board items, calendar: not synced, notes: Acme · 830 ms");
+  assert.equal(line({ status: "other-zone", count: 0 }), "Sources: 69 board items, calendar: other zone, notes: Acme · 830 ms");
   assert.equal(line(null), "Sources: 69 board items, notes: Acme · 830 ms", "no calendar, no part");
   assert.equal(line({ status: "events", count: 2 }, []), "Sources: 69 board items, calendar: 2 events · 830 ms", "and the notes come after it");
 });
 
-test("the ask's availability is its own three words, not an invitation's status", () => {
-  // The map is exhaustive at compile time: a fourth availability has to be given a
+test("the ask's availability is its own four words, not an invitation's status", () => {
+  // The map is exhaustive at compile time: a fifth availability has to be given a
   // word here, and none of calendar.ts's accepted|tentative|organizer|none fits.
-  const words: Record<CalendarAvailability, string> = { events: "2 events", expired: "expired", "not-synced": "not synced" };
+  const words: Record<CalendarAvailability, string> = {
+    events: "2 events",
+    expired: "expired",
+    "not-synced": "not synced",
+    "other-zone": "other zone",
+  };
   for (const status of Object.keys(words) as CalendarAvailability[]) {
     const summary: CalendarSummary = { status, count: status === "events" ? 2 : 0 };
     assert.equal(
@@ -992,6 +1040,11 @@ test("the log line counts the calendar where the sources line does, and never na
       name: "not synced",
       calendar: calendarOf(null),
       line: "ask 222.1: answered in 0 ms (1 items, calendar: not synced, notes: Accounts/Acme)",
+    },
+    {
+      name: "other zone",
+      calendar: calendarOf(heldIn("Europe/London", secret(2))),
+      line: "ask 222.1: answered in 0 ms (1 items, calendar: other zone, notes: Accounts/Acme)",
     },
     {
       name: "no calendar",
