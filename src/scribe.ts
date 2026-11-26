@@ -1,7 +1,8 @@
 // The scribe's pure parts: the prompt a note model answers, the note's shape,
-// the entry it renders, and where the entry goes in a folder's README. No I/O
-// and no clock in here: every date and every folder list is passed in, so the
-// whole file is testable without a model, without GitHub and without Slack.
+// the entry it renders, where the entry goes in a folder's README, and where a
+// write may land at all. No I/O and no clock in here: every date and every
+// folder list is passed in, so the whole file is testable without a model,
+// without GitHub and without a chat client.
 //
 // Format v0 of an entry: a heading line (date, type, topic), then the notes, then
 // the attribution. Newest first, directly under the README's "## Log" line.
@@ -141,6 +142,16 @@ export function safeFolder(folder: string, listed: string[]): string | null {
 /** A new folder's path from a name: Accounts/<name>, or null when the name is unsafe. */
 export function safeNewFolder(name: string): string | null {
   return FOLDER_NAME_RE.test(name) ? `${ACCOUNTS}${name}` : null;
+}
+
+/**
+ * Where a write may land: one of the folders the repo lists right now, or a new
+ * Accounts/<name> whose name the pattern accepts. Pure.
+ */
+export function writeFolder(folder: string, listed: string[]): string | null {
+  const existing = safeFolder(folder, listed);
+  if (existing !== null) return existing;
+  return folder.startsWith(ACCOUNTS) ? safeNewFolder(folder.slice(ACCOUNTS.length)) : null;
 }
 
 const TOPIC_MAX = 80;
