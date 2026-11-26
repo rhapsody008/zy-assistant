@@ -1,11 +1,11 @@
 // The CLI: read the board, apply the rules, print what they say; read the Mac's
-// calendar, print what it holds. It changes nothing, so it needs no store, no Slack
-// and no scheduler.
+// calendar, print what it holds; report what happened since the previous workday.
+// It changes nothing, so it needs no store, no Slack and no scheduler.
 //
 // Every dependency is injected (the board, the calendar export, the clock, the sink,
-// the env), so the whole command runs in a test without a network, a real clock, a
-// Calendar or a token. The entry point at the bottom of the file is the only part
-// that touches process.
+// the env, the network), so the whole command runs in a test without a network, a
+// real clock, a Calendar or a token. The entry point at the bottom of the file is
+// the only part that touches process.
 
 import { parseArgs } from "node:util";
 import { brief, type Brief } from "./brief.ts";
@@ -13,9 +13,10 @@ import { appFromEnv, exportCalendar, MAC_DEPS, renderCalendar } from "./calendar
 import type { CalendarSnapshot } from "./calendar.ts";
 import { loadEnv, type Env } from "./env.ts";
 import { errMessage } from "./errors.ts";
-import { createBoardClient, type BoardSource } from "./github.ts";
+import { createBoardClient, type BoardSource, type FetchLike } from "./github.ts";
 import { renderBrief, renderText, type Links } from "./render.ts";
 import { localNow, TZ } from "./time.ts";
+import { CALENDAR_DAYS_BACK, renderYesterday, yesterday, type CalendarSource } from "./yesterday.ts";
 
 export interface CliDeps {
   board: BoardSource;
@@ -24,14 +25,24 @@ export interface CliDeps {
   env: Env;
 }
 
-/** The Mac's snapshot of a window, exported on demand: the CLI has no file to read one from. */
-export type CalendarSource = (request: { from: number; days: number }) => Promise<CalendarSnapshot>;
-
 /** What `zya calendar` needs: the export, the sink and the zone it renders in. No token, no board. */
 export interface CalendarCliDeps {
   calendar: CalendarSource;
   out: (s: string) => void;
   tz: string;
+}
+
+/**
+ * What `zya yesterday` needs: the board read, the calendar export, the clock and
+ * the sink, and the network the notes and comment reads go through.
+ */
+export interface YesterdayCliDeps {
+  board: BoardSource;
+  calendar: CalendarSource;
+  now: () => Date;
+  out: (s: string) => void;
+  env: Env;
+  fetchFn?: FetchLike;
 }
 
 type Format = "md" | "json";
@@ -43,12 +54,13 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** The window a `zya calendar` run may ask for: whole days, and a fortnight back. */
 const DAYS_MAX = 14;
-const FROM_MIN = -14;
+const FROM_MIN = -CALENDAR_DAYS_BACK;
 
 const USAGE = `zya: a read-only view of ZY's board
 
   zya brief [--date YYYY-MM-DD] [--format md|json] [--links md|plain|slack]
   zya calendar [--days N] [--from N] [--format md|json]
+  zya yesterday [--date YYYY-MM-DD] [--format md|json]
 
   brief     the morning briefing of a day (default: today), as text or as JSON
   links     how a row's link and emphasis are written: markdown (default), plain
@@ -56,12 +68,16 @@ const USAGE = `zya: a read-only view of ZY's board
   calendar  the Mac's calendar, read through Calendar.app: N days (1..${DAYS_MAX},
             default 3) from today, or from N days before today (--from ${FROM_MIN}..0,
             default 0), as markdown (default) or as JSON
+  yesterday the board updates, their comments, the notes-repo commits and the
+            meetings since the previous workday (a Monday covers the weekend),
+            as markdown (default) or as JSON
 `;
 
-/** The two commands, each already checked: what a run is given, never a flag to re-read. */
+/** The three commands, each already checked: what a run is given, never a flag to re-read. */
 type Command =
   | { cmd: "brief"; date: string | null; format: Format; links: Links } // date null: today
-  | { cmd: "calendar"; from: number; days: number; format: Format };
+  | { cmd: "calendar"; from: number; days: number; format: Format }
+  | { cmd: "yesterday"; date: string | null; format: Format }; // date null: today
 
 /** One of the named values, or null: a typo is a usage error, not a default. */
 function oneOf<T extends string>(allowed: readonly T[], value: string | undefined, fallback: T): T | null {
@@ -154,6 +170,14 @@ function parseCommand(argv: string[]): Command | null {
     return { cmd: "calendar", from: namedFrom, days: namedDays, format: namedFormat };
   }
 
+  if (command === "yesterday") {
+    // A window in days, a second link style and a start before today all mean
+    // nothing here: yesterday's window is the previous workday's.
+    if (days !== undefined || from !== undefined || links !== undefined) return null;
+    if (date !== undefined && !isDate(date)) return null;
+    return { cmd: "yesterday", date: date ?? null, format: namedFormat };
+  }
+
   return null;
 }
 
@@ -178,6 +202,20 @@ export async function runCalendarCli(argv: string[], deps: CalendarCliDeps): Pro
   if (args === null || args.cmd !== "calendar") return usage();
   const snapshot = await deps.calendar({ from: args.from, days: args.days });
   deps.out(renderCalendar(snapshot, deps.tz, args.format));
+  return 0;
+}
+
+/**
+ * `zya yesterday`: the window since the previous workday, read and printed. A
+ * notes or comments read that fails throws, and the message says why; a calendar
+ * that fails is a line in the report, because the rest of the window happened.
+ */
+export async function runYesterdayCli(argv: string[], deps: YesterdayCliDeps): Promise<number> {
+  const args = parseCommand(argv);
+  if (args === null || args.cmd !== "yesterday") return usage();
+  const date = args.date ?? localNow(deps.now(), deps.env.tz).date;
+  const report = await yesterday({ date, env: deps.env, board: deps.board, calendar: deps.calendar, now: deps.now, fetchFn: deps.fetchFn });
+  deps.out(renderYesterday(report, args.format));
   return 0;
 }
 
@@ -226,12 +264,20 @@ async function main(argv: string[]): Promise<number> {
       });
     }
     const env = loadEnv();
-    return await runCli(argv, {
+    const deps = {
       board: createBoardClient(env.token),
       now: () => new Date(),
-      out: (s) => void process.stdout.write(s),
+      out: (s: string) => void process.stdout.write(s),
       env,
-    });
+    };
+    if (args.cmd === "yesterday") {
+      // The same bundle and the same window shape `zya calendar` opens.
+      return await runYesterdayCli(argv, {
+        ...deps,
+        calendar: (request) => exportCalendar({ ...request, app: appFromEnv() }, MAC_DEPS),
+      });
+    }
+    return await runCli(argv, deps);
   } catch (err) {
     process.stderr.write(`${errMessage(err)}\n`);
     return 1;
