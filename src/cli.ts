@@ -77,24 +77,28 @@ type Format = "md" | "json";
 
 /** What a flag may say. Anything else is a usage error, never a silent default. */
 const FORMATS: readonly Format[] = ["md", "json"];
-const LINKS: readonly Links[] = ["md", "plain", "slack"];
+const LINKS: readonly Links[] = ["md", "plain", "raw"];
 
 /** The window a `zya calendar` run may ask for: whole days, and a fortnight back. */
 const DAYS_MAX = 14;
 const FROM_MIN = -CALENDAR_DAYS_BACK;
 
-const USAGE = `zya: ZY's board, notes and calendar, read; zya update writes to the board
+const USAGE = `zya: ZY's board, notes and calendar: the reads print, update writes to
+     the board, and note writes to the notes repo
 
-  zya brief [--date YYYY-MM-DD] [--format md|json] [--links md|plain|slack]
+  zya help
+  zya brief [--date YYYY-MM-DD] [--format md|json] [--links md|plain|raw]
   zya calendar [--days N] [--from N] [--format md|json]
   zya yesterday [--date YYYY-MM-DD] [--format md|json]
   zya update --ref R [--status S] [--target D|none] [--next-touch D|none]
              [--next-action T] [--waiting-on T] [--comment T] [--dry-run]
   zya note [--dry-run]
 
+  help      this text: every command and what its flags do
   brief     the morning briefing of a day (default: today), as text or as JSON
   links     how a row's link and emphasis are written: markdown (default), plain
-            text for a terminal, or the Slack markup the briefing is built in
+            text for a terminal, or raw, which keeps the briefing's own markup
+            (<url|ref> and *emphasis*) exactly as the rules wrote it
   calendar  the Mac's calendar, read through Calendar.app: N days (1..${DAYS_MAX},
             default 3) from today, or from N days before today (--from ${FROM_MIN}..0,
             default 0), as markdown (default) or as JSON
@@ -112,7 +116,7 @@ const USAGE = `zya: ZY's board, notes and calendar, read; zya update writes to t
   note      one note, as JSON on stdin, written into the notes repo as one entry
             under its folder's Log, newest first. The folder is one the repo lists,
             or a new Accounts/<name>. A run prints the folder, the README's path,
-            the entry and the commit's url; --dry-run prints the same, with no url,
+            the entry and the commit's url; --dry-run prints the same, with url null,
             and writes nothing
 `;
 
@@ -122,7 +126,8 @@ type Command =
   | { cmd: "calendar"; from: number; days: number; format: Format }
   | { cmd: "yesterday"; date: string | null; format: Format } // date null: today
   | { cmd: "update"; dryRun: boolean; update: UpdateArgs }
-  | { cmd: "note"; dryRun: boolean };
+  | { cmd: "note"; dryRun: boolean }
+  | { cmd: "help" };
 
 /** One of the named values, or null: a typo is a usage error, not a default. */
 function oneOf<T extends string>(allowed: readonly T[], value: string | undefined, fallback: T): T | null {
@@ -192,6 +197,10 @@ function parseCommand(argv: string[]): Command | null {
   }
   const [command, ...rest] = parsed.positionals;
   if (rest.length > 0) return null;
+  // `zya help` takes no option at all, and a flag on it was meant for one of the
+  // commands: a usage error rather than a page of prose. `parseArgs` fills in only
+  // what was supplied, so no keys is no flags.
+  if (command === "help") return Object.keys(parsed.values).length === 0 ? { cmd: "help" } : null;
   const { date, format, links, days, from, ref, status, target, comment, "dry-run": dryRun } = parsed.values;
   const nextTouch = parsed.values["next-touch"];
   const nextAction = parsed.values["next-action"];
@@ -373,6 +382,12 @@ function usage(): number {
   return 2;
 }
 
+/** The usage text, on stdout and exit 0: `zya help` asked for exactly this. */
+function help(): number {
+  process.stdout.write(USAGE);
+  return 0;
+}
+
 if (import.meta.main) {
   process.exitCode = await main(process.argv.slice(2));
 }
@@ -385,6 +400,8 @@ if (import.meta.main) {
 async function main(argv: string[]): Promise<number> {
   const args = parseCommand(argv);
   if (args === null) return usage();
+  // The one command that needs nothing: no token, no board, no calendar.
+  if (args.cmd === "help") return help();
   try {
     if (args.cmd === "calendar") {
       // No env file: a calendar read needs no token, and the zone is the only

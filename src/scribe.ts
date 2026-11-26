@@ -116,11 +116,11 @@ function strings(value: unknown, what: string): string[] {
 
 /**
  * The shape of a note, strictly: every field the entry renders has to be there
- * and be usable. The message of a throw is what the retry hands back to the
- * model, so it names the field it did not like.
+ * and be usable. The message of a throw is what `zya note` prints, so it names
+ * the field it did not like.
  */
 export function validateNote(value: unknown): Note {
-  if (!isRecord(value)) fail("the reply is not a JSON object");
+  if (!isRecord(value)) fail("the note is not a JSON object");
 
   const folder = optionalText(value.folder, "folder");
   const newFolderName = optionalText(value.newFolderName, "newFolderName");

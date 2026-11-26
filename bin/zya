@@ -1,5 +1,6 @@
 #!/bin/sh
-# zya: the CLI over ZY's board, notes and calendar. It reads them, and `update`
-# writes to the board. A shim, so the command works from any directory and from a
-# symlink: node runs the TypeScript entry directly.
+# zya: the CLI over ZY's board, notes and calendar. `brief`, `calendar` and
+# `yesterday` read them; `update` writes to the board and `note` writes to the
+# notes repo. A shim, so the command works from any directory and from a symlink:
+# node runs the TypeScript entry directly.
 exec node "$(dirname "$(realpath "$0")")/../src/cli.ts" "$@"

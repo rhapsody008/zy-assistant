@@ -1,298 +1,251 @@
-# zy-assistant
+# zya
 
-A Slack DM bot that reminds ZY what the GitHub Project board says to do today.
+`zya` is a local CLI over ZY's GitHub Project board, the notes repo and the Mac's
+calendar. It runs where ZY is, when ZY — or an agent acting for ZY — runs it: no
+chat bot, no database, no scheduler, no server. Every read prints its result; two
+commands write, and a write is a decision ZY makes before the command is typed
+(see **Writes**).
 
-It reads a GitHub Project v2 board, applies the rules in `src/rules.ts`, and DMs
-the result at two slots on weekdays (Asia/Singapore):
+- **reads**: `zya brief`, `zya yesterday`, `zya calendar`. They fetch, they print,
+  they change nothing.
+- **writes**: `zya update` (one board item: its fields and a comment on its issue)
+  and `zya note` (one entry into the notes repo). Given `--dry-run` they write
+  nothing either, and that is how every example below is written.
 
-- **M**, `BRIEF_TIME` (09:00): one morning briefing. Its *Today* rows are the
-  items that need action, whatever their status (Target date within 3 days,
-  overdue, or Next touch due; a Workshop or a POC two weeks and one week out; a
-  Waiting item nobody touched for a few days). Each row (up to the message limit) carries a ⋯ menu with the
-  ping actions, and the rows are sorted: late first, then due or touch today, then
-  soonest, chases, heads-ups. Friday adds a Pipeline and a Learning section.
-- **E**, `EOD_TIME` (17:30): a ping for every item whose Target date is today, and
-  a re-ping for every morning row that was never acked and is late or due/touch
-  today. A quiet evening sends nothing.
+Node 26 runs the TypeScript directly (type stripping: `.ts` import extensions, no
+enums), so there is nothing to build.
 
-A slot runs at most once. If Slack fails half way through, the next minute tick
-retries and sends only what never went out (the morning briefing included), and
-after three failures it closes the slot and DMs the error.
+## Install
 
-A row or ping is acked by its menu or buttons, a reply in an evening ping's thread, updating the
-item on the board, or committing to `Accounts/<Account>` in the notes repo.
-Buttons write to the board (ZY's click is the approval): 👍 On it (ack),
-Move date (a modal: a new date and a reason, which becomes a comment on the
-issue), ✅ Done (Status = Done), Tomorrow / +7 days (Next touch, rolled off the
-weekend).
-
-The board is mapped by field **name**: `Status` (single select), `Target date`,
-`Next touch` (dates), `Next action`, `Waiting on` (text). Closed or merged
-content counts as `Done`. The optional fields `Work type`, `Stage`, `Track`,
-`Account` and `Cadence` are read when the board has them: Work type sets the lead
-time, Stage and Track feed the Friday sections, Cadence is what the Learning
-section reports, and Account is where the notes-repo activity is looked up.
-
-It also answers questions: DM it `how's the Acme POC going?` and it reads the
-board, the calendar and the notes repo and answers in a thread, changing nothing
-(see **Asking questions**). And it takes dictations: DM `note: …` and the scribe turns
-it into an entry of the notes repo and replies with the link (see **The scribe**).
-
-## Using the bot
-
-DM the bot `help` (or `?`, or `manual`) and it answers with the manual below,
-which separates what you type from what the bot sends on its own. `today`
-previews the morning plan, `help <topic>` opens one topic, and an unknown topic
-answers the overview with `No topic <x>.` on top. Any other DM that is no command
-is a question when the LLM is set (see **Asking questions**), and a one-line hint
-when it is not. The ask line and the `ask` topic are left out when there is no
-model. The text is rendered from `src/manual.ts` with the live
-policy and slot times (`WAITING_CHASE_DAYS`, `STAGE_STALE_DAYS`, the lead times,
-the WIP limit), so the pages say what this deployment does. The `note:` line and
-the `note` topic are left out when the scribe is off, the `add:` line and the
-`add` topic when `ADD_REPO` is unset, and the notes-repo ack below when
-`NOTES_REPO` is unset. With `CALENDAR_PINGS` off the manual says nothing of a
-meeting. With the defaults, `help` sends exactly this:
-
-```
-*What you can type*
-• `today`: the plan for today, the same text as the morning briefing.
-• Ask me anything about your board or notes, e.g. `how's the Acme POC going?` or `what's waiting on others?` I answer from the board and your notes, and I never change anything.
-• `note: <text>`: `note: Acme call, they want a POC in January. I send the sizing by Friday.` and I save it to the notes repo.
-• `help`, or `help <topic>`: this manual, or the page behind one topic.
-• Reply under an evening ping: marks it seen.
-• Anything else you write, in a new message or a thread, is read as a question.
-
-*What I send you* (automatic; you never type these)
-• The briefing at `09:00` on weekdays: ONE message, with a row per item that needs you and a `⋯` menu on each row.
-• At `17:30`, only if something needs you: a ping for each item due today, and a re-ping of an unanswered row that is still late or still due. A quiet evening sends nothing.
-• The pings of the evening are a separate message about ONE item: a deadline close (Target date due in 3 days or fewer) or already passed, a Next touch due, or someone to chase (a Waiting item nobody moved for 5 days). Each ping has buttons.
-• A row looks like this: `notes#53 Acme deck review: due in 2 days (Thu 26 Nov)` with `⋯` on its right: *Got it*, *Done*, *+1 day*, *+7 days*, *Move date…*
-
-*The buttons under a ping, and the `⋯` on a row*
-• *👍 On it*: nothing on the board changes; the ping is only marked handled.
-• *✅ Done*: sets the item's Status to `Done`.
-• *Move date*: asks for the new date and a reason, sets Target date, and posts the reason on the issue.
-• *Tomorrow* and *+7 days*: move Next touch, rolled off the weekend. The Target date stays.
-• A row's `⋯` menu has the same actions, one entry each: *Got it*, *Done*, *+1 day*, *+7 days*, *Move date…*
-
-More: `help pings`, `help buttons`, `help note`, `help ask`, `help updates`, `help today`
+```sh
+npm ci
+ln -sf "$PWD/bin/zya" ~/bin/zya      # ~/bin has to be on PATH
 ```
 
-With `ADD_REPO` set, the typed block also carries the `add: <text>` line, and
-`help add` opens its page. With `CALENDAR_FILE` set, the ask line and `help ask`
-name the calendar, and without it they read as they did before the ask could see
-one.
+`bin/zya` is a shim: it resolves its own path and hands the arguments to
+`src/cli.ts`, so the command works from any directory and through the symlink.
 
-Every successful action is one log line with ids only, never a note's text or
-title: `scribe <ts>: committed in <ms> ms (<n> actions) <url>`,
-`scribe <ts>: asked for a folder`, `scribe <ts>: committed raw text <url>`,
-`add <ts>: drafted in <ms> ms (parent <ref>)`,
-`add <ts>: created <repo>#<n> as <itemId>, under <parentItemId>`,
-`add <ts>: create failed at <issue|project|fields|link>: <reason>`,
-`note-items <ts>: proposed <n> items (<k> not created, parent <ref>)`,
-`note-items <ts>: item <n>: created <repo>#<n> as <itemId>, under <parentItemId>`,
-`note items: on -> <ADD_REPO>` (and `note items: off, a note's actions are only listed`
-at startup), `calendar: on, <path>: snapshot <iso>, <n> events` at startup, with `, tz
-<zone>` when the snapshot declares one and `, tz <zone>, not <ASSISTANT_TZ>: its
-meetings and asks are off` when it declares another,
-`calendar: snapshot <iso>: <n> events, <n> all-day` when a tick accepts a push, with
-the same `tz` suffix, `calendar: snapshot rejected: <field path>: <why>`,
-`calendar: <fresh|stale|expired>, snapshot <iso> (age <n>)` when the freshness changes,
-`calendar: snapshot in <zone>, not <ASSISTANT_TZ>: its meetings and asks are off`,
-`calendar: snapshot in <ASSISTANT_TZ> again` and
-`calendar: snapshot has no zone again, assuming <ASSISTANT_TZ>`, each said once when
-the declared zone changes after startup, `calendar: the tick failed: <why>`,
-`calendar pings: on` at startup, `meeting ping <eventId>: sent`,
-`meeting ping <eventId>: failed: <reason>`, `meeting pings: <reason>`,
-`proposal <id>: apply failed`, `button <action> on <item> by <user>`,
-`move <item>: <old> -> <new>`, `reply ack <item>`, `help <topic>`,
-`ask <ts>: answered in <ms> ms (<n> items, calendar: <n events|expired|not synced|other zone>, notes: <folders>)` and
-`ask <ts>: failed: <reason>`. A question's text and an answer's text are never
-logged, and neither is an `add:` sentence or the title drafted from it. Nor is a
-meeting's title or a reply's words: the note itself carries them to the notes
-repo. The calendar's part of the ask's line is a count or one word for why there
-is none, and is left out whole when there is no calendar: never a title, a domain
-or a time.
+## The token
 
-## Env
+`GITHUB_TOKEN` is GitHub's, and only the commands that talk to GitHub need it: it
+is loaded after the command line is read, so `zya help` and `zya calendar` work on
+a machine with no token at all. A fine-grained PAT covering this much is enough:
 
-| Variable | Needed by | Default |
+- `zya brief` and `zya yesterday` read the project and its issues — **Projects:
+  read, Issues: read**;
+- `zya yesterday` also reads the notes repo's commits, and `zya note` reads and
+  writes its READMEs — **Contents: read**, and **read and write** for `zya note`,
+  on `NOTES_REPO`;
+- `zya update` writes the item's fields and may leave a comment on its issue —
+  **Projects: read and write, Issues: read and write**;
+- `zya note` touches nothing but `NOTES_REPO`: no project access, and no Issues
+  permission, because it never reads or comments on an issue.
+
+The token comes from the shell, and when the shell has none, from the
+`GITHUB_TOKEN=` line of `~/.config/zy-assistant/env` (quotes stripped; the rest of
+that file is not read). It is never printed and never appears in an error: the
+message names the variable instead.
+
+| Variable | Default | What it sets |
 | --- | --- | --- |
-| `GITHUB_TOKEN` | every mode | – (fine-grained PAT: read the project, write the items, and Issues read and write on `ADD_REPO`) |
-| `SLACK_BOT_TOKEN` | `run`, optional `check` | – |
-| `SLACK_APP_TOKEN` | `run`, optional `check` | – |
-| `SLACK_USER_ID` | `run`, optional `check` | – (the only person the bot DMs and obeys) |
-| `PROJECT_OWNER` | | `rhapsody008` |
-| `PROJECT_NUMBER` | | `1` |
-| `BRIEF_TIME` | | `09:00` |
-| `EOD_TIME` | | `17:30` |
-| `DB_PATH` | | `./data/state.db` |
-| `ASSISTANT_TZ` | | `Asia/Singapore` |
-| `NOTES_REPO` | | – (owner/repo: a commit under `Accounts/<Account>` acks that Account's items, the scribe writes here and the ask reads here; unset turns all three off) |
-| `ADD_REPO` | `run` | – (owner/repo: where an `add:` item's issue is created; with the three `LLM_*` variables it turns `add:` on) |
-| `NOTE_ITEMS` | `run` | – (`on`: a committed note's actions are offered as board items; any other value is off. It needs the scribe and `ADD_REPO`, and without either it is a startup error) |
-| `CALENDAR_FILE` | `run`, `ask`, `calendar` | – (an absolute path to the calendar snapshot the Mac pushes as a ConfigMap; the ask reads it too; unset turns the calendar off) |
-| `CALENDAR_PINGS` | `run` | – (`on`: DMs asking how some of the day's meetings went, the longest first, and the day's meetings in the briefing; any other value is off. It needs `CALENDAR_FILE` and the scribe, and without either it is a startup error naming what is missing) |
-| `WAITING_CHASE_DAYS` | | `5` (a Waiting item with no update for longer is chased) |
-| `STAGE_STALE_DAYS` | | `21` (a pipeline item with no update for longer is nagged on Friday) |
-| `LLM_BASE_URL` | `scribe`, `ask`, `check`, `run` | – (an OpenAI-compatible gateway, e.g. `https://<host>/enterpriseai/gateway/v1`) |
-| `LLM_API_KEY` | `scribe`, `ask`, `check`, `run` | – |
-| `LLM_MODEL` | `scribe`, `ask`, `check`, `run` | – (e.g. `zy-pi-uep`) |
-| `LLM_TIMEOUT_MS` | | `90000` (what one completion may take) |
-| `NOTES_GITHUB_TOKEN` | | – (defaults to `GITHUB_TOKEN`; it is the token that needs contents write on `NOTES_REPO`) |
+| `GITHUB_TOKEN` | – | the one secret; needed by `brief`, `yesterday`, `update` and `note` |
+| `PROJECT_OWNER` | `rhapsody008` | the owner of the Project v2 board |
+| `PROJECT_NUMBER` | `1` | the board's number |
+| `NOTES_REPO` | `rhapsody008/notes` | owner/repo: `zya yesterday` reads its commits, `zya note` writes its READMEs |
+| `ASSISTANT_TZ` | `Asia/Singapore` | the reporting zone: every date, day and window a command prints is read in it |
+| `ZY_CALENDAR_APP` | `$HOME/zyworkspace/gitrepo/zy-assistant/mac/calendar/zy-calendar-export.app` | the bundle `zya calendar` opens |
 
-No token is ever logged or written to the database.
+An empty variable is an unset one. `zya note` reads only the token and
+`NOTES_REPO`: a broken `PROJECT_NUMBER` is not a note's failure.
 
-## Modes
+## Commands
 
-```sh
-node src/main.ts check                                   # board summary + Slack hello DM
-node src/main.ts dry-run --date 2026-11-25               # print M and E for that day
-node src/main.ts dry-run --date 2026-11-25 --slot M      # just the morning
-node src/main.ts dry-run --week 2026-11-23               # Mon-Fri, M and E (a Monday)
-node src/main.ts scribe --dry-run < note.txt             # a dictation: print the folder and the entry
-node src/main.ts scribe < note.txt                       # a dictation: commit it
-node src/main.ts ask "how's the Acme POC going?"         # a question: the answer and its sources
-node src/main.ts calendar                                # the calendar snapshot the bot holds
-node src/main.ts run                                     # Slack + scheduler, every 60 s
-```
+Every command prints to stdout and exits 0. There are two exit-1 paths, and they
+print on different streams:
 
-`dry-run` reads the live board with an empty history: it prints, it never sends,
-never writes to the board and never opens the database.
+- **a throw** — a board it cannot read, a refused date, a note that is not valid —
+  prints one line, its message, on stderr, and nothing on stdout;
+- **`zya update` failing while it applies its plan** has already written part of
+  it: it prints that result on stdout and exits 1. See **zya update** — read it
+  before running anything again.
 
-`scribe` reads the dictation from stdin and runs the same pipeline a DM does,
-without Slack and without the database: `listFolders`, the model, and the render
-(`--dry-run`) or the commit. A dictation no existing folder fits prints the
-suggested `Accounts/<name>` and writes nothing.
+A command line zya does not know is the usage text on stderr, exit 2.
+`--format json` prints the same result as JSON, with the shape the code works in —
+that is what a script reads.
 
-## Asking questions
-
-A DM that is no command is a question, as long as the three `LLM_*` variables are
-set: `how's the Acme POC going?`, `what's waiting on others?`, `what did we decide
-about the Globex sizing?`. The bot replies `🔎 looking…` in a thread under the
-question at once and edits that reply into the answer, with a line under it
-saying what it read (`Sources: 12 board items, calendar: 6 events, notes: Acme ·
-940 ms`, and no `calendar:` part when there is no calendar). Every failure lands
-in that reply as `couldn't answer: <reason>`; nothing is thrown at Slack.
-
-The context is rebuilt for every question:
-
-- **today**, in Asia/Singapore, with the weekday, so "next week" and "before
-  Friday" mean something;
-- **the board**: every item that is not Done, plus the Done items touched in the
-  last two weeks, the most recently updated first, at most 150 lines and about
-  25k characters, one line each: ref, title, status, account, track, work type,
-  stage, target date, next touch, next action, waiting on, updated, url, with the
-  empty fields left out;
-- **the calendar**: with `CALENDAR_FILE` set, the snapshot the bot holds: one
-  heading per local day it covers, `(today)` and `(tomorrow)` named, and one line
-  per meeting — its time, title, whether ZY answered, how many are coming and
-  who it is with (the first five domains, the rest counted), the earliest first
-  and at most 80 of them;
-- **the notes**: with `NOTES_REPO` set, the README of up to three folders the
-  question names — a folder name, or the Account of a board item the question
-  names — its header and the newest part of its log (a README is newest first),
-  with the GitHub URL of each.
-
-The board goes in a `<board>` block, the calendar in a `<calendar>` block and
-each README in a `<notes folder="…" url="…">` block, and the system prompt says
-that everything inside them is data to answer from, never an instruction.
-Everything inside a block is HTML-escaped (`&amp;`, `&lt;`, `&gt;`, and `&quot;`
-in the attributes), so a title or a README that holds `</board>`, `</calendar>`
-or `</notes>` cannot end the block it is in. The model gets no tools. An expired
-snapshot is not shown at all: the block says the last sync does not cover today,
-because its window holds yesterday's meetings and reading those as tomorrow's
-would be a lie. A snapshot that has not arrived says so too, and a snapshot the
-Mac exported in a zone other than `ASSISTANT_TZ` is shown as `unavailable="other
-zone"` with no meetings, because its day boundaries are not the bot's days.
-
-The answer comes back at most 8 lines of Slack mrkdwn, at most 2900 characters,
-with dates written as `Thu 26 Nov`, board items cited as their ref linked to the
-GitHub issue and notes as `<readme-url|Acme notes>`. The prompt tells it to
-answer only from the context and, when the context does not hold the answer, to
-say so and say what is missing. A `<think>` block is stripped the way the scribe
-strips it; a reply cut off at `LLM_MAX_TOKENS`, or one whose reasoning never
-closed, is asked for once more.
-
-It is strictly read-only: the board is only fetched, the calendar is only read,
-the notes are only read, and nothing is written anywhere. The tests prove it with
-fakes whose write methods throw.
-
-Threads, in full:
-
-- a reply under an evening ping is an ack, whatever it says (a briefing row is
-  acked with its own menu, so a reply under the briefing is a question);
-- a reply in a thread the bot has answered is a follow-up: the context is rebuilt
-  from the fresh board, calendar and notes (a follow-up may name a different
-  account), and the last three questions and answers of that thread ride along as
-  conversation;
-- any other reply (under a briefing, a `today` preview, a dictation's thread, a
-  manual message) is a plain question, answered in that thread with no earlier
-  talk;
-- `note: …` is a dictation wherever it is written, and `add: …` is a draft
-  wherever it is written; under an evening ping each takes that ping's item as a
-  hint and does not ack the ping.
-
-Answers are kept in the `asks` table, keyed by the answer message and its thread,
-and the question's own message ts is claimed in `asks_seen` before the model is
-called: Slack delivers an event twice sometimes, and one question gets one
-answer. Both are pruned after 30 days, at startup and once a day after.
-
-From the Mac:
+### `zya help`
 
 ```sh
-node src/main.ts ask "how's the Acme POC going?"
+zya help
 ```
 
-The same pipeline, printed instead of posted: it needs `GITHUB_TOKEN` and the
-three `LLM_*` variables, `NOTES_REPO` and `CALENDAR_FILE` are optional, and it
-prints the answer, the sources line and the timing. It keeps no history, and it
-reads the snapshot file itself, once, before answering: that process has no tick
-to hold one. A snapshot it cannot trust is one log line and an answer without a
-calendar, never a failed question.
+Prints the usage text — every subcommand with its flags, and what each one does —
+on stdout, exit 0. The same text is what a bad command line prints on stderr.
 
-## The scribe
+### `zya brief`
 
-DM the bot `note: …` — as a DM or as a reply in a ping's thread — and it turns
-the words into one entry of the notes repo, commits it without asking, and
-replies in the same thread with the link. Dictated under a ping, the ping's item
-title is given to the model as context; it does not ack the ping.
+```sh
+zya brief                                    # today, in ASSISTANT_TZ
+zya brief --date 2026-11-27                  # a Friday, sections and all
+zya brief --format json                      # date, rows, head, tail, text
+zya brief --links plain                      # for a terminal
+zya brief --links raw                        # the briefing's own markup, untouched
+```
 
-It is off unless `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL` and `NOTES_REPO` are
-all set: with any of them unset the bot behaves as 0.3.0 did, apart from the help text.
-Half-set LLM variables are a startup error, not a quiet no.
+The morning briefing of the board, as the rules in `src/rules.ts` read it: a row
+per item that needs ZY today (late, due or due a touch, a chase, a head-up), the
+soonest first; then *Coming up*, *Stale dates*, the Friday *Pipeline* and
+*Learning* sections, and the count in progress. `--date` is any `YYYY-MM-DD`; the
+date it prints is the date it was asked about.
 
-The model is Nutanix Enterprise AI (`…/enterpriseai/gateway/v1`, model
-`zy-pi-uep`): plain chat completions with `temperature: 0`, no `response_format`
-and no tool calling, because the gateway need not have them. The answer is one
-JSON object, taken out of the reply's `<think>` block and code fences, parsed and
-validated; an unusable answer is sent back once more with the reason, and then
-given up on.
+`--links` is how the two marks the briefing is built with — `<url|ref>` for a link
+and `*word*` for emphasis — are spelled: `md` (default) writes a markdown link and
+`**double**` emphasis, `plain` puts the url behind its text in parentheses and
+drops the asterisks, and `raw` keeps the markup exactly as the rules wrote it.
 
-What it does with a dictation:
+### `zya calendar`
 
-1. replies `📝 writing…` in the thread, and stores the raw text in SQLite before
-   anything else (the message `ts` is the key: a redelivered event does nothing);
-2. lists `Accounts/`, `Partners/` and `Events/` and asks the model for
-   `{ folder, newFolderName, date, type, topic, attendees, summary, decisions, actions }`;
-3. a folder the model picks from that list is used as it is; when none fits it
-   asks `New folder Accounts/<name>?` with a **Create** button, a **Cancel** and
-   a select of the existing folders, and the answer resumes from the stored note
-   (the model is not asked again);
-4. reads the folder's `README.md` (or makes one) and inserts the entry directly
-   under its `## Log` line, newest first, then commits it as
-   `notes(<folder>): <date> <topic> [scribe]`; a README that changed under it is
-   read again, up to three times;
-5. edits the `📝 writing…` reply to `✅ <folder>: <topic> → <link>`, plus the
-   note's actions with "board items: a card follows" when `NOTE_ITEMS` is on, and
-   with "board proposals: coming in step 2" when it is not.
+```sh
+zya calendar                      # three days from today, as markdown
+zya calendar --days 1             # today only
+zya calendar --from -1 --days 2   # yesterday and today
+zya calendar --format json        # the same events, with localDate/localStart/localEnd
+```
 
-If the model cannot answer at all, nothing is lost: the raw text is offered the
-existing folders and committed verbatim as
-`## <today> · Meeting · Raw dictation (unprocessed)` with the text quoted, once
-the folder is chosen. Until then the dictation stays in the `dictations` table
-with the error that stopped it.
+Reads Calendar.app on this Mac: `--days` is 1 to 14 (default 3) and `--from` is
+-14 to 0 days before today (default 0), and the window starts at a midnight, so a
+meeting that ended an hour ago is still in today's window. Exchange sources only:
+a personal calendar has no business in a briefing, and cancelled events and
+declined invitations are left out. Each meeting is a line with its time, its
+title, whether ZY answered, how many are coming and the domains it is with —
+never an address and never a body:
+
+```
+## Tue 1 Dec
+- all day Offsite
+- 09:00-10:00 Acme weekly sync (accepted, 6 attendees, acme.example)
+```
+
+**Two zones, and only one of them is `ASSISTANT_TZ`.** The export's window is cut
+at midnights in the **Mac's own zone** (`TimeZone.current` in the exporter): which
+meetings `--days 1` returns is the Mac's day, wherever the Mac is. `ASSISTANT_TZ`
+is the **reporting** zone: it decides which day each returned meeting is printed
+under, and it is what `zya brief` and `zya yesterday` measure their dates and
+windows in. When the two disagree, a meeting is printed under its `ASSISTANT_TZ`
+day, which need not be the day the Mac returned it for.
+
+**It needs the bundle, built once.** `zya calendar` opens a
+`zy-calendar-export.app` through LaunchServices, and the app reads the calendar
+with EventKit. The bundle exists for one reason: macOS's Calendar permission (TCC)
+is granted to a GUI app, and a bare binary started from a shell gets
+`notDetermined` and no dialog at all. So:
+
+```sh
+cd mac/calendar && ./build.sh     # from Terminal, which is a GUI session
+```
+
+The first run asks for the Calendar permission: give it once. A rebuild changes
+the ad-hoc signature and can cost a second prompt, so rebuild only when
+`main.swift` changed — and expect to confirm the grant again. Every failure
+message and its cause are in `mac/calendar/README.md`.
+
+**Which bundle.** The default is an absolute path, not a path relative to the
+checkout: `$HOME/zyworkspace/gitrepo/zy-assistant/mac/calendar/zy-calendar-export.app`.
+A clone somewhere else builds its own bundle and names it, or `zya calendar`
+keeps opening the one at that fixed path:
+
+```sh
+ZY_CALENDAR_APP="$PWD/mac/calendar/zy-calendar-export.app" zya calendar
+```
+
+### `zya yesterday`
+
+```sh
+zya yesterday                     # since the previous workday
+zya yesterday --date 2026-11-30   # a Monday: the window covers the weekend
+zya yesterday --format json
+```
+
+One report of what happened in the window between the previous workday's midnight
+and today's: the meetings, the board items that moved, the comments on their
+issues, and the notes-repo commits. A Monday's window reaches back to Friday, so
+Friday, Saturday and Sunday are all inside it. It is a window, not an audit of it:
+the notes repo's commits are listed one page (up to 100) and opened up to 30 of
+them, and each repo is asked for one page of 100 comments, so a busy weekend can
+hold activity inside those dates and outside the report. `truncated` in the JSON
+says so for the commits; the comment read has no such flag. A calendar the Mac
+refuses is a line in the report, because the rest of the window happened all the
+same; a notes or comments read that fails stops the report, because half of one
+would lie.
+
+### `zya update`
+
+```sh
+zya update --ref demo#52 --status Done --dry-run
+zya update --ref demo#52 --target 2026-12-02 --comment "moving to December" --dry-run
+zya update --ref demo#52 --next-touch 2026-11-30 --waiting-on Dana --dry-run
+zya update --ref demo#52 --target none --next-action "" --dry-run
+```
+
+One board item: the fields to change and, optionally, a comment on its issue. The
+item is its project item id, or a ref (`demo#52`) the board has exactly one of. A
+date is cleared with `none` and a text with an empty string; at least one field
+change or a comment is required, and a run with neither is a usage error. The
+fields are the board's own names: `Status` (an option the board has), `Target
+date`, `Next touch`, `Next action`, `Waiting on`.
+
+Everything the writes need — the field's id, the option's id, the issue's id — is
+resolved against the board the plan was made from, before the first write, so a
+bad date or an unknown option fails with nothing written. `--dry-run` prints that
+plan and writes nothing. The same line without `--dry-run` is the write; see
+**Writes** before typing it.
+
+Both print JSON on stdout. A dry run prints the plan, `{ "item", "ops" }`. A
+real run prints `applied`, the writes GitHub confirmed, and — when one was being
+written as the answer was lost — `failed`, in which case it exits 1. That write may have landed after all, and the
+ops after it were never attempted, so **read `applied` and `failed` before running
+anything again**: a second run repeats the writes that already went through.
+
+### `zya note`
+
+```sh
+zya note --dry-run < note.json    # the folder, the path and the entry; nothing written
+```
+
+One note, as JSON on stdin, written into the notes repo as one entry under its
+folder's `## Log`, newest first. The same line without `--dry-run` is the write,
+and prints the same result plus the commit's url; see **Writes** before typing it.
+
+```json
+{
+  "folder": "Accounts/Acme",
+  "newFolderName": null,
+  "date": "2026-11-25",
+  "type": "Workshop",
+  "topic": "Acme VPC sizing",
+  "attendees": ["ZY", "Ana"],
+  "summary": "We sized the VPC. Ten nodes is enough.",
+  "decisions": ["Ten nodes"],
+  "actions": [{ "owner": "ZY", "text": "send the sizing sheet", "due": "2026-11-28" }]
+}
+```
+
+`folder` is one the repo lists right now, and `newFolderName` is the other way
+round: a bare name, no `Accounts/` and no slash, which becomes the new folder
+`Accounts/<name>`. A note that creates one says so like this:
+
+```json
+{ "folder": null, "newFolderName": "Acme", "date": "2026-11-25", "type": "Workshop", "topic": "Acme VPC sizing", "attendees": [], "summary": "…", "decisions": [], "actions": [] }
+```
+
+and writes `Accounts/Acme/README.md`; `"newFolderName": "Accounts/Acme"` is
+refused, because a folder name is not a path. `type` is one of `POC`, `Workshop`,
+`Follow-up`, `Demo-Slides`, `Partner`, `Experiment`, `Learning`, `Admin`,
+`Meeting`. Every field and the folder are checked before anything is written,
+so an invalid note writes nothing at all. The run prints the folder, the README's path, the entry and
+the commit's url (null in a dry run); the entry is committed as
+`notes(<folder>): <date> <topic> [zya]`, and a write that lost its sha to another
+writer is read again and tried again, up to three attempts in total.
 
 Format v0 of an entry:
 
@@ -307,328 +260,53 @@ Format v0 of an entry:
 ### Actions
 - [ ] ZY: send the sizing sheet (due 2026-11-28)
 
-_Scribed by zy-assistant from Slack._
+_Written via zya._
 ```
 
-`Attendees`, `Decisions` and `### Actions` are left out when they are empty. The
-actions are also stored (in the dictation's `note_json`) and listed in the reply.
-With `NOTE_ITEMS` on they are then offered as board items on a card (see **Board
-items from a note**); without it they stay that list, and nothing goes to the
-board.
+`Attendees`, `Decisions` and `### Actions` are left out when they are empty. A
+folder with no README gets one: a status table, Context, Contacts, and the Log the
+entry goes under.
 
-The Slack handler returns before the work starts and every error becomes a
-thread reply, so Slack's three-second budget is never the scribe's problem. The
-deployment's secret does not carry the LLM variables yet: the pod runs with the
-scribe off, by design.
+## Writes
 
-## Adding items
+`zya update` and `zya note` are the only two commands that change anything. The
+command itself asks no questions and shows no preview: run without `--dry-run` it
+writes, straight away. So the gate is around it, not a prompt inside the tool —
+and every example above is a dry run for that reason.
 
-DM the bot `add: call Dana about the renewal on 8 Dec` and it drafts ONE board
-item from that sentence. It replies `✍️ drafting…` at once and edits that same
-message into a card: the title, the engagement it would go under, Account,
-Track, Work type, Status, Target date, Next touch, Next action, a line saying
-where the proposal stands, and **Create**, **Edit**, **Cancel** under it.
+- **`--dry-run` always passes.** It prints exactly what would be written — the
+  update's plan, or the note's folder, path and entry — and writes nothing. It is
+  safe on any machine, and it is what every write starts with.
+- **In a pi session, a write prompts.** pi's git gate
+  (`~/.pi/agent/extensions/git-gate.ts`) asks ZY before any `zya update` or
+  `zya note` that lacks `--dry-run`, so pi runs the dry run first, shows ZY what
+  it printed, and then runs the same command without `--dry-run`. A declined
+  prompt ends it there, and nothing was written.
+- **In a shell, the CLI trusts the typist.** There is no confirmation prompt and no
+  second look: whoever types `zya update` or `zya note` without `--dry-run` has
+  already decided to write. That is why the examples here carry `--dry-run`.
+- **One run, one change.** Nothing is queued and nothing is left to happen later.
+  The one retry in the tool is the note's conflict retry inside a single run — a
+  write that lost its sha is read again, up to three attempts — and it is not a
+  licence to re-run a command that failed: that decision is ZY's, taken after
+  looking at what the failed run printed (see **zya update**).
+- **The reads are never gated**, because they change nothing.
 
-Nothing is written while the card is only a card. **Create** is what writes, and
-the click is the approval.
+## Delivery (parked)
 
-Like `note:`, an `add:` is read wherever the DM holds it, in a new message or in
-a thread. Typed under an evening ping, the ping's item goes to the model as a
-hint, and the `add:` does not ack the ping.
-
-**Create** writes four things, in this order:
-
-1. an issue in `ADD_REPO`, whose body is your sentence quoted, with the day it
-   came from Slack under it and a hidden marker a retry finds it by;
-2. that issue onto the board;
-3. the item's fields: Account, Track, Work type, Status, Target date, Next touch,
-   Next action;
-4. the new issue as a sub-issue of the parent engagement, when the draft has one.
-
-Each step's result is saved to the proposal before the next one starts, so a
-failure after the issue exists says so on the card and offers **Retry** in place
-of Create: the retry continues from the step that failed, and no second issue is
-ever made. A create whose answer never came back says the issue may exist, and
-**Retry** looks for its marker before it creates anything. The card names the
-step (`adding it to the board`, `writing its fields`, `linking it under its
-parent`) and links the issue that already exists. The draft's option names and
-its parent's ref are resolved against the board as the click finds it, and all
-of them before anything is created, so a board that changed under a draft fails
-with nothing written rather than a stray issue; once the issue exists only the
-steps that are left are resolved, so an option renamed afterwards does not block
-a retry that has nothing left to write with it.
-
-**Edit** opens a modal over the card with all nine fields in it: Title, Parent
-engagement, Account, Track, Work type, Status, Target date, Next touch, Next
-action. Saving it redraws the card (with `Edited.` in front of the line that
-says what Create would do) and writes nothing; Create is still the last click.
-
-Dates are worked out from today with the rule the notes use: "this Friday" is
-the coming Friday, "next Friday" is the Friday of the following week. The Target
-date is the day the thing happens or is due (`on 8 Dec`, `by Friday`); the Next
-touch is a follow-up you name for yourself (`chase on Monday`, `next week`).
-
-A task title starts with a verb and names the result, and does not repeat the
-account; an engagement is `<Name> · <what it's about>`. The parent is matched
-from the board's engagements: the open items that already have tasks, or whose
-title carries that ` · `. When none of them fits the card says
-`⚠ No engagement matched`, and `⚠ No parent, no account` when there is no
-Account either: Edit to set them, or Create it as a standalone item. A model
-that cannot answer at all is not a lost sentence: the card says
-`⚠ The model didn't answer`, the title is the sentence exactly as typed, and the
-other eight fields are yours to fill in with Edit.
-
-With `ADD_REPO` unset, `add:` is off: an `add: …` DM is read as a question when
-the model is set, the way a `note: …` is read when the scribe is off, and the
-`add:` line and topic are left out of the manual. `ADD_REPO` set without the
-three `LLM_*` variables is a startup error, not a silently-off feature: there is
-nowhere for the repo to go without a model, and a typo in the other direction
-should not look like a working bot. The token needs Issues read and write on
-`ADD_REPO` and the project's write access it already has; nothing is written to
-the board until Create.
-
-## Board items from a note
-
-With `NOTE_ITEMS=on`, a committed note's actions become ONE card, in the thread
-of the dictation, right after the commit: up to six items, one line each.
-
-*How the note's actions are read*: each action is `- [ ] <owner>: <text> (due
-<date>)`. An action of ZY's becomes **Next** with a Target date, because it is a
-date he owes. Anyone else's becomes **Waiting**, with that person as the
-waiting-on and the date as the Next touch, because it is the day he chases it:
-the deadline rules must never nag ZY for another person's deliverable. An action
-whose words already name a board item is left out (`<ref> is already on the
-board`), and a date that is already past is left off the item's own dates, so
-nothing puts a target in the past. The account is the note's folder
-when it is `Accounts/<name>`, and the item hangs under that account's engagement
-when the board has one: nothing here asks a model.
-
-*Create* writes four things per item, in the note's order: an issue in
-`ADD_REPO` whose body quotes the note's own action line and links the note, that
-issue onto the board, the item's fields, and the item as a sub-issue of its
-engagement. Each item's steps are saved as they land, so a failure part-way says
-so on the card and offers **Retry**, which carries on from the item it stopped at
-and never makes a second issue: an item that fails does not stop the ones after
-it, and Retry continues with whichever are left.
-
-*Edit* opens a modal over the card: the parent engagement of the whole batch, and
-for each item what it becomes (Next, Waiting or Don't create), its title, and its
-date. Saving it re-parents and redraws the card; nothing is written until
-*Create*, exactly as with `add:`.
-
-`NOTE_ITEMS` is only on with the scribe (a note has to have actions) and
-`ADD_REPO` (the items need a repo to be created in); on without either is a
-startup error that names what is missing. Off, the flag changes nothing at all.
-
-## The calendar
-
-With `CALENDAR_FILE` set, the bot reads a calendar snapshot that the Mac pushes
-into a ConfigMap twice a day (07:30 and 18:30 local, and once at login), and
-holds it in memory. The ask reads it too: a question about tomorrow's meetings is
-answered from the block built out of the snapshot the bot is holding, and with
-`CALENDAR_FILE` unset the ask is what it was before there was a calendar.
-
-*Why the Mac pushes.* The cluster has no route to a laptop, and giving it one
-would mean an ingress path, a token and a certificate to pin. The Mac already
-holds a kubeconfig that trusts the cluster's CA, so `mac/calendar/` reads
-Calendar.app with EventKit, prints a small JSON snapshot, and writes it as one
-ConfigMap (`zy-calendar` in this namespace) with `kubectl`. `deploy/` mounts it
-at `/calendar` as **optional**, so a pod starts and stays up whether or not the
-Mac has ever pushed — and a snapshot that already exists survives a restart,
-the Mac sleeping, and a redeploy.
-
-*What the snapshot holds.* Today and tomorrow: a two-day window from local
-midnight, so a meeting that ends tomorrow still has its follow-up in the snapshot
-of today. An opaque 16-hex-character id per event, start and end, `allDay`, the
-title, how many attendees, each attendee's **domain** (never an address), and
-whether it is `accepted`, `tentative`, `organizer` or `none`. Exchange sources
-only by default; cancelled events and declined invites are left out. The window
-starts at midnight, not at the push, so a meeting that ended an hour ago is still
-in the snapshot — the follow-up after a meeting needs that. The window and the
-all-day ends are midnights in the Mac's time zone, and a **v2** snapshot says which
-zone that is (`"v": 2` plus a top-level `tz` holding the IANA identifier), so the
-bot can compare it with `ASSISTANT_TZ` instead of assuming the two agree. A v1
-snapshot has no `tz` and is read exactly as it always was: the zone is then
-assumed to be `ASSISTANT_TZ`. While the two differ the snapshot's **days** are not
-used — no post-meeting asks, no meetings in the ask's block, and one line in the
-briefing saying why — because the 08:00 to 19:00 window, "today" and "ended 5 to
-45 minutes ago" would all be measured against another zone's day. A foreign zone
-is a disagreement, not a fault: the snapshot is still fresh, still valid, and
-still worth reading the next time the Mac is back in `ASSISTANT_TZ`.
-
-*What the push may do.* The push runs as a ServiceAccount, `zy-calendar-push`
-(`deploy/rbac.yaml`), which may only get and patch the one ConfigMap
-`zy-calendar` in this namespace: no other object, no other ConfigMap, no
-`create`, no secrets. The credential is a bound token generated by hand and kept
-in `~/.config/zy-assistant/zy-calendar-push.conf`, so `deploy/` holds the
-permission and never the key: a token in a manifest is a token in git. A bound
-token expires, which is the point, so rotating it is a calendar event rather than
-a code change (`mac/calendar/README.md` has the commands).
-
-*Fresh, stale, expired.* Fresh while `generatedAt` falls on the local date the
-bot is reading it on, which is what a Mac pushing at 07:30 and 18:30 can honestly
-mean: an age in minutes would call the morning's push stale by lunchtime. A push
-from an earlier day is **stale** and still used: a sleeping Mac is a normal
-state, not an error. Expired once now is past the snapshot's own window, and only
-then does the bot behave as if there were no calendar. A duplicate push is a
-silent no-op; an older snapshot is refused; a snapshot whose `generatedAt` is
-more than five minutes in the future (a Mac clock running ahead) is refused too
-— and a clock a few minutes ahead is why the compare is `>=`, so a push that
-names tomorrow's date just before midnight still reads fresh.
-
-*Nothing is trusted.* The whole snapshot is rejected, never half of it, and the
-reason names a field path, never a value: `events[3].end: not a timestamp`.
-Titles and domains are never logged, and `node src/main.ts calendar` prints the
-summary, which ends with the same `tz` suffix, plus one line per event with no
-title at all. It exits 1 for an expired snapshot — the window has closed, so the
-pipe is dead — and 0 when the snapshot is only stale.
-
-The Mac's half is documented in `mac/calendar/README.md`: build once (a `.app`
-bundle, because a bare binary never gets the Calendar permission dialog), install
-the launchd job, and it pushes from then on.
-
-*The briefing's meetings.* With `CALENDAR_PINGS=on` the 09:00 briefing carries a
-`*Today's meetings*` block under its Today rows, one line per meeting
-(`• 09:00 Acme weekly sync`, an all-day one as `• all day Offsite`), at most 8
-lines and ending with `• and N more meetings` when the day has more; a day with
-no meetings gets no block at all. Like the ask, it says nothing when the snapshot
-is expired or was never pushed, and on a snapshot exported in another zone it
-says one line instead: the calendar was exported in that zone and days are kept
-in `ASSISTANT_TZ`, so meetings that day are neither listed nor asked about.
-
-## Post-meeting asks
-
-With `CALENDAR_PINGS=on` the bot asks how a meeting went. It is off unless the
-value is exactly `on`: on without `CALENDAR_FILE`, or without the scribe, is a
-startup error naming what is missing, because the ask needs a snapshot to ask
-about and a note to file the answer as.
-
-*The ask.* When a meeting that the Mac exported has ended, the bot may send one
-DM about it:
-
-```
-「Acme weekly sync」 ended at 09:30 (09:00–09:30, 6 attendees). How did it go? Reply in this thread and I'll file it as a note about that meeting.
-```
-
-Not every meeting gets one. The day's askable meetings are what the cap counts:
-today's, on a weekday, not all-day, with at least one attendee, 20 minutes or
-longer, and ending between 08:00 and 19:00 local. An invitation ZY never answered
-is neither counted nor asked about. The set is the whole day's rather than what
-happens to be due when the bot looks, so a meeting whose ask was missed while the
-bot was down still uses up its place. The cap is
-`min(6, max(4, ceil(askable / 2)))`: 8 or fewer askable meetings leave the cap at
-4, 9 or 10 put it at 5, and 11 or more at 6.
-
-The cap is spent on the longest of them first, a tie going to the more attended,
-then to the earlier end, then to the event id, so the same day is chosen the same
-way whatever order the Mac's pushes arrive in. When an ask goes out is a separate
-question: only a meeting that ended 5 to 45 minutes ago is asked about now,
-because a fresher one has ZY still walking out of the room and an older one is
-news the bot missed while it was down. The asks go out in the order the meetings
-ended, and never twice, because the `meeting_pings` table holds each ask, so a
-restart does not re-ask. A short meeting that was only a check-in is never a
-question at all. A reply in that thread is filed as a note by the scribe, with the
-meeting's title as the note's topic, and the note's `### Actions` become board
-items as in **Board items from a note**. Any words count: the ask is not a menu,
-and a `note:` or an `add:` typed in that thread still wins.
-
-An expired or never-pushed snapshot asks nothing: an expired window holds
-yesterday's meetings, and asking how yesterday's went is worse than silence. Nor
-does a snapshot exported in another zone ask anything: the window and the day
-boundaries would be measured against the wrong day.
-
-Everything here and the briefing's meetings block are off unless the flag is on,
-and turning them quiet is turning the flag off: one commit, nothing lost, and the
-`meeting_pings` rows left behind are harmless.
-
-The log lines are in the list above: `meeting ping <eventId>: sent`,
-`meeting ping <eventId>: failed: <reason>`, `meeting pings: <reason>`, and
-`calendar pings: on` at startup. A meeting's title and a reply's words are never
-logged: the note itself carries them to the notes repo.
+Delivery is parked: while this is a CLI, nothing is mailed, messaged or
+scheduled, and no queue holds a briefing until someone reads it. The shape it comes
+back in is a pipe, because the briefing is already text:
+`zya brief --links plain` writes it for a terminal — no markup to unescape, no
+asterisks — and one sender takes it from stdin and posts it, `zya brief --links
+plain | <sender>`. The sender's webhook URL is a secret: it is read from the macOS
+Keychain at the moment of sending (`security find-generic-password -s <item> -w`),
+never from a file in this repo. Nothing else is parked with it: the reads and the
+writes above do not depend on delivery.
 
 ## Develop
 
-Node 26 runs the TypeScript directly (`node --test`, type stripping: no build
-step, `.ts` import extensions, no enums or namespaces).
-
 ```sh
-npm test        # node:test, fakes only: no network, no timers
+npm test        # node:test, fakes only: no network, no real clock, no calendar
 npm run typecheck
 ```
-
-## Deploy
-
-Container, deployed by NKP Project CD into the `zy-assistant` project namespace
-on `zy-all-in-one` from `deploy/` (no Namespace and no `namespace:` in the YAML:
-the Project owns that). The Secret `zy-assistant-secrets` is created outside
-this repo and holds `GITHUB_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`,
-`SLACK_USER_ID`. SQLite lives on the `zy-assistant-data` PVC at `/data`.
-
-```sh
-docker buildx build --platform linux/amd64 -t ghcr.io/rhapsody008/zy-assistant:0.1.0 --push .
-```
-
-Alternatively run it on the Mac under launchd. Put the four secrets in
-`~/.config/zy-assistant/env`, then:
-
-```sh
-launchd/install.sh     # renders the plist into ~/Library/LaunchAgents, loads nothing
-launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.zy.assistant.plist"
-launchctl bootout gui/$(id -u)/com.zy.assistant   # to stop it
-```
-
-`launchd/com.zy.assistant.plist.template` is the source, with `__REPO__` and
-`__HOME__` filled in by the installer; it sets the PATH launchd does not have, so
-`run.sh` finds node (it also falls back to `/opt/homebrew/bin/node`). `run.sh`
-reads the env file and keeps the database in
-`~/Library/Application Support/zy-assistant/state.db`. Logs go to
-`~/Library/Logs/zy-assistant.log` (`KeepAlive` restarts the bot if it exits).
-
-The Slack app manifest is `slack-app-manifest.yaml` (socket mode, so there is no
-public URL; bot scopes `chat:write`, `im:write`, `im:history`).
-
-## Release
-
-A PR runs CI (`typecheck` + tests) on GitHub Actions: `.github/workflows/ci.yml`.
-
-A release is a tag; Actions builds the image and pushes it to GHCR
-(`.github/workflows/release.yml`):
-
-```sh
-git tag vX.Y.Z && git push origin vX.Y.Z
-```
-
-That publishes `ghcr.io/rhapsody008/zy-assistant:X.Y.Z` (linux/amd64, no `latest`).
-Deploying is then a one-line bump of `newTag` in `deploy/kustomization.yaml` on
-`main`: Project CD applies it. Rollback is reverting that commit.
-
-Never deploy near the configured slot times (`BRIEF_TIME` / `EOD_TIME`): a tick
-in flight is gone with the pod.
-
-One-time setup: in the GHCR package settings, under "Manage Actions access", give
-this repo Write.
-
-## Health
-
-With `HTTP_PORT` set (the manifest uses `8080`) `run` opens a `node:http` server
-with one route. It records nothing else and needs no token.
-
-```
-GET /healthz
-200 {"ok":true,"lastTickAt":"2026-11-25T01:00:00.000Z"}   last tick finished under 5 minutes ago
-503 {"ok":false,"lastTickAt":null}                        no tick yet, or the last one is older
-404                                                       any other path or method
-```
-
-`lastTickAt` is when the scheduler's last tick **finished**: the clock is read
-again after the board fetch and the Slack sends, so a slow tick is not counted
-as fresh from the moment it started. Every tick reports, whether it ran a slot
-or not. The scheduler reports through an injected callback, so no state is
-global and the tests drive it with a fake clock. Without `HTTP_PORT` no server
-is started and the bot behaves exactly as before.
-
-The deployment uses it as a liveness probe only: 30 s delay, 60 s period, 10
-failed probes before a restart. A failing or refused probe counts, so the budget
-is about 10.5 minutes at startup (30 s + 10 × 60 s) for the first tick to land,
-and about 15 minutes once the ticks stop (5 minutes of freshness, then 10
-probes). SIGTERM closes the server, then Slack, then the database.
