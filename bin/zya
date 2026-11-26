@@ -1,0 +1,4 @@
+#!/bin/sh
+# zya: the read-only CLI over ZY's board. A shim, so the command works from any
+# directory and from a symlink: node runs the TypeScript entry directly.
+exec node "$(dirname "$(realpath "$0")")/../src/cli.ts" "$@"

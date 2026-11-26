@@ -14,79 +14,15 @@
 // board, issue or customer ever goes in here.
 
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { test } from "node:test";
-import { plan, type Item, type SentPing, type Slot } from "../src/rules.ts";
-import { addDays, isWeekend } from "../src/time.ts";
-
-interface FixtureItem {
-  id: string;
-  ref: string;
-  title: string;
-  url: string;
-  status: string | null;
-  target: string | null;
-  nextTouch: string | null;
-  nextAction: string | null;
-  waitingOn: string | null;
-  type?: string | null;
-  stage?: string | null;
-  track?: string | null;
-  account?: string | null;
-  cadence?: string | null;
-  parentUrl?: string | null;
-  contentId?: string | null;
-  updatedAt: string;
-}
-
-interface Week {
-  items: FixtureItem[];
-  history: SentPing[];
-}
-
-const URL_FIXTURES = new URL("./fixtures/", import.meta.url);
-
-function readJson<T>(name: string): T {
-  return JSON.parse(readFileSync(new URL(name, URL_FIXTURES), "utf8")) as T;
-}
-
-const WEEK = readJson<Week>("week.json");
-
-/** Item is built field by field, so a new required field is a compile error here. */
-const toItem = (f: FixtureItem): Item => ({
-  id: f.id,
-  ref: f.ref,
-  title: f.title,
-  url: f.url,
-  status: f.status,
-  target: f.target,
-  nextTouch: f.nextTouch,
-  nextAction: f.nextAction,
-  waitingOn: f.waitingOn,
-  type: f.type ?? null,
-  stage: f.stage ?? null,
-  track: f.track ?? null,
-  account: f.account ?? null,
-  cadence: f.cadence ?? null,
-  parentUrl: f.parentUrl ?? null,
-  contentId: f.contentId ?? null,
-  updatedAt: f.updatedAt,
-});
-
-/** The weekdays of Mon 2026-11-23 .. Mon 2026-11-30, the Monday after the week. */
-function weekdays(from: string, to: string): string[] {
-  const days: string[] = [];
-  for (let d = from; d <= to; d = addDays(d, 1)) if (!isWeekend(d)) days.push(d);
-  return days;
-}
+import { plan, type Slot } from "../src/rules.ts";
+import { FIXTURES, WEEK, WEEK_DATES, WEEK_ITEMS, readJson, toItem } from "./board.ts";
 
 const SLOTS: Slot[] = ["M", "E"];
 
 function week(): Array<{ date: string; slot: Slot; plan: ReturnType<typeof plan> }> {
-  const items = WEEK.items.map(toItem);
-  return weekdays("2026-11-23", "2026-11-30").flatMap((date) =>
-    SLOTS.map((slot) => ({ date, slot, plan: plan(items, date, slot, WEEK.history) })),
-  );
+  return WEEK_DATES.flatMap((date) => SLOTS.map((slot) => ({ date, slot, plan: plan(WEEK_ITEMS, date, slot, WEEK.history) })));
 }
 
 test("a board with nothing due still renders the empty Today line", () => {
@@ -115,7 +51,7 @@ test("a board with nothing due still renders the empty Today line", () => {
 test("every morning and evening plan of the week is unchanged", () => {
   const actual = week();
   if (process.env.UPDATE === "1") {
-    writeFileSync(new URL("week.expected.json", URL_FIXTURES), `${JSON.stringify(actual, null, 2)}\n`);
+    writeFileSync(new URL("week.expected.json", FIXTURES), `${JSON.stringify(actual, null, 2)}\n`);
   }
   assert.deepEqual(actual, readJson("week.expected.json"));
 });

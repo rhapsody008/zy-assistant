@@ -1,0 +1,276 @@
+[
+  {
+    "date": "2026-11-23",
+    "text": "*Morning briefing, Mon 23 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/4|demo#4> Delta: *overdue* by 13 days (target Tue 10 Nov)\nWaiting on: a Globex reply\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 10 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 3 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch today*\nNext: ping the vendor\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: due in 2 days (Wed 25 Nov)\n\n*Coming up*\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due Fri 27 Nov\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: touch tomorrow (waiting on vendor reply)\n\n*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
+    "head": [
+      "*Morning briefing, Mon 23 Nov*",
+      "*Today*"
+    ],
+    "rows": [
+      {
+        "itemId": "ITEM_DELTA",
+        "text": "<https://github.com/acme/demo/issues/4|demo#4> Delta: *overdue* by 13 days (target Tue 10 Nov)\nWaiting on: a Globex reply"
+      },
+      {
+        "itemId": "ITEM_CHARLIE",
+        "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 10 days (target Fri 13 Nov)"
+      },
+      {
+        "itemId": "ITEM_GOLF",
+        "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*"
+      },
+      {
+        "itemId": "ITEM_BRAVO",
+        "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 3 days (target Fri 20 Nov)"
+      },
+      {
+        "itemId": "ITEM_HOTEL",
+        "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch today*\nNext: ping the vendor"
+      },
+      {
+        "itemId": "ITEM_DRAFT",
+        "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: due in 2 days (Wed 25 Nov)"
+      }
+    ],
+    "tail": [
+      "*Coming up*\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due Fri 27 Nov\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: touch tomorrow (waiting on vendor reply)",
+      "*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft"
+    ]
+  },
+  {
+    "date": "2026-11-24",
+    "text": "*Morning briefing, Tue 24 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/4|demo#4> Delta: *overdue* by 14 days (target Tue 10 Nov)\nWaiting on: a Globex reply\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 11 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 4 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch today*\nWaiting on: vendor reply\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: due in 1 day (Wed 25 Nov)\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 3 days (Fri 27 Nov)\nNext: write the draft\n\n*Coming up*\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch tomorrow (waiting on answers from design)\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n\n*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
+    "head": [
+      "*Morning briefing, Tue 24 Nov*",
+      "*Today*"
+    ],
+    "rows": [
+      {
+        "itemId": "ITEM_DELTA",
+        "text": "<https://github.com/acme/demo/issues/4|demo#4> Delta: *overdue* by 14 days (target Tue 10 Nov)\nWaiting on: a Globex reply"
+      },
+      {
+        "itemId": "ITEM_CHARLIE",
+        "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 11 days (target Fri 13 Nov)"
+      },
+      {
+        "itemId": "ITEM_GOLF",
+        "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*"
+      },
+      {
+        "itemId": "ITEM_BRAVO",
+        "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 4 days (target Fri 20 Nov)"
+      },
+      {
+        "itemId": "ITEM_HOTEL",
+        "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor"
+      },
+      {
+        "itemId": "ITEM_KILO",
+        "text": "<https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch today*\nWaiting on: vendor reply"
+      },
+      {
+        "itemId": "ITEM_DRAFT",
+        "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: due in 1 day (Wed 25 Nov)"
+      },
+      {
+        "itemId": "ITEM_ALPHA",
+        "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 3 days (Fri 27 Nov)\nNext: write the draft"
+      }
+    ],
+    "tail": [
+      "*Coming up*\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: touch tomorrow (waiting on answers from design)\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov",
+      "*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft"
+    ]
+  },
+  {
+    "date": "2026-11-25",
+    "text": "*Morning briefing, Wed 25 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 12 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 5 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch today*\nWaiting on: answers from design\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *due today*\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 2 days (Fri 27 Nov)\nNext: write the draft\n\n*Coming up*\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n\n*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)\n\n*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
+    "head": [
+      "*Morning briefing, Wed 25 Nov*",
+      "*Today*"
+    ],
+    "rows": [
+      {
+        "itemId": "ITEM_CHARLIE",
+        "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 12 days (target Fri 13 Nov)"
+      },
+      {
+        "itemId": "ITEM_GOLF",
+        "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*"
+      },
+      {
+        "itemId": "ITEM_BRAVO",
+        "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 5 days (target Fri 20 Nov)"
+      },
+      {
+        "itemId": "ITEM_HOTEL",
+        "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor"
+      },
+      {
+        "itemId": "ITEM_KILO",
+        "text": "<https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply"
+      },
+      {
+        "itemId": "ITEM_FOXTROT",
+        "text": "<https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch today*\nWaiting on: answers from design"
+      },
+      {
+        "itemId": "ITEM_DRAFT",
+        "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *due today*"
+      },
+      {
+        "itemId": "ITEM_ALPHA",
+        "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 2 days (Fri 27 Nov)\nNext: write the draft"
+      }
+    ],
+    "tail": [
+      "*Coming up*\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov",
+      "*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)",
+      "*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft"
+    ]
+  },
+  {
+    "date": "2026-11-26",
+    "text": "*Morning briefing, Thu 26 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 13 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 6 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch was Wed 25 Nov*\nWaiting on: answers from design\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 1 day (target Wed 25 Nov)\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 1 day (Fri 27 Nov)\nNext: write the draft\n\n*Coming up*\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov\n\n*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)\n\n*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
+    "head": [
+      "*Morning briefing, Thu 26 Nov*",
+      "*Today*"
+    ],
+    "rows": [
+      {
+        "itemId": "ITEM_CHARLIE",
+        "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 13 days (target Fri 13 Nov)"
+      },
+      {
+        "itemId": "ITEM_GOLF",
+        "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*"
+      },
+      {
+        "itemId": "ITEM_BRAVO",
+        "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 6 days (target Fri 20 Nov)"
+      },
+      {
+        "itemId": "ITEM_HOTEL",
+        "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor"
+      },
+      {
+        "itemId": "ITEM_KILO",
+        "text": "<https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply"
+      },
+      {
+        "itemId": "ITEM_FOXTROT",
+        "text": "<https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch was Wed 25 Nov*\nWaiting on: answers from design"
+      },
+      {
+        "itemId": "ITEM_DRAFT",
+        "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 1 day (target Wed 25 Nov)"
+      },
+      {
+        "itemId": "ITEM_ALPHA",
+        "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: due in 1 day (Fri 27 Nov)\nNext: write the draft"
+      }
+    ],
+    "tail": [
+      "*Coming up*\n• <https://github.com/acme/demo/issues/9|demo#9> India: due Mon 30 Nov",
+      "*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)",
+      "*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft"
+    ]
+  },
+  {
+    "date": "2026-11-27",
+    "text": "*Morning briefing, Fri 27 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 14 days (target Fri 13 Nov)\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 7 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch was Wed 25 Nov*\nWaiting on: answers from design\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 2 days (target Wed 25 Nov)\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: *due today*\nNext: write the draft\n• <https://github.com/acme/demo/issues/9|demo#9> India: due in 3 days (Mon 30 Nov)\n\n*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)\n\n*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
+    "head": [
+      "*Morning briefing, Fri 27 Nov*",
+      "*Today*"
+    ],
+    "rows": [
+      {
+        "itemId": "ITEM_CHARLIE",
+        "text": "<https://github.com/acme/demo/issues/3|demo#3> Charlie: *overdue* by 14 days (target Fri 13 Nov)"
+      },
+      {
+        "itemId": "ITEM_GOLF",
+        "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*"
+      },
+      {
+        "itemId": "ITEM_BRAVO",
+        "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 7 days (target Fri 20 Nov)"
+      },
+      {
+        "itemId": "ITEM_HOTEL",
+        "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor"
+      },
+      {
+        "itemId": "ITEM_KILO",
+        "text": "<https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply"
+      },
+      {
+        "itemId": "ITEM_FOXTROT",
+        "text": "<https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch was Wed 25 Nov*\nWaiting on: answers from design"
+      },
+      {
+        "itemId": "ITEM_DRAFT",
+        "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 2 days (target Wed 25 Nov)"
+      },
+      {
+        "itemId": "ITEM_ALPHA",
+        "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: *due today*\nNext: write the draft"
+      },
+      {
+        "itemId": "ITEM_INDIA",
+        "text": "<https://github.com/acme/demo/issues/9|demo#9> India: due in 3 days (Mon 30 Nov)"
+      }
+    ],
+    "tail": [
+      "*Stale dates* (more than 14 days overdue, fix or close): demo#4 (2026-11-10)",
+      "*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft"
+    ]
+  },
+  {
+    "date": "2026-11-30",
+    "text": "*Morning briefing, Mon 30 Nov*\n\n*Today*\n• <https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*\n• <https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 10 days (target Fri 20 Nov)\n• <https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor\n• <https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply\n• <https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch was Wed 25 Nov*\nWaiting on: answers from design\n• <https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 5 days (target Wed 25 Nov)\n• <https://github.com/acme/demo/issues/1|demo#1> Alpha: *overdue* by 3 days (target Fri 27 Nov)\nNext: write the draft\n• <https://github.com/acme/demo/issues/9|demo#9> India: *due today*\n\n*Stale dates* (more than 14 days overdue, fix or close): demo#3 (2026-11-13), demo#4 (2026-11-10)\n\n*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft",
+    "head": [
+      "*Morning briefing, Mon 30 Nov*",
+      "*Today*"
+    ],
+    "rows": [
+      {
+        "itemId": "ITEM_GOLF",
+        "text": "<https://github.com/acme/demo/issues/7|demo#7> Golf: *touch was Tue 17 Nov*"
+      },
+      {
+        "itemId": "ITEM_BRAVO",
+        "text": "<https://github.com/acme/demo/issues/2|demo#2> Bravo: *overdue* by 10 days (target Fri 20 Nov)"
+      },
+      {
+        "itemId": "ITEM_HOTEL",
+        "text": "<https://github.com/acme/demo/issues/8|demo#8> Hotel: *touch was Mon 23 Nov*\nNext: ping the vendor"
+      },
+      {
+        "itemId": "ITEM_KILO",
+        "text": "<https://github.com/acme/demo/issues/11|demo#11> Kilo: *touch was Tue 24 Nov*\nWaiting on: vendor reply"
+      },
+      {
+        "itemId": "ITEM_FOXTROT",
+        "text": "<https://github.com/acme/demo/issues/6|demo#6> Foxtrot: *touch was Wed 25 Nov*\nWaiting on: answers from design"
+      },
+      {
+        "itemId": "ITEM_DRAFT",
+        "text": "<https://github.com/users/acme/projects/3|draft> Draft: Kilo follow-up: *overdue* by 5 days (target Wed 25 Nov)"
+      },
+      {
+        "itemId": "ITEM_ALPHA",
+        "text": "<https://github.com/acme/demo/issues/1|demo#1> Alpha: *overdue* by 3 days (target Fri 27 Nov)\nNext: write the draft"
+      },
+      {
+        "itemId": "ITEM_INDIA",
+        "text": "<https://github.com/acme/demo/issues/9|demo#9> India: *due today*"
+      }
+    ],
+    "tail": [
+      "*Stale dates* (more than 14 days overdue, fix or close): demo#3 (2026-11-13), demo#4 (2026-11-10)",
+      "*In progress:* 9 (over the limit of 3: what are you dropping?)\ndemo#1, demo#2, demo#3, demo#4, demo#5, demo#6, demo#7, demo#8, draft"
+    ]
+  }
+]

@@ -14,31 +14,9 @@ import {
   type Ping,
   type SentPing,
 } from "../src/rules.ts";
+import { item } from "./board.ts";
 
-const UPDATED = "2026-11-20T00:00:00.000Z";
 const url = (ref: string): string => `https://github.com/rhapsody008/notes/issues/${ref.split("#")[1]}`;
-
-function item(fields: Partial<Item> & Pick<Item, "id">): Item {
-  return {
-    ref: `notes#${fields.id}`,
-    title: `Work ${fields.id}`,
-    url: url(`notes#${fields.id}`),
-    status: "In progress",
-    target: null,
-    nextTouch: null,
-    nextAction: null,
-    waitingOn: null,
-    type: null,
-    stage: null,
-    track: null,
-    account: null,
-    cadence: null,
-    parentUrl: null,
-    contentId: null,
-    updatedAt: UPDATED,
-    ...fields,
-  };
-}
 
 const A = item({ id: "52", ref: "notes#52", title: "A", nextTouch: "2026-11-25", nextAction: "write the draft", waitingOn: "answers from design" });
 const B = item({ id: "53", ref: "notes#53", title: "B", target: "2026-11-26" });

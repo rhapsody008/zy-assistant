@@ -5,6 +5,9 @@
   "description": "Local CLI over ZY's GitHub Project board, notes repo and calendar",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "zya": "bin/zya"
+  },
   "engines": {
     "node": ">=26"
   },
