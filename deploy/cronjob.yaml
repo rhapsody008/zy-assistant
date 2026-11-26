@@ -1,0 +1,91 @@
+# The morning brief, posted to a chat webhook once a day.
+# 1. init "brief": fetch this repo at ZYA_REF (public tarball, no build) and run
+#    `zya brief --links plain`, writing {"data": "<brief>"} to /work/payload.json.
+# 2. "post": one curl POST of that file to BRIEF_WEBHOOK_URL.
+# Secret zy-assistant-brief (NKP Project secret): GITHUB_TOKEN (Projects read,
+# Issues read) and BRIEF_WEBHOOK_URL. No retry anywhere: a failed run is re-run by
+# hand, after checking nothing was posted.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: zy-assistant-brief
+spec:
+  schedule: "0 9 * * *"          # weekdays only: "0 9 * * 1-5"
+  timeZone: Asia/Singapore
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 259200
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          volumes:
+            - name: work
+              emptyDir: {}
+          initContainers:
+            - name: brief
+              image: node:26-alpine
+              env:
+                - name: ZYA_REF
+                  value: "49fccf8"   # zy-assistant commit to run; bump to upgrade
+                - name: ASSISTANT_TZ
+                  value: Asia/Singapore
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: zy-assistant-brief
+                      key: GITHUB_TOKEN
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  mkdir -p /work/zya
+                  wget -qO- "https://codeload.github.com/rhapsody008/zy-assistant/tar.gz/${ZYA_REF}" \
+                    | tar -xz -C /work/zya --strip-components=1
+                  node /work/zya/src/cli.ts brief --links plain > /work/brief.txt
+                  node -e 'const fs=require("fs");fs.writeFileSync("/work/payload.json",JSON.stringify({data:fs.readFileSync("/work/brief.txt","utf8")}))'
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+              securityContext: &restricted
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits: { memory: 256Mi }
+          containers:
+            - name: post
+              image: curlimages/curl:8.11.1
+              env:
+                - name: BRIEF_WEBHOOK_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: zy-assistant-brief
+                      key: BRIEF_WEBHOOK_URL
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  curl -fsS -o /dev/null -w 'posted: HTTP %{http_code}\n' \
+                    -X POST -H 'Content-Type: application/json' \
+                    --data @/work/payload.json "$BRIEF_WEBHOOK_URL"
+              volumeMounts:
+                - name: work
+                  mountPath: /work
+                  readOnly: true
+              securityContext: *restricted
+              resources:
+                requests: { cpu: 10m, memory: 16Mi }
+                limits: { memory: 64Mi }
