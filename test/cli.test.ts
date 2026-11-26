@@ -221,7 +221,7 @@ test("a missing token names the variable, and no error ever carries the value", 
 test("the real entry: a usage error needs no token, and a missing one is one line, exit 1", () => {
   const usage = zya("nope");
   assert.equal(usage.status, 2);
-  assert.match(usage.stderr, /^zya: a read-only view of ZY's board\n/);
+  assert.match(usage.stderr, /^zya: ZY's board, notes and calendar, read; zya update writes to the board\n/);
   assert.match(usage.stderr, /zya brief \[--date YYYY-MM-DD\]/);
   assert.equal(usage.stdout, "");
 
