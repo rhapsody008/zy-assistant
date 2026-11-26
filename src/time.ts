@@ -1,6 +1,9 @@
 // Date helpers. All dates are local calendar dates "YYYY-MM-DD" in the assistant's time zone.
 
-export const TZ = process.env.ASSISTANT_TZ ?? "Asia/Singapore";
+/** The zone the assistant reads its clock in when ASSISTANT_TZ says nothing. */
+export const DEFAULT_TZ = "Asia/Singapore";
+
+export const TZ = process.env.ASSISTANT_TZ || DEFAULT_TZ;
 
 export interface LocalNow {
   date: string; // YYYY-MM-DD

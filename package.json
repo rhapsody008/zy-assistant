@@ -1,20 +1,19 @@
 {
   "name": "zy-assistant",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "private": true,
-  "description": "Slack reminder bot for a GitHub Project board",
+  "description": "Local CLI over ZY's GitHub Project board, notes repo and calendar",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "zya": "bin/zya"
+  },
   "engines": {
     "node": ">=26"
   },
   "scripts": {
     "test": "node --test --test-timeout=5000 test/",
-    "typecheck": "tsc --noEmit",
-    "start": "node src/main.ts run"
-  },
-  "dependencies": {
-    "@slack/bolt": "5.1.0"
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "26.6.6",

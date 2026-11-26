@@ -1,5 +1,6 @@
 // zy-calendar-export: reads the Mac's calendar with EventKit and prints a small
-// JSON snapshot for the assistant to hold in the cluster (#8).
+// JSON snapshot of a window, which `zya calendar` (src/calendar-export.ts) reads
+// and renders.
 //
 // Two things about it are deliberate and were learned the hard way in the spike
 // that lives in the ops workspace:
@@ -20,6 +21,7 @@ import Foundation
 
 struct Options {
   var days = 2
+  var from = 0
   var allSources = false
   var exec: [String] = []
 }
@@ -40,6 +42,12 @@ func parseArguments(_ arguments: [String]) -> Options {
       }
       options.days = days
       index += 2
+    case "--from":
+      guard index + 1 < arguments.count, let from = Int(arguments[index + 1]), from >= -14, from <= 0 else {
+        fail(2, "--from needs a whole number of days, -14 to 0")
+      }
+      options.from = from
+      index += 2
     case "--all-sources":
       options.allSources = true
       index += 1
@@ -49,7 +57,7 @@ func parseArguments(_ arguments: [String]) -> Options {
       options.exec = Array(arguments[(index + 1)...])
       index = arguments.count
     default:
-      fail(2, "unknown argument; --days <n>, --all-sources, --exec <cmd...>")
+      fail(2, "unknown argument; --days <n>, --from <n>, --all-sources, --exec <cmd...>")
     }
   }
   return options
@@ -116,15 +124,20 @@ if calendars.isEmpty {
 
 // From the start of today, not from now: a meeting that ended at 10:00 has to
 // still be in the 10:05 snapshot, or the follow-up after it can never fire.
+// --from moves that start back by whole days, so a reader can ask for yesterday
+// without a second binary; the start is a midnight either way.
 var calendar = Calendar(identifier: .gregorian)
 calendar.timeZone = TimeZone.current
 let now = Date()
 let startOfToday = calendar.startOfDay(for: now)
-guard let windowEnd = calendar.date(byAdding: .day, value: options.days, to: startOfToday) else {
+guard let windowStart = calendar.date(byAdding: .day, value: options.from, to: startOfToday) else {
+  fail(5, "could not build the window")
+}
+guard let windowEnd = calendar.date(byAdding: .day, value: options.days, to: windowStart) else {
   fail(5, "could not build the window")
 }
 
-let events = store.events(matching: store.predicateForEvents(withStart: startOfToday, end: windowEnd, calendars: calendars))
+let events = store.events(matching: store.predicateForEvents(withStart: windowStart, end: windowEnd, calendars: calendars))
 
 // ---- One event -------------------------------------------------------------
 
@@ -232,7 +245,7 @@ let snapshot: [String: Any] = [
   // the two disagree instead of guessing that the laptop never travels.
   "tz": calendar.timeZone.identifier,
   "generatedAt": iso.string(from: now),
-  "window": ["start": iso.string(from: startOfToday), "end": iso.string(from: windowEnd)],
+  "window": ["start": iso.string(from: windowStart), "end": iso.string(from: windowEnd)],
   "events": records,
 ]
 
@@ -276,4 +289,4 @@ process.waitUntilExit()
 if process.terminationStatus != 0 {
   fail(6, "the pusher exited \(process.terminationStatus)")
 }
-print("pushed: \(records.count) events, window \(iso.string(from: startOfToday))..\(iso.string(from: windowEnd))")
+print("pushed: \(records.count) events, window \(iso.string(from: windowStart))..\(iso.string(from: windowEnd))")

@@ -1,46 +1,32 @@
 // Deterministic reminder rules (zy-ops#7). Pure: no I/O, no clock.
 //
-// Slots: M = morning briefing, E = end-of-day sweep (weekdays only; the scheduler decides).
-// M: ONE briefing message. Its "Today" list has one row per item that needs
-//    action, whatever the item's status, and each row carries a menu of the
-//    actions its findings allow:
-//    - Target date today, or 1..pingDays days away (deadline ladder; always fires in T-3..T-1)
+// One briefing a morning. Its "Today" list has one row per item that needs
+// action, whatever the item's status:
+//    - Target date today, or 1..pingDays days away (deadline ladder)
 //    - Target date passed by 1..staleDays days (overdue, daily)
 //    - Next touch today or passed (daily until the date moves or the item is Done)
 //    - A Work type with a lead time: exactly on a milestone day (T-heads, T-7 for a
 //      Workshop or a POC), whatever the status, so the prep starts two weeks out
-//    - Status Waiting, no Next touch at all, no update for waitingChaseDays, and
-//      no ping of the item within those same waitingChaseDays
+//    - Status Waiting, no Next touch at all, and no update for waitingChaseDays
 //    The rows are ordered by rowOrder: late, then today, then due soon, then a
 //    chase, then a milestone heads-up.
 //    Target soonDays (4..7, or up to the Work type's heads) away -> "Coming up" line.
-//    Overdue > staleDays -> one "Stale dates" line. An E re-ping from the previous
-//    workday that is still unacked -> ⚠ line at the top.
+//    Overdue > staleDays -> one "Stale dates" line.
 //    Friday only: a "Pipeline" line per open Stage item nobody touched for
 //    stageStaleDays, and a "Learning" line per Learn-track item with a cadence.
-// E: a ping for each open item whose Target date is today ("close it or move the date"),
-//    and one re-ping for each M row from today that has no ack and still has
-//    something the sweep can act on: a Target date 0..staleDays days past, or a
-//    Next touch due today or past. A due-in-N row, a milestone heads-up and a
-//    chase do not re-ping.
-// Ack = a menu pick, a button press, a reply in an E ping's thread, the item
-// updated (board or issue) after the ping, or a notes-repo commit under the item's
-// Account after the ping.
-// One row per item per slot; reasons are merged, and so are their actions.
-// WIP: an item with sub-issues on the board is a parent, an engagement rather than
-// a unit of work, so the In progress count and its list leave it out (workItems).
+// One row per item; reasons are merged.
+// WIP: an item with sub-issues on the board is a parent, an engagement rather than a
+// unit of work, so the In progress count and its list leave it out (workItems).
 //
 // Shape: every rule is a pure function (item, env) => Finding[]. Each item goes
-// through the rules of its slot in board order, then one merge step turns an
-// item's findings into at most one Ping, then one render step turns the morning
-// findings into the briefing (its text, and the sections and rows Slack posts).
+// through the rules in board order, then one merge step turns an item's findings
+// into at most one row, then one render step turns the morning's findings into the
+// briefing.
 // Policy is data: the defaults are the rules above, and a caller may override any
 // of them.
 
 import { PIPELINE_STAGES, STATUS, TRACK } from "./schema.ts";
-import { dayDiff, fmtDate, isFriday, latestIso, prevWorkday, weekStart } from "./time.ts";
-
-export type Slot = "M" | "E";
+import { dayDiff, fmtDate, isFriday, weekStart } from "./time.ts";
 
 export interface Item {
   id: string; // project item node id
@@ -63,43 +49,22 @@ export interface Item {
   updatedAt: string; // ISO, max of item and issue updatedAt
 }
 
-export interface SentPing {
-  key: string;
+/** One row of the briefing: the item it is about, and the line it says. */
+export interface BriefRow {
   itemId: string;
-  date: string;
-  slot: Slot;
-  kind: "ping" | "reping";
-  sentAt: string; // ISO
-  ackedAt: string | null;
-}
-
-export type ActionId = "ack" | "done" | "touch1" | "touch7" | "move";
-
-export interface Ping {
-  key: string;
-  itemId: string;
-  kind: "ping" | "reping";
   text: string;
-  actions: ActionId[];
 }
 
 /**
- * The morning briefing, in the shape Slack posts it: sections above the rows,
- * the rows themselves, and the sections under them. `text` is the same thing
- * rendered flat, for a notification fallback, a dry run and the `today` preview.
+ * A morning briefing, flat: `head` above `rows` above `tail`, and `text` the same
+ * thing as one string.
  */
-export interface Briefing {
+export interface Brief {
+  date: string; // YYYY-MM-DD
   text: string;
   head: string[];
-  rows: Ping[];
+  rows: BriefRow[];
   tail: string[];
-}
-
-export interface Plan {
-  /** The briefing, in the morning slot only. */
-  briefing: Briefing | null;
-  /** The pings of the evening sweep. The morning sends the briefing alone. */
-  pings: Ping[];
 }
 
 /** When a Work type shows up in the briefing, and the days it is pinged outright. */
@@ -159,16 +124,12 @@ export const DEFAULT_POLICY: Policy = {
   learnTrack: TRACK.learn,
 };
 
-export type Section = "today" | "soon" | "stale" | "warn" | "pipeline" | "learning";
+/** A finding's section. "today" is the only one listed as rows; the rest are lines of their own section. */
+export type Section = "today" | "soon" | "stale" | "pipeline" | "learning";
 
 export interface Env {
   today: string;
-  slot: Slot;
-  history: SentPing[];
-  byId: Map<string, Item>;
   policy: Policy;
-  /** itemId -> ISO of the last notes-repo commit under the item's Account. */
-  activity: Map<string, string>;
   /** itemId -> its position on the board, the tiebreak of the briefing's rows. */
   index: Map<string, number>;
 }
@@ -178,26 +139,9 @@ export interface Finding {
   /** The human text. "today"/"soon"/"stale" findings are listed behind the item's link. */
   reason: string;
   section: Section;
-  /** True: this finding becomes part of the item's ping ("today" only). */
-  ping: boolean;
-  actions: ActionId[];
 }
 
 export type Rule = (item: Item, env: Env) => Finding[];
-
-export function pingKey(date: string, slot: Slot, itemId: string): string {
-  return `${date}:${slot}:${itemId}`;
-}
-
-/**
- * Acked by a button, a reply, or any sign of life after the ping: the item's own
- * updatedAt, or a notes-repo commit under its Account (activity).
- */
-export function isAcked(p: SentPing, item: Item | undefined, activity?: Map<string, string>): boolean {
-  if (p.ackedAt) return true;
-  const since = latestIso(item?.updatedAt, activity?.get(p.itemId));
-  return since !== null && Date.parse(since) > Date.parse(p.sentAt);
-}
 
 /**
  * The items that are a unit of work. An item another item names as its parent is
@@ -224,9 +168,6 @@ function contextLines(i: Item): string[] {
   if (i.waitingOn) out.push(`Waiting on: ${i.waitingOn}`);
   return out;
 }
-
-/** A Next touch that is due or gone already. */
-const touchDue = (item: Item, env: Env): boolean => item.nextTouch !== null && dayDiff(item.nextTouch, env.today) <= 0;
 
 /**
  * Where an item's row goes: a tier, the date that put it there (ascending), then
@@ -268,14 +209,6 @@ export function rowOrder(item: Item, env: Env): RowOrder {
 const compareOrder = (a: RowOrder, b: RowOrder): number =>
   a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) || a[2] - b[2];
 
-/** A Target date ping: ack, move the date, and the touch buttons when a touch is due. */
-const targetActions = (item: Item, env: Env): ActionId[] =>
-  touchDue(item, env) ? ["ack", "move", "touch1", "touch7", "done"] : ["ack", "move", "done"];
-
-/** A ping about a touch or a chase: there is no date line to move. */
-const actionsFor = (item: Item, env: Env): ActionId[] =>
-  touchDue(item, env) ? ["ack", "touch1", "touch7", "done"] : ["ack", "done"];
-
 /** The Work type's lead time, or null: the item keeps soonDays and has no milestone. */
 function leadFor(item: Item, policy: Policy): LeadTime | null {
   return item.type === null ? null : policy.leadByType[item.type] ?? null;
@@ -290,16 +223,15 @@ function milestoneOf(item: Item, env: Env): { days: number; target: string } | n
   return lead && lead.milestones.includes(days) ? { days, target } : null;
 }
 
-// ---- M: the rules that produce a "Today" line, and maybe a ping -------------
+// ---- the rules that produce a "Today" line ----------------------------------
 
 const targetDue: Rule = (item, env) => {
   const target = item.target;
   if (!target) return [];
   const d = dayDiff(target, env.today);
-  const actions = targetActions(item, env);
-  if (d === 0) return [todayFinding(item, "*due today*", actions)];
-  if (d >= 1 && d <= env.policy.pingDays) return [todayFinding(item, `due in ${plural(d, "day")} (${fmtDate(target)})`, actions)];
-  if (d < 0 && d >= -env.policy.staleDays) return [todayFinding(item, `*overdue* by ${plural(-d, "day")} (target ${fmtDate(target)})`, actions)];
+  if (d === 0) return [todayFinding(item, "*due today*")];
+  if (d >= 1 && d <= env.policy.pingDays) return [todayFinding(item, `due in ${plural(d, "day")} (${fmtDate(target)})`)];
+  if (d < 0 && d >= -env.policy.staleDays) return [todayFinding(item, `*overdue* by ${plural(-d, "day")} (target ${fmtDate(target)})`)];
   return [];
 };
 
@@ -308,7 +240,7 @@ const nextTouchDue: Rule = (item, env) => {
   if (!nextTouch) return [];
   const d = dayDiff(nextTouch, env.today);
   if (d > 0) return [];
-  return [todayFinding(item, d === 0 ? "*touch today*" : `*touch was ${fmtDate(nextTouch)}*`, actionsFor(item, env))];
+  return [todayFinding(item, d === 0 ? "*touch today*" : `*touch was ${fmtDate(nextTouch)}*`)];
 };
 
 /** T-heads, T-7: the prep for a Workshop or a POC starts before the deadline ladder. */
@@ -321,8 +253,6 @@ const milestone: Rule = (item, env) => {
       reason: `${item.type} in ${plural(due.days, "day")} (${fmtDate(due.target)})`,
       // Whatever the status: two weeks out is when the room gets booked.
       section: "today",
-      ping: true,
-      actions: ["ack", "move"],
     },
   ];
 };
@@ -335,42 +265,32 @@ const waitingChase: Rule = (item, env) => {
       itemId: item.id,
       reason: `chase ${item.waitingOn || "them"}?`,
       section: "today",
-      ping: true,
-      actions: ["ack", "touch1", "touch7", "done"],
     },
   ];
 };
 
 /**
  * A Waiting item nobody has moved in waitingChaseDays, that has no Next touch to
- * wait for and no ping of its own within the window. The chase rule and the row
- * order both read it, so the two cannot disagree about what a chase is.
+ * wait for. The chase rule and the row order both read it, so the two cannot
+ * disagree about what a chase is.
  */
 function chaseDue(item: Item, env: Env): boolean {
   if (item.status !== env.policy.waiting) return false;
-  // Any Next touch wins: a due one pings on its own, a future one means
+  // Any Next touch wins: a due one becomes a row on its own, a future one means
   // "leave it until then".
   if (item.nextTouch !== null) return false;
-  if (daysSince(item.updatedAt, env.today) <= env.policy.waitingChaseDays) return false;
-  // A ping that went out within the window is a chase already made: repeating it
-  // every morning until someone answers is noise, not a reminder.
-  return !pingedRecently(item, env);
+  return daysSince(item.updatedAt, env.today) > env.policy.waitingChaseDays;
 }
 
-/** True when the item was pinged at all within the last waitingChaseDays days. */
-function pingedRecently(item: Item, env: Env): boolean {
-  return env.history.some((h) => h.itemId === item.id && daysSince(h.sentAt, env.today) <= env.policy.waitingChaseDays);
-}
-
-/** A date or a touch is due: a row of the briefing, with its menu, whatever the status. */
-function todayFinding(item: Item, reason: string, actions: ActionId[]): Finding {
-  return { itemId: item.id, reason, section: "today", ping: true, actions };
+/** A date or a touch is due: a row of the briefing, whatever the status. */
+function todayFinding(item: Item, reason: string): Finding {
+  return { itemId: item.id, reason, section: "today" };
 }
 
 /** An item has a "Today" line when one of these two fires. */
 const todayReasons = (item: Item, env: Env): string[] => [...targetDue(item, env), ...nextTouchDue(item, env)].map((f) => f.reason);
 
-// ---- M: the briefing-only lines ---------------------------------------------
+// ---- the briefing-only lines ------------------------------------------------
 
 const targetSoon: Rule = (item, env) => {
   const target = item.target;
@@ -382,14 +302,14 @@ const targetSoon: Rule = (item, env) => {
   if (d < low || d > heads) return [];
   // On a milestone day the item is pinged outright: no second line for it.
   if (milestoneOf(item, env)) return [];
-  return [{ itemId: item.id, reason: `due ${fmtDate(target)}`, section: "soon", ping: false, actions: [] }];
+  return [{ itemId: item.id, reason: `due ${fmtDate(target)}`, section: "soon" }];
 };
 
 const targetStale: Rule = (item, env) => {
   const target = item.target;
   if (!target) return [];
   if (dayDiff(target, env.today) >= -env.policy.staleDays) return [];
-  return [{ itemId: item.id, reason: `${item.ref} (${target})`, section: "stale", ping: false, actions: [] }];
+  return [{ itemId: item.id, reason: `${item.ref} (${target})`, section: "stale" }];
 };
 
 const nextTouchTomorrow: Rule = (item, env) => {
@@ -399,21 +319,8 @@ const nextTouchTomorrow: Rule = (item, env) => {
   // is not unique (drafts all say "draft", and demo#5 is a substring of demo#52).
   if (todayReasons(item, env).length > 0) return [];
   const waiting = item.waitingOn ? ` (waiting on ${item.waitingOn})` : "";
-  return [{ itemId: item.id, reason: `touch tomorrow${waiting}`, section: "soon", ping: false, actions: [] }];
+  return [{ itemId: item.id, reason: `touch tomorrow${waiting}`, section: "soon" }];
 };
-
-/** Yesterday's evening re-ping, still unacked: a warning at the top of the briefing. */
-const unackedReping: Rule = (item, env) => {
-  if (!unackedRepingFrom(item, env, prevWorkday(env.today))) return [];
-  return [
-    { itemId: item.id, reason: `⚠ *No update* on ${link(item)} since yesterday's pings`, section: "warn", ping: false, actions: [] },
-  ];
-};
-
-function unackedRepingFrom(item: Item, env: Env, date: string): SentPing | null {
-  const reping = env.history.find((h) => h.itemId === item.id && h.kind === "reping" && h.date === date);
-  return reping && !isAcked(reping, env.byId.get(item.id), env.activity) ? reping : null;
-}
 
 /** Friday: the open pipeline, and what nobody has touched for weeks. */
 const stageStale: Rule = (item, env) => {
@@ -427,8 +334,6 @@ const stageStale: Rule = (item, env) => {
       itemId: item.id,
       reason: `• ${item.ref} ${item.title}: in ${stage}, no update for ${plural(days, "day")}`,
       section: "pipeline",
-      ping: false,
-      actions: [],
     },
   ];
 };
@@ -437,9 +342,7 @@ const stageStale: Rule = (item, env) => {
 const learnCadence: Rule = (item, env) => {
   if (!isFriday(env.today)) return [];
   if (item.track !== env.policy.learnTrack || !item.cadence) return [];
-  // The item's own update only: a notes commit under its Account moves the
-  // Learning line of every item of that Account, which made the age disagree
-  // with what the board says.
+  // The item's own update: the age is what the board says, not what a commit says.
   const lastDate = isoDate(item.updatedAt);
   const days = dayDiff(env.today, lastDate);
   const age = lastDate >= weekStart(env.today) ? "this week" : `${plural(days, "day")} ago`;
@@ -448,168 +351,68 @@ const learnCadence: Rule = (item, env) => {
       itemId: item.id,
       reason: `• ${item.ref} ${item.title}: cadence ${item.cadence}, last update ${fmtDate(lastDate)} (${age})`,
       section: "learning",
-      ping: false,
-      actions: [],
     },
   ];
 };
 
-// ---- E: the rules ------------------------------------------------------------
+const RULES: Rule[] = [targetDue, nextTouchDue, milestone, waitingChase, targetSoon, targetStale, nextTouchTomorrow, stageStale, learnCadence];
 
-const targetToday: Rule = (item, env) => {
-  if (!item.target || item.target !== env.today) return [];
-  return [
-    {
-      itemId: item.id,
-      reason: "*due today*: close it, or move the date with a reason",
-      section: "today",
-      ping: true, // every open item, whatever its status
-      actions: targetActions(item, env),
-    },
-  ];
-};
-
-const morningUnacked: Rule = (item, env) => {
-  if (!unackedMorningPing(item, env) || !sweepWorthy(item, env)) return [];
-  return [
-    { itemId: item.id, reason: "no update since this morning's ping", section: "today", ping: true, actions: actionsFor(item, env) },
-  ];
-};
-
-/**
- * What the sweep can still act on: a Target date 0..staleDays days past, or a
- * Next touch due today or past. A due-in-N row has nothing new to say at 17:30,
- * and neither has a milestone heads-up or a chase.
- */
-function sweepWorthy(item: Item, env: Env): boolean {
-  if (item.target !== null) {
-    const d = dayDiff(item.target, env.today);
-    if (d <= 0 && d >= -env.policy.staleDays) return true;
-  }
-  return item.nextTouch !== null && dayDiff(item.nextTouch, env.today) <= 0;
-}
-
-/** This morning's ping of the item, if it got none. */
-function unackedMorningPing(item: Item, env: Env): SentPing | null {
-  const morning = env.history.find((h) => h.itemId === item.id && h.date === env.today && h.slot === "M");
-  return morning && !isAcked(morning, env.byId.get(item.id), env.activity) ? morning : null;
-}
-
-const MORNING_RULES: Rule[] = [
-  targetDue,
-  nextTouchDue,
-  milestone,
-  waitingChase,
-  targetSoon,
-  targetStale,
-  nextTouchTomorrow,
-  unackedReping,
-  stageStale,
-  learnCadence,
-];
-const EVENING_RULES: Rule[] = [targetToday, morningUnacked];
-
-// ---- Plan: rules, then one merge, then one render ---------------------------
+// ---- Brief: rules, then one merge, then one render --------------------------
 
 interface ItemFindings {
   item: Item;
   findings: Finding[];
 }
 
-export interface PlanContext {
-  /** Overrides any DEFAULT_POLICY knob. */
-  policy?: Partial<Policy>;
-  /** itemId -> ISO of the last notes-repo commit under the item's Account. */
-  activity?: Map<string, string>;
-  /**
-   * The day's meetings, as meeting-pings.ts renders them (`• 09:00 Acme weekly
-   * sync`): the one section of the briefing that is not about the board. The
-   * morning reads them; the evening has no briefing to put them in.
-   */
-  meetings?: readonly string[];
-}
-
-export function plan(items: Item[], today: string, slot: Slot, history: SentPing[], ctx?: PlanContext): Plan {
+/**
+ * The morning briefing of `today`, from the board alone: no history, no store, no
+ * clock, because the CLI has none. The same board says the same thing tomorrow as
+ * it did today.
+ */
+export function brief(items: Item[], today: string, ctx?: { policy?: Partial<Policy> }): Brief {
   const policy: Policy = { ...DEFAULT_POLICY, ...ctx?.policy };
   const env: Env = {
     today,
-    slot,
-    history,
-    byId: new Map(items.map((i) => [i.id, i])),
     policy,
-    activity: ctx?.activity ?? new Map<string, string>(),
     index: new Map(items.map((item, at) => [item.id, at])),
   };
   const open = items.filter((i) => i.status !== policy.done);
-  const rules = slot === "M" ? MORNING_RULES : EVENING_RULES;
-  const view = open.map((item) => ({ item, findings: rules.flatMap((rule) => rule(item, env)) }));
-  // The morning is one message: its rows are the briefing, not pings of their own.
-  if (slot === "M") return { briefing: renderBriefing(view, env, workItems(items), ctx?.meetings ?? []), pings: [] };
-  return { briefing: null, pings: mergePings(view, env) };
+  const view = open.map((item) => ({ item, findings: RULES.flatMap((rule) => rule(item, env)) }));
+  return renderBriefing(view, env, workItems(items));
 }
 
-/** The buttons of the merged reasons, each one once, in the order the rules gave them. */
-function mergeActions(pinged: Finding[]): ActionId[] {
-  const ids: ActionId[] = [];
-  for (const finding of pinged) {
-    for (const id of finding.actions) if (!ids.includes(id)) ids.push(id);
-  }
-  return ids;
-}
-
-/** One ping per item per slot, however many reasons fired; they are merged. */
-function mergePings(view: ItemFindings[], env: Env): Ping[] {
-  return view.flatMap((entry) => {
-    const ping = mergePing(entry, env);
-    return ping === null ? [] : [ping];
-  });
-}
-
-/** One item's findings as one ping, or null when nothing in it pings. */
-function mergePing({ item, findings }: ItemFindings, env: Env): Ping | null {
-  const joiner = env.slot === "M" ? ", " : "; ";
-  const pinged = findings.filter((f) => f.ping);
-  if (pinged.length === 0) return null;
+/** One item's findings as one row, or null when none of them is a "today" finding. */
+function rowOf({ item, findings }: ItemFindings): BriefRow | null {
+  const lines = findings.filter((f) => f.section === "today");
+  if (lines.length === 0) return null;
   return {
-    key: pingKey(env.today, env.slot, item.id),
     itemId: item.id,
-    // An evening ping that answers an unanswered morning ping is a re-ping.
-    kind: env.slot === "E" && unackedMorningPing(item, env) ? "reping" : "ping",
-    text: [`${link(item)}: ${pinged.map((f) => f.reason).join(joiner)}`, ...contextLines(item)].join("\n"),
-    actions: mergeActions(pinged),
+    text: [`${link(item)}: ${lines.map((f) => f.reason).join(", ")}`, ...contextLines(item)].join("\n"),
   };
 }
 
 /** The briefing's rows, one per item that needs action, in rowOrder. */
-function briefingRows(view: ItemFindings[], env: Env): Ping[] {
+function briefingRows(view: ItemFindings[], env: Env): BriefRow[] {
   const rows = view.flatMap((entry) => {
-    const ping = mergePing(entry, env);
-    return ping === null ? [] : [{ ping, order: rowOrder(entry.item, env) }];
+    const row = rowOf(entry);
+    return row === null ? [] : [{ row, order: rowOrder(entry.item, env) }];
   });
   rows.sort((a, b) => compareOrder(a.order, b.order));
-  return rows.map((row) => row.ping);
+  return rows.map((r) => r.row);
 }
 
-function renderBriefing(view: ItemFindings[], env: Env, work: readonly Item[], meetings: readonly string[]): Briefing {
+function renderBriefing(view: ItemFindings[], env: Env, work: readonly Item[]): Brief {
   const policy = env.policy;
   const inSection = (name: Section): Finding[] => view.flatMap((v) => v.findings.filter((f) => f.section === name));
 
-  // The sections above the rows: the title, then yesterday's warnings.
+  // The sections above the rows: the title.
   const head: string[] = [`*Morning briefing, ${fmtDate(env.today)}*`];
-
-  // Warnings keep the history's order, not the board's.
-  const warn = inSection("warn").sort((a, b) => warnOrder(env, a) - warnOrder(env, b));
-  if (warn.length > 0) head.push(warn.map((f) => f.reason).join("\n"));
 
   const rows = briefingRows(view, env);
   const today = rows.length > 0 ? ["*Today*", ...rows.map((row) => `• ${row.text}`)] : ["*Today*", "Nothing due. 🎉"];
 
-  // The sections under the rows. The day's meetings go first: they are how the
-  // day is shaped, and everything under them is about the board. A day with
-  // nothing on it adds no heading at all, so the briefing cannot grow one that
-  // says nothing every morning.
+  // The sections under the rows.
   const tail: string[] = [];
-  if (meetings.length > 0) tail.push(`*Today's meetings*\n${meetings.join("\n")}`);
 
   const soon = view
     .flatMap((v) => v.findings.filter((f) => f.section === "soon").map((f) => `• ${link(v.item)}: ${f.reason}`));
@@ -639,10 +442,6 @@ function renderBriefing(view: ItemFindings[], env: Env, work: readonly Item[], m
 
   const text = [...head, today.join("\n"), ...tail].join("\n\n");
   // With no rows the Today header carries its own line; with rows the header
-  // stands alone and each row is a block of its own, with a menu on it.
-  return { text, head: [...head, rows.length === 0 ? today.join("\n") : "*Today*"], rows, tail };
-}
-
-function warnOrder(env: Env, finding: Finding): number {
-  return env.history.findIndex((h) => h.itemId === finding.itemId && h.kind === "reping" && h.date === prevWorkday(env.today));
+  // stands alone and each row is a block of its own.
+  return { date: env.today, text, head: [...head, rows.length === 0 ? today.join("\n") : "*Today*"], rows, tail };
 }

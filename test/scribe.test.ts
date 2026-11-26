@@ -15,6 +15,7 @@ import {
   scribeSystemPrompt,
   scribeUserPrompt,
   validateNote,
+  writeFolder,
   type Note,
 } from "../src/scribe.ts";
 
@@ -105,6 +106,26 @@ test("an existing folder is exactly one the repo listed, and nothing else", () =
     "",
   ]) {
     assert.equal(safeFolder(folder, listed), null, `${JSON.stringify(folder)} is not in the list`);
+  }
+});
+
+test("a write lands in a listed folder or a new one under Accounts, and nowhere else", () => {
+  assert.equal(writeFolder("Accounts/Acme", ["Accounts/Acme"]), "Accounts/Acme", "an existing folder");
+  assert.equal(writeFolder("Events/Summit-2027", ["Events/Summit-2027"]), "Events/Summit-2027", "an existing folder under another root");
+  assert.equal(writeFolder("Accounts/Initech", []), "Accounts/Initech", "a new one under Accounts");
+  assert.equal(writeFolder("Accounts/Initech", ["Accounts/Acme"]), "Accounts/Initech", "a new name is no listing's business");
+  for (const folder of [
+    "../../x",
+    "Accounts/../README",
+    ".github",
+    "Acme\\Ltd",
+    "Accounts/Acme\n",
+    "",
+    "Partners/Globex",
+    "Accounts/",
+    "accounts/Acme",
+  ]) {
+    assert.equal(writeFolder(folder, ["Accounts/Acme"]), null, `${JSON.stringify(folder)} may not be written`);
   }
 });
 

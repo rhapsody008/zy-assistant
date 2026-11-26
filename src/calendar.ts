@@ -1,24 +1,17 @@
-// The calendar snapshot a Mac exports and the pod mounts, and the intake that
-// holds the one it last accepted. The parser is all-or-nothing: a snapshot with
-// one bad event is no snapshot, so the intake never half-believes a file.
+// The calendar snapshot a Mac exports. The parser is all-or-nothing: a snapshot
+// with one bad event is no snapshot, so nothing here half-believes a file.
 //
 // Nothing here prints: every function returns what it found and the caller owns
-// the log. What leaves this module is ids, counts, timestamps, zone identifiers and
-// field paths; a title is never rendered on a line built here, and a domain names a
-// customer, so both stay inside the held snapshot and off every line built here.
+// the log. What leaves this module is ids, timestamps, zone identifiers and field
+// paths; a title is never rendered on a line built here, and a domain names a
+// customer, so both stay inside the parsed snapshot.
 //
-// A version 2 file also declares the zone the Mac built its window in, and where the
-// bot's own zone is elsewhere the two disagree about where a day starts and ends. The
-// snapshot is still held: a declared zone that is not this bot's is a disagreement to
-// state, never a fault to reject.
-//
-// Freshness is read off generatedAt, never off when the file was read: a pod
-// that restarts does not make an hour-old snapshot look new. And a snapshot is
-// held, not cached: a newer one replaces it whole even when its events are the
-// same, because that push is the Mac saying it is still alive.
+// A version 2 file also declares the zone the Mac built its window in, and where
+// this machine's own zone is elsewhere the two disagree about where a day starts
+// and ends. The snapshot still parses: a declared zone that is not this one is a
+// disagreement to state, never a fault to reject.
 
-import { errMessage } from "./errors.ts";
-import { localNow, TZ } from "./time.ts";
+import { TZ } from "./time.ts";
 
 /** One snapshot file may not be bigger than this: anything larger is not a day and a half of meetings. */
 export const SNAPSHOT_MAX_BYTES = 256 * 1024;
@@ -59,7 +52,7 @@ export const CALENDAR_STATUSES = ["accepted", "tentative", "organizer", "none"] 
 
 export type CalendarStatus = (typeof CALENDAR_STATUSES)[number];
 
-/** The span the Mac exported: freshness is judged against its end. */
+/** The span the Mac exported: the meetings in the snapshot are the ones inside it. */
 export interface CalendarWindow {
   start: string; // ISO-8601 with a Z
   end: string;
@@ -90,23 +83,6 @@ export interface CalendarSnapshot {
   /** The IANA zone the Mac built the window in, from a version 2 file only. */
   tz?: string;
 }
-
-export type CalendarFreshness = "fresh" | "stale" | "expired";
-
-/** The held snapshot and how much it is worth right now. */
-export interface CalendarState {
-  snapshot: CalendarSnapshot;
-  /** When this snapshot was accepted; freshness is generatedAt's business, not this. */
-  readAt: Date;
-  freshness: CalendarFreshness;
-}
-
-/** What one refresh did. The caller logs it: a duplicate push and a repeated rejection are silent. */
-export type CalendarRefresh =
-  | { kind: "unchanged" }
-  | { kind: "accepted"; snapshot: CalendarSnapshot; events: number; allDay: number }
-  | { kind: "rejected"; reason: string; repeat: boolean }
-  | { kind: "missing" };
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 
@@ -259,183 +235,15 @@ export function parseSnapshot(text: string, now: Date): CalendarSnapshot {
 }
 
 /**
- * The zone a snapshot declared, when it is not this bot's; null when there is no
- * disagreement to state. A version 1 file declared nothing, so it never disagrees.
+ * The zone a snapshot declared, when it is not this machine's; null when there is
+ * no disagreement to state. A version 1 file declared nothing, so it never disagrees.
  * The compare is exact and case-sensitive on purpose: an alias, or a sibling zone
  * that happens to share an offset, still counts as a mismatch, because what the two
  * sides disagree about is where the day boundaries fall, not what the clock reads at
- * one instant. Nothing is concluded here: a foreign snapshot is not stale, and not
- * expired. It was pushed, it parsed, and its days are simply not this bot's.
+ * one instant. Nothing else is concluded here: a foreign snapshot was pushed and it
+ * parsed, and its days are simply not this machine's.
  */
 export function foreignZone(snapshot: CalendarSnapshot): string | null {
   const declared = snapshot.tz;
   return declared !== undefined && declared !== TZ ? declared : null;
-}
-
-export interface CalendarIntakeOptions {
-  /** CALENDAR_FILE: the snapshot the pod mounts. */
-  path: string;
-  /** Injected so a test never touches a disk, and so a read can be made to fail. */
-  readFile: (path: string) => Promise<string>;
-}
-
-/**
- * The one snapshot the bot holds. `refresh` reads the file and decides whether
- * what it found is news; `current` says what the held snapshot is worth now.
- * Neither prints, and `refresh` never throws: the tick that calls it must not die
- * over a file.
- */
-export class CalendarIntake {
-  #path: string;
-  #readFile: (path: string) => Promise<string>;
-  #held: { snapshot: CalendarSnapshot; readAt: Date } | null = null;
-  #lastReason: string | null = null;
-
-  constructor(options: CalendarIntakeOptions) {
-    this.#path = options.path;
-    this.#readFile = options.readFile;
-  }
-
-  async refresh(now: Date): Promise<CalendarRefresh> {
-    let text: string;
-    try {
-      text = await this.#readFile(this.#path);
-    } catch (err) {
-      // A Mac that has not pushed yet is not a fault: no file at all is no snapshot.
-      // The code is read, never cast: an injected read may reject with anything,
-      // and reading a field off undefined would throw inside this catch.
-      if (err instanceof Error && "code" in err && err.code === "ENOENT") {
-        this.#lastReason = null;
-        return { kind: "missing" };
-      }
-      // The fs message names the mount path, never anything the payload holds.
-      return this.#rejected(`snapshot file: ${errMessage(err)}`);
-    }
-
-    let snapshot: CalendarSnapshot;
-    try {
-      snapshot = parseSnapshot(text, now);
-    } catch (err) {
-      return this.#rejected(errMessage(err));
-    }
-
-    const held = this.#held;
-    if (held !== null) {
-      // Instants, not strings: the Mac may stop writing milliseconds, and that
-      // is the same push, not a new one.
-      const age = Date.parse(snapshot.generatedAt) - Date.parse(held.snapshot.generatedAt);
-      if (age < 0) return this.#rejected("older than the snapshot held");
-      if (age === 0) {
-        // The same push twice: a no-op. The held readAt stays where it was, so
-        // the state reads as the one snapshot it is.
-        this.#lastReason = null;
-        return { kind: "unchanged" };
-      }
-    }
-
-    // A newer snapshot replaces the whole held one even when its events match:
-    // that is the heartbeat, and the only thing that keeps a quiet day fresh.
-    this.#held = { snapshot, readAt: now };
-    this.#lastReason = null;
-    return {
-      kind: "accepted",
-      snapshot,
-      events: snapshot.events.length,
-      allDay: snapshot.events.filter((e) => e.allDay).length,
-    };
-  }
-
-  current(now: Date): CalendarState | null {
-    const held = this.#held;
-    if (held === null) return null;
-    const { snapshot } = held;
-    // A closed window carries nothing for now, however recently the Mac wrote it,
-    // so expiry is asked first: an old window can never read as fresh.
-    // Then the local date of the push. The Mac pushes at 07:30 and 18:30, so an age
-    // in minutes would call the snapshot stale for most of the day it is about;
-    // "pushed today" is what fresh can honestly mean here, and an older push still
-    // inside the window is stale but usable. The compare is `>=` because a Mac whose
-    // clock is a few minutes ahead (allowed up to five) pushes tomorrow's date
-    // around midnight, and that is still this moment's snapshot.
-    const freshness: CalendarFreshness =
-      now.getTime() > Date.parse(snapshot.window.end)
-        ? "expired"
-        : localNow(new Date(snapshot.generatedAt), TZ).date >= localNow(now, TZ).date
-          ? "fresh"
-          : "stale";
-    // Expired and stale snapshots are still returned: what to do about their age
-    // is the caller's decision, and a sleeping Mac must not empty the state.
-    return { snapshot, readAt: held.readAt, freshness };
-  }
-
-  /** A rejection, and whether it is the one the caller has already logged. */
-  #rejected(reason: string): CalendarRefresh {
-    const repeat = reason === this.#lastReason;
-    this.#lastReason = reason;
-    return { kind: "rejected", reason, repeat };
-  }
-}
-
-/** Whole minutes since generatedAt; a clock slightly ahead reads as no age at all. */
-function ageMinutes(generatedAt: string, now: Date): number {
-  return Math.max(0, Math.floor((now.getTime() - Date.parse(generatedAt)) / 60_000));
-}
-
-/**
- * What a line says about the zone the snapshot declared: nothing at all for a
- * version 1 file, the zone when it is this bot's, and the disagreement when it is
- * not. The refresh line and the startup line both end with it, so the one I read
- * after a deploy says the same thing as the push that made it. Zone identifiers,
- * counts and instants only, on the same rule as the rest of this module: a title
- * never reaches a line, and a mismatched snapshot's meetings and asks are not this
- * bot's to state, so the line says they are off rather than naming one.
- */
-export function zoneSuffix(snapshot: CalendarSnapshot): string {
-  if (snapshot.tz === undefined) return "";
-  const foreign = foreignZone(snapshot);
-  if (foreign === null) return `, tz ${TZ}`;
-  return `, tz ${foreign}, not ${TZ}: its meetings and asks are off`;
-}
-
-/**
- * What a refresh is worth logging: an accepted snapshot and a first-time
- * rejection say something; the same push again, the same rejection again and a
- * file that is not there yet say nothing.
- */
-export function calendarRefreshLine(refresh: CalendarRefresh): string | null {
-  if (refresh.kind === "accepted") {
-    return (
-      `calendar: snapshot ${refresh.snapshot.generatedAt}: ${count(refresh.events, "event")}, ${refresh.allDay} all-day` +
-      zoneSuffix(refresh.snapshot)
-    );
-  }
-  if (refresh.kind === "rejected" && !refresh.repeat) return `calendar: snapshot rejected: ${refresh.reason}`;
-  return null;
-}
-
-/** The freshness, logged once per transition: a stale snapshot is named, not treated as a fault. */
-export function calendarFreshnessLine(state: CalendarState, now: Date): string {
-  return `calendar: ${state.freshness}, snapshot ${state.snapshot.generatedAt} (age ${ageMinutes(state.snapshot.generatedAt, now)}m)`;
-}
-
-/**
- * The `calendar` mode's output: one summary line, then one line per event, ids
- * and counts only. A title is never shown and a domain is only ever counted.
- */
-export function snapshotLines(state: CalendarState, now: Date): string[] {
-  const { snapshot, freshness } = state;
-  const allDay = snapshot.events.filter((e) => e.allDay).length;
-  const lines = [
-    `snapshot ${snapshot.generatedAt}, window ${snapshot.window.start}..${snapshot.window.end}, ` +
-      `${count(snapshot.events.length, "event")}, ${allDay} all-day, ${freshness}, age ${ageMinutes(snapshot.generatedAt, now)}m` +
-      zoneSuffix(snapshot),
-  ];
-  for (const e of snapshot.events) {
-    lines.push(`${e.id} ${e.start} ${e.end} ${String(e.allDay)} ${e.status} domains=${e.domains.length}`);
-  }
-  return lines;
-}
-
-function count(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }

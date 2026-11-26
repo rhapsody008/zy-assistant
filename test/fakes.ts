@@ -1,65 +1,11 @@
 // Shared test doubles. No network, no disk, no real timers.
 
 import type { Board, BoardField, BoardSource, IssueWriter } from "../src/github.ts";
-import type { Llm, LlmRequest } from "../src/llm.ts";
 import { ShaConflict, type NotesClient, type NotesFile } from "../src/notes.ts";
-import type { Item, Ping, SentPing, Slot, Briefing } from "../src/rules.ts";
-import type { Sent, Sender, BriefingSent } from "../src/slack.ts";
-import type { AskRecord, AskStore, Dictation, DictationPatch, DictationStatus, DictationStore, NewPing, PingRecord, PingStore, Proposal, ProposalPatch, ProposalStatus, ProposalStore } from "../src/store.ts";
+import type { Item } from "../src/rules.ts";
 
-export class FakeStore implements PingStore {
-  readonly pings = new Map<string, PingRecord>();
-  readonly runs = new Set<string>();
-  readonly briefings = new Map<string, string>();
-  readonly failures = new Map<string, number>();
-
-  recordPing(ping: NewPing): void {
-    this.pings.set(ping.key, { ...ping, ackedAt: null });
-  }
-
-  historySince(date: string): SentPing[] {
-    return [...this.pings.values()].filter((p) => p.date >= date);
-  }
-
-  markAcked(key: string, at: string): void {
-    const ping = this.pings.get(key);
-    if (ping) ping.ackedAt = at;
-  }
-
-  findByKey(key: string): PingRecord | null {
-    return this.pings.get(key) ?? null;
-  }
-
-  findByMessage(channel: string, ts: string): PingRecord | null {
-    for (const ping of this.pings.values()) if (ping.channel === channel && ping.ts === ts) return ping;
-    return null;
-  }
-
-  slotRan(date: string, slot: Slot): boolean {
-    return this.runs.has(`${date}:${slot}`);
-  }
-
-  markSlotRan(date: string, slot: Slot): void {
-    this.runs.add(`${date}:${slot}`);
-  }
-
-  briefingSent(date: string, slot: Slot): boolean {
-    return this.briefings.has(`${date}:${slot}`);
-  }
-
-  recordBriefing(date: string, slot: Slot, at: string): void {
-    this.briefings.set(`${date}:${slot}`, at);
-  }
-
-  recordSlotFailure(date: string, slot: Slot, _error: string): number {
-    const key = `${date}:${slot}`;
-    const attempts = (this.failures.get(key) ?? 0) + 1;
-    this.failures.set(key, attempts);
-    return attempts;
-  }
-}
-
-/** Holds a fake's reply open until the test opens it: no timers involved. */export class Gate {
+/** Holds a fake's reply open until the test opens it: no timers involved. */
+export class Gate {
   readonly opened: Promise<void>;
   readonly entered: Promise<void>;
   #open: () => void = () => {};
@@ -82,58 +28,6 @@ export class FakeStore implements PingStore {
 
   open(): void {
     this.#open();
-  }
-}
-
-export class FakeSender implements Sender {
-  readonly dms: string[] = [];
-  readonly briefings: Briefing[] = [];
-  readonly sent: Ping[] = []; // pings that the Slack call accepted
-  attempts = 0; // the pings
-  briefingAttempts = 0;
-  failOnAttempt: number | null = null;
-  /** The nth briefing send fails: null for never. */
-  failBriefingOn: number | null = null;
-  alwaysFailBriefing = false;
-  /** When set, the briefing's blocks are refused and only its text goes out. */
-  invalidBlocks = false;
-  /** When set, rows beyond this many get no menu: what the 50-block limit does. */
-  menuLimit: number | null = null;
-  alwaysFailPings = false;
-  gate: Gate | null = null;
-
-  async sendDm(text: string): Promise<Sent> {
-    if (this.gate) await this.gate.wait();
-    this.dms.push(text);
-    return { channel: "DM", ts: `dm-${this.dms.length}` };
-  }
-
-  async sendBriefing(briefing: Briefing): Promise<BriefingSent> {
-    if (this.gate) await this.gate.wait();
-    this.briefingAttempts += 1;
-    if (this.alwaysFailBriefing) throw new Error("slack is down");
-    if (this.failBriefingOn !== null && this.briefingAttempts === this.failBriefingOn) {
-      this.failBriefingOn = null; // only the one call fails; the retry succeeds
-      throw new Error("slack is down");
-    }
-    this.briefings.push(briefing);
-    // The keys of the rows whose row carries a ⋯ menu: the rows that can be
-    // clicked, and the only ones the scheduler records. A refused message has
-    // no menu at all, and every row is still keyed so it is not lost.
-    const keys = briefing.rows.map((row) => row.key);
-    const menuKeys = this.invalidBlocks ? keys : keys.slice(0, this.menuLimit ?? keys.length);
-    return { channel: "DM", ts: `brief-${this.briefings.length}`, menuKeys };
-  }
-
-  async sendPing(ping: Ping): Promise<Sent> {
-    this.attempts += 1;
-    if (this.alwaysFailPings) throw new Error("slack is down");
-    if (this.failOnAttempt !== null && this.attempts === this.failOnAttempt) {
-      this.failOnAttempt = null; // only the one call fails; the retry succeeds
-      throw new Error("slack is down");
-    }
-    this.sent.push(ping);
-    return { channel: "DM", ts: `ts-${this.sent.length}` };
   }
 }
 
@@ -271,7 +165,7 @@ export class FakeBoard implements BoardSource, IssueWriter {
     this.#enter("addSubIssue", `${issueId}|${subIssueId}`);
   }
 
-  /** Recorded, but no failure point: nothing in `add:` comments, so no retry continues from one. */
+  /** Recorded, but no failure point: nothing here comments on an issue, so no retry continues from one. */
   async addComment(subjectId: string, _body: string): Promise<void> {
     this.calls.push(`addComment ${subjectId}`);
   }
@@ -301,22 +195,6 @@ export class FakeBoard implements BoardSource, IssueWriter {
     const options = this.#field(fieldId)?.[1].options;
     if (options !== undefined) for (const [name, id] of options) if (id === optionId) return name;
     return optionId;
-  }
-}
-
-/** The note model: scripted replies, one per call, and no network. */
-export class FakeLlm implements Llm {
-  readonly requests: LlmRequest[] = [];
-  readonly replies: string[] = [];
-  /** When set, every call throws this: the gateway is down. */
-  down: Error | null = null;
-
-  async complete(req: LlmRequest): Promise<string> {
-    this.requests.push(req);
-    if (this.down) throw this.down;
-    const reply = this.replies.shift();
-    if (reply === undefined) throw new Error("FakeLlm: no reply left");
-    return reply;
   }
 }
 
@@ -354,143 +232,5 @@ export class FakeNotes implements NotesClient {
     this.writes.push({ path, text, sha, message });
     this.files.set(path, { text, sha: `sha-${this.commits}` });
     return `https://github.com/demo/notes/commit/${this.commits}`;
-  }
-}
-
-/** The asks and asks_seen tables: the same shapes, in maps. */
-export class FakeAskStore implements AskStore {
-  readonly rows = new Map<string, AskRecord>();
-  readonly seen = new Map<string, string>();
-
-  claimAsk(ts: string, at: string): boolean {
-    if (this.seen.has(ts)) return false;
-    this.seen.set(ts, at);
-    return true;
-  }
-
-  recordAsk(ask: AskRecord): void {
-    this.rows.set(ask.ts, ask);
-  }
-
-  asksInThread(threadTs: string, limit: number): AskRecord[] {
-    const rows = [...this.rows.values()]
-      .filter((row) => row.threadTs === threadTs)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    return rows.slice(Math.max(0, rows.length - limit));
-  }
-
-  pruneAsks(before: string): number {
-    let pruned = 0;
-    for (const [ts, row] of this.rows) {
-      if (row.createdAt >= before) continue;
-      this.rows.delete(ts);
-      pruned += 1;
-    }
-    for (const [ts, at] of this.seen) if (at < before) this.seen.delete(ts);
-    return pruned;
-  }
-}
-
-/** The dictations table: the same shape, in a map. */
-export class FakeDictations implements DictationStore {
-  readonly rows = new Map<string, Dictation>();
-
-  recordDictation(dictation: { ts: string; text: string; createdAt: string }): boolean {
-    if (this.rows.has(dictation.ts)) return false;
-    this.rows.set(dictation.ts, {
-      ts: dictation.ts,
-      text: dictation.text,
-      status: "stored",
-      folder: null,
-      noteJson: null,
-      commitUrl: null,
-      createdAt: dictation.createdAt,
-      error: null,
-    });
-    return true;
-  }
-
-  findDictation(ts: string): Dictation | null {
-    return this.rows.get(ts) ?? null;
-  }
-
-  claimDictation(ts: string, from: DictationStatus[]): boolean {
-    const row = this.rows.get(ts);
-    if (row === undefined || !from.includes(row.status)) return false;
-    row.status = "writing";
-    return true;
-  }
-
-  updateDictation(ts: string, patch: DictationPatch): void {
-    const row = this.rows.get(ts);
-    if (row === undefined) return;
-    if (patch.status !== undefined) row.status = patch.status;
-    if (patch.folder !== undefined) row.folder = patch.folder;
-    if (patch.noteJson !== undefined) row.noteJson = patch.noteJson;
-    if (patch.commitUrl !== undefined) row.commitUrl = patch.commitUrl;
-    if (patch.error !== undefined) row.error = patch.error;
-  }
-}
-
-/** The proposals table: the same shape, in a map. */
-export class FakeProposals implements ProposalStore {
-  readonly rows = new Map<string, Proposal>();
-  /** The rows a restart would have reset: what interrupted() hands back, once. */
-  readonly interruptedRows: Proposal[] = [];
-
-  recordProposal(proposal: { id: string; kind: string; source: string; createdAt: string }): boolean {
-    if (this.rows.has(proposal.id)) return false;
-    this.rows.set(proposal.id, {
-      id: proposal.id,
-      kind: proposal.kind,
-      status: "drafting",
-      source: proposal.source,
-      payload: null,
-      context: null,
-      progress: null,
-      rev: 0,
-      channel: null,
-      messageTs: null,
-      createdAt: proposal.createdAt,
-      error: null,
-    });
-    return true;
-  }
-
-  findProposal(id: string): Proposal | null {
-    return this.rows.get(id) ?? null;
-  }
-
-  claimProposal(id: string, from: ProposalStatus[], to: ProposalStatus): boolean {
-    const row = this.rows.get(id);
-    if (row === undefined || !from.includes(row.status)) return false;
-    row.status = to;
-    return true;
-  }
-
-  updateProposal(id: string, patch: ProposalPatch): void {
-    const row = this.rows.get(id);
-    if (row === undefined) return;
-    if (patch.status !== undefined) row.status = patch.status;
-    if (patch.payload !== undefined) row.payload = patch.payload;
-    if (patch.context !== undefined) row.context = patch.context;
-    if (patch.progress !== undefined) row.progress = patch.progress;
-    if (patch.channel !== undefined) row.channel = patch.channel;
-    if (patch.messageTs !== undefined) row.messageTs = patch.messageTs;
-    if (patch.error !== undefined) row.error = patch.error;
-  }
-
-  editProposal(id: string, rev: number, payload: string): boolean {
-    const row = this.rows.get(id);
-    if (row === undefined || row.status !== "open" || row.rev !== rev || row.progress !== null) return false;
-    row.payload = payload;
-    row.rev += 1;
-    return true;
-  }
-
-  interrupted(): Proposal[] {
-    const rows = [...this.interruptedRows];
-    this.interruptedRows.length = 0;
-    return rows;
   }
 }
