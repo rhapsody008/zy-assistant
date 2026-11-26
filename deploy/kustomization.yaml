@@ -1,0 +1,6 @@
+# Rendered by NKP Project CD into the zy-assistant project namespace:
+# no Namespace object and no namespace: field.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - cronjob.yaml
