@@ -39,6 +39,7 @@ export type BoardFailure =
   | "setText"
   | "setDate"
   | "setSingleSelect"
+  | "clearField"
   | "addSubIssue"
   | "fetchBoard";
 
@@ -161,13 +162,17 @@ export class FakeBoard implements BoardSource, IssueWriter {
     this.#enter("setText", `${itemId}|${this.#fieldName(fieldId)}|${text}`);
   }
 
+  async clearField(projectId: string, itemId: string, fieldId: string): Promise<void> {
+    this.#enter("clearField", `${itemId}|${this.#fieldName(fieldId)}`);
+  }
+
   async addSubIssue(issueId: string, subIssueId: string): Promise<void> {
     this.#enter("addSubIssue", `${issueId}|${subIssueId}`);
   }
 
-  /** Recorded, but no failure point: nothing here comments on an issue, so no retry continues from one. */
-  async addComment(subjectId: string, _body: string): Promise<void> {
-    this.calls.push(`addComment ${subjectId}`);
+  /** Recorded with its body, but no failure point: nothing here retries a comment. */
+  async addComment(subjectId: string, body: string): Promise<void> {
+    this.calls.push(`addComment ${subjectId}|${body}`);
   }
 
   #enter(name: BoardFailure, what = ""): void {

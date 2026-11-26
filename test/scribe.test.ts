@@ -1,6 +1,6 @@
 // The scribe's pure parts, pinned exactly: the note's shape, the entry format v0,
-// where the entry goes in a README, a folder's first README, and the prompt the
-// model is given. Synthetic names only: "Acme", "Globex", "Initech".
+// where the entry goes in a README, and a folder's first README. Synthetic names
+// only: "Acme", "Globex", "Initech".
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -8,12 +8,9 @@ import {
   insertEntry,
   newReadme,
   NOTE_TYPES,
-  rawEntry,
   renderEntry,
   safeFolder,
   safeNewFolder,
-  scribeSystemPrompt,
-  scribeUserPrompt,
   validateNote,
   writeFolder,
   type Note,
@@ -173,7 +170,7 @@ test("an entry is the heading, the notes, the actions and the attribution", () =
       "- [ ] ZY: send the sizing sheet (due 2026-11-28)",
       "- [ ] Globex: confirm the date",
       "",
-      "_Scribed by zy-assistant from Slack._",
+      "_Written via zya._",
     ].join("\n"),
   );
 });
@@ -181,22 +178,7 @@ test("an entry is the heading, the notes, the actions and the attribution", () =
 test("with no attendees, decisions or actions the entry is just the summary", () => {
   assert.equal(
     renderEntry(note({ type: "Admin", topic: "Timesheet", attendees: [], summary: "Filed it.", decisions: [], actions: [] })),
-    ["## 2026-11-25 · Admin · Timesheet", "", "**Summary:** Filed it.", "", "_Scribed by zy-assistant from Slack._"].join("\n"),
-  );
-});
-
-test("a raw dictation is quoted, never parsed", () => {
-  assert.equal(
-    rawEntry("2026-11-25", "the workshop decided ten nodes\n\nsend the sheet by Friday"),
-    [
-      "## 2026-11-25 · Meeting · Raw dictation (unprocessed)",
-      "",
-      "> the workshop decided ten nodes",
-      ">",
-      "> send the sheet by Friday",
-      "",
-      "_Scribed by zy-assistant from Slack._",
-    ].join("\n"),
+    ["## 2026-11-25 · Admin · Timesheet", "", "**Summary:** Filed it.", "", "_Written via zya._"].join("\n"),
   );
 });
 
@@ -257,6 +239,41 @@ test("the same entry is never inserted twice", () => {
   assert.equal(insertEntry(once, entry).split(entry).length - 1, 1);
 });
 
+test("a README written with CRLF keeps its ending, and gets one Log with the new entry first", () => {
+  const readme = "# Acme\r\n\r\n## Log\r\n\r\n## 2026-11-20 · Meeting · Older\r\n\r\n**Summary:** Old.\r\n";
+  const entry = "## 2026-11-25 · Meeting · Newer\n\n**Summary:** New.";
+
+  const once = insertEntry(readme, entry);
+  assert.equal(once.split("## Log").length - 1, 1, "the CRLF Log is found, so no second one is appended");
+  assert.equal(
+    once,
+    "# Acme\r\n\r\n## Log\r\n\r\n" +
+      "## 2026-11-25 · Meeting · Newer\r\n\r\n**Summary:** New.\r\n\r\n" +
+      "## 2026-11-20 · Meeting · Older\r\n\r\n**Summary:** Old.\r\n",
+    "the entry is inserted in the file's own endings, and nothing else is rewritten",
+  );
+  assert.equal(insertEntry(once, entry), once, "an entry already in the README, in its endings, is not inserted twice");
+  assert.equal(insertEntry("# Acme\r\n", entry), `# Acme\r\n\r\n## Log\r\n\r\n${entry.replace(/\n/g, "\r\n")}\r\n`, "a CRLF README with no Log");
+});
+
+test("an insertion changes nothing outside it: mixed endings, and whitespace that belongs to the old entry", () => {
+  const entry = "## 2026-11-25 · Meeting · Newer\n\n**Summary:** New.";
+
+  // One CRLF heading in an LF file: the entry takes the heading's ending, and the
+  // text before and after it keeps the bytes it had.
+  assert.equal(
+    insertEntry("# Acme\n\nContext\n\n## Log\r\n\r\nOld\n", entry),
+    "# Acme\n\nContext\n\n## Log\r\n\r\n## 2026-11-25 · Meeting · Newer\r\n\r\n**Summary:** New.\r\n\r\nOld\n",
+  );
+
+  // Trailing whitespace belongs to the old entry, and so does the blank line after
+  // it: both are copied, not trimmed and not re-ended.
+  assert.equal(
+    insertEntry("# Acme\r\n\r\n## Log\r\n\r\nOld.\u00a0\r\n\r\n", entry),
+    `# Acme\r\n\r\n## Log\r\n\r\n${entry.replace(/\n/g, "\r\n")}\r\n\r\nOld.\u00a0\r\n\r\n`,
+  );
+});
+
 test("a folder's first README is the format v0 table, a Context, and the entry under Log", () => {
   const entry = "## 2026-11-25 · Meeting · Newer\n\n**Summary:** New.";
   assert.equal(
@@ -300,37 +317,4 @@ test("a partner folder is a Partner, an event folder is neither", () => {
   assert.match(newReadme("Partners/Globex", entry), /\| Track \| - \|/);
   assert.match(newReadme("Events/Summit-2027", entry), /\| Track \| - \|[\s\S]*\| Type \| - \|/);
   assert.match(newReadme("Events/Summit-2027", entry), /^# Summit-2027$/m, "the heading is the folder's name");
-});
-
-test("the system prompt carries the rules, today's date and every folder", () => {
-  const prompt = scribeSystemPrompt("2026-11-25", ["Accounts/Acme", "Partners/Globex", "Events/Summit-2027"]);
-
-  assert.match(prompt, /Reply with ONE JSON object/);
-  assert.match(prompt, /Today is 2026-11-25 \(Asia\/Singapore\)/);
-  for (const folder of ["Accounts/Acme", "Partners/Globex", "Events/Summit-2027"]) assert.match(prompt, new RegExp(`^- ${folder}$`, "m"));
-  assert.match(prompt, /pick it ONLY from the list/);
-  assert.match(prompt, /never invent facts, names, numbers or dates/i);
-  assert.match(prompt, /Relative dates .* resolve against today/);
-  assert.match(prompt, /"This Friday" is the next Friday on or after today \(today itself when today is a Friday\)/);
-  assert.match(prompt, /"next Friday" is the Friday of the following week, 7 days after "this Friday"/);
-  assert.match(prompt, /The same holds for every other weekday/);
-  assert.match(prompt, /"I", "me" and "mine" mean ZY/);
-  assert.match(scribeSystemPrompt("2026-11-25", []), /\(none yet\)/);
-});
-
-test("the user prompt is the dictation, and the title it was dictated under when there is one", () => {
-  assert.equal(scribeUserPrompt("  ten nodes is enough  ", null), "Dictation from Slack:\n\nten nodes is enough");
-  assert.equal(
-    scribeUserPrompt("ten nodes is enough", "Acme VPC sizing"),
-    'Dictation from Slack:\n\nten nodes is enough\n\nIt is about "Acme VPC sizing".',
-  );
-  // The hint is a board item's title or a meeting's, and the sentence claims neither:
-  // the same prompt carries a meeting, which is no board item at all.
-  assert.doesNotMatch(scribeUserPrompt("one node per tenant", "Acme weekly sync"), /board item/);
-  // One line, and a quote or a backslash in a hand-written title cannot end it.
-  assert.equal(
-    scribeUserPrompt("x", '  the "Q3" plan\\draft\n with  Acme  '),
-    'Dictation from Slack:\n\nx\n\nIt is about "the \\"Q3\\" plan\\\\draft with Acme".',
-  );
-  assert.equal(scribeUserPrompt("x", "   "), "Dictation from Slack:\n\nx", "a title with nothing in it adds no sentence");
 });

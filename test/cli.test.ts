@@ -103,20 +103,20 @@ test("the text format is markdown unless told otherwise", async () => {
   assert.equal(await runCli(["brief", "--date", FRIDAY], deps), 0);
   const text = written.join("");
   assert.ok(text.includes("[demo#70](https://github.com/rhapsody008/notes/issues/70) Today: **due today**"));
-  assert.ok(!text.includes("<https"), "no Slack link may survive the default render");
+  assert.ok(!text.includes("<https"), "no raw link may survive the default render");
   assert.ok(text.endsWith("\n"));
 });
 
-test("--links picks the markup: plain for a terminal, slack for the briefing itself", async () => {
+test("--links picks the markup: plain for a terminal, raw for the briefing itself", async () => {
   const plain = setup();
   assert.equal(await runCli(["brief", "--date", FRIDAY, "--links", "plain"], plain.deps), 0);
   assert.ok(plain.written.join("").includes("• demo#70 (https://github.com/rhapsody008/notes/issues/70) Today: due today"));
   assert.ok(!plain.written.join("").includes("*"));
 
-  const slack = setup();
-  assert.equal(await runCli(["brief", "--date", FRIDAY, "--links", "slack"], slack.deps), 0);
+  const raw = setup();
+  assert.equal(await runCli(["brief", "--date", FRIDAY, "--links", "raw"], raw.deps), 0);
   assert.ok(
-    slack.written.join("").includes("• <https://github.com/rhapsody008/notes/issues/70|demo#70> Today: *due today*"),
+    raw.written.join("").includes("• <https://github.com/rhapsody008/notes/issues/70|demo#70> Today: *due today*"),
   );
 });
 
@@ -130,6 +130,7 @@ test("a command line that is not one is a usage error: 2, usage on stderr, nothi
     ["brief", "--date", "2026-1-1"],
     ["brief", "--format", "yaml"],
     ["brief", "--links", "html"],
+    ["brief", "--links", "slack"], // the old name of `raw`
     ["brief", "extra"],
   ];
   for (const argv of bad) {
@@ -221,7 +222,7 @@ test("a missing token names the variable, and no error ever carries the value", 
 test("the real entry: a usage error needs no token, and a missing one is one line, exit 1", () => {
   const usage = zya("nope");
   assert.equal(usage.status, 2);
-  assert.match(usage.stderr, /^zya: a read-only view of ZY's board\n/);
+  assert.match(usage.stderr, /^zya: ZY's board, notes and calendar: the reads print, update writes to\n/);
   assert.match(usage.stderr, /zya brief \[--date YYYY-MM-DD\]/);
   assert.equal(usage.stdout, "");
 
@@ -230,4 +231,50 @@ test("the real entry: a usage error needs no token, and a missing one is one lin
   assert.equal(noToken.status, 1);
   assert.equal(noToken.stderr, "GITHUB_TOKEN not set\n");
   assert.equal(noToken.stdout, "");
+});
+
+test("zya help prints the usage on stdout and exits 0: every command and flag is named", () => {
+  const { status, stdout, stderr } = zya("help");
+  assert.equal(status, 0);
+  assert.equal(stderr, "");
+  // Each command is in the synopsis (`  zya brief …`) and again, described, below
+  // it (`  brief     …`), so both listings have to carry it.
+  for (const command of ["help", "brief", "calendar", "yesterday", "update", "note"]) {
+    assert.match(stdout, new RegExp(`\\n  zya ${command}( |\\n|$)`), `${command} must be in the synopsis`);
+    assert.match(stdout, new RegExp(`\\n  ${command} {1,}\\S`), `${command} must be described`);
+  }
+  for (const flag of [
+    "--date",
+    "--format",
+    "--links",
+    "--days",
+    "--from",
+    "--ref",
+    "--status",
+    "--target",
+    "--next-touch",
+    "--next-action",
+    "--waiting-on",
+    "--comment",
+    "--dry-run",
+  ]) {
+    assert.ok(stdout.includes(flag), `${flag} must be listed`);
+  }
+  assert.match(stdout, /md\|plain\|raw/, "the three link shapes are named");
+  assert.match(stdout, /update writes to/);
+  assert.match(stdout, /note writes to the notes repo/);
+});
+
+test("no arguments prints that very listing on stderr, and so does a flag on help: exit 2", () => {
+  const help = zya("help");
+  const noArgs = zya();
+  assert.equal(noArgs.status, 2);
+  assert.equal(noArgs.stdout, "");
+  assert.equal(noArgs.stderr, help.stdout, "no arguments prints the very same text");
+
+  // `help` takes no flag: a flag on it was meant for a command, so nothing runs.
+  const flagged = zya("help", "--date", "2026-11-27");
+  assert.equal(flagged.status, 2);
+  assert.equal(flagged.stdout, "");
+  assert.equal(flagged.stderr, help.stdout);
 });

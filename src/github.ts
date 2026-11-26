@@ -6,8 +6,16 @@ import type { Item } from "./rules.ts";
 import { ALL_FIELDS, STATUS, type FieldSpec, type ItemField } from "./schema.ts";
 import { latestIso } from "./time.ts";
 
+/**
+ * How a board field's value is typed, as the board itself reports it: a write is
+ * only ever sent to a field of the type it puts there, and a clear is a write.
+ */
+export type BoardFieldKind = "singleSelect" | "date" | "text" | "other";
+
 export interface BoardField {
   id: string;
+  /** Absent when the response did not say; a field of no known type is never written. */
+  kind?: BoardFieldKind;
   options?: Map<string, string>; // option name -> option id (single select fields)
 }
 
@@ -22,6 +30,10 @@ export interface BoardSource {
   fetchBoard(owner: string, number: number): Promise<Board>;
   setDate(projectId: string, itemId: string, fieldId: string, date: string): Promise<void>;
   setSingleSelect(projectId: string, itemId: string, fieldId: string, optionId: string): Promise<void>;
+  /** Writes a text field (Next action, Waiting on, ...). */
+  setText(projectId: string, itemId: string, fieldId: string, text: string): Promise<void>;
+  /** Empties a date or a text field: GitHub's own clear, not an empty value. */
+  clearField(projectId: string, itemId: string, fieldId: string): Promise<void>;
   /** Comments on an issue: subjectId is the Issue node id (Item.contentId). */
   addComment(subjectId: string, body: string): Promise<void>;
 }
@@ -29,9 +41,10 @@ export interface BoardSource {
 /**
  * The writes a proposal's Apply needs, on top of the board read. Separate from
  * BoardSource because every existing fake implements that read, and only the
- * proposal machinery ever writes an issue.
+ * proposal machinery ever writes an issue. The text write is the board's own
+ * (zya update writes one too), so it is inherited rather than declared twice.
  */
-export interface IssueWriter {
+export interface IssueWriter extends Pick<BoardSource, "setText"> {
   /** Creates an issue and returns the node id, the number and the url. */
   createIssue(repo: string, title: string, body: string): Promise<{ id: string; number: number; url: string }>;
   /**
@@ -42,8 +55,6 @@ export interface IssueWriter {
   findIssue(repo: string, marker: string): Promise<{ id: string; number: number; url: string } | null>;
   /** Adds the issue to the project and returns the project item's id. */
   addToProject(projectId: string, contentId: string): Promise<string>;
-  /** Writes a text field (Next action, Waiting on, ...). */
-  setText(projectId: string, itemId: string, fieldId: string, text: string): Promise<void>;
   /** Makes `subIssueId` a sub-issue of the parent issue `issueId`. */
   addSubIssue(issueId: string, subIssueId: string): Promise<void>;
 }
@@ -72,7 +83,7 @@ query Board($owner: String!, $number: Int!, $cursor: String) {
       fields(first: 50) {
         nodes {
           __typename
-          ... on ProjectV2FieldCommon { id name }
+          ... on ProjectV2FieldCommon { id name dataType }
           ... on ProjectV2SingleSelectField { options { id name } }
         }
       }
@@ -137,6 +148,13 @@ mutation SetText($project: ID!, $item: ID!, $field: ID!, $text: String!) {
   updateProjectV2ItemFieldValue(input: { projectId: $project, itemId: $item, fieldId: $field, value: { text: $text } }) { projectV2Item { id } }
 }`;
 
+// A date has no empty date and a text's empty value is a value: emptying a field
+// is this mutation and nothing else.
+const CLEAR_FIELD = `
+mutation ClearField($project: ID!, $item: ID!, $field: ID!) {
+  clearProjectV2ItemFieldValue(input: { projectId: $project, itemId: $item, fieldId: $field }) { projectV2Item { id } }
+}`;
+
 const ADD_SUB_ISSUE = `
 mutation AddSubIssue($issue: ID!, $subIssue: ID!) {
   addSubIssue(input: { issueId: $issue, subIssueId: $subIssue }) { issue { id } subIssue { id } }
@@ -146,6 +164,8 @@ interface RawField {
   __typename?: string;
   id?: string;
   name?: string;
+  /** The field's own type: SINGLE_SELECT, DATE, TEXT, NUMBER, TITLE, ... */
+  dataType?: string;
   options?: Array<{ id?: string; name?: string }> | null;
 }
 
@@ -214,6 +234,29 @@ interface RawAddToProject {
 
 interface RawAddSubIssue {
   addSubIssue?: { issue?: { id?: string } | null; subIssue?: { id?: string } | null } | null;
+}
+
+interface RawFieldValue {
+  updateProjectV2ItemFieldValue?: { projectV2Item?: { id?: string } | null } | null;
+  clearProjectV2ItemFieldValue?: { projectV2Item?: { id?: string } | null } | null;
+}
+
+interface RawAddComment {
+  addComment?: { commentEdge?: { node?: { id?: string } | null } | null } | null;
+}
+
+/** One field's type, as a write needs it: what the response says, and nothing guessed. */
+function fieldKind(raw: RawField): BoardFieldKind {
+  switch (raw.dataType) {
+    case "SINGLE_SELECT":
+      return "singleSelect";
+    case "DATE":
+      return "date";
+    case "TEXT":
+      return "text";
+  }
+  // No dataType at all: the typename still names the one kind whose values are options.
+  return raw.__typename === "ProjectV2SingleSelectField" ? "singleSelect" : "other";
 }
 
 const projectUrl = (owner: string, number: number): string => `https://github.com/users/${owner}/projects/${number}`;
@@ -307,7 +350,8 @@ export function createBoardClient(token: string, fetchFn: FetchLike = fetch): Bo
         for (const field of page.fields?.nodes ?? []) {
           if (!field.id || !field.name) continue;
           const options = field.options?.filter((o) => o.id && o.name).map((o) => [o.name ?? "", o.id ?? ""] as const);
-          fields.set(field.name, options ? { id: field.id, options: new Map(options) } : { id: field.id });
+          const kind = fieldKind(field);
+          fields.set(field.name, options ? { id: field.id, kind, options: new Map(options) } : { id: field.id, kind });
         }
       }
 
@@ -325,16 +369,46 @@ export function createBoardClient(token: string, fetchFn: FetchLike = fetch): Bo
     return { projectId, title, fields, items };
   }
 
+  /**
+   * One field write, confirmed. A 200 with a data envelope is not a write: the
+   * item the mutation answered with is what says the field changed, so a null or
+   * another item's payload is an unconfirmed write, not a proven failure — it may
+   * have landed — and the caller checks before it writes again.
+   */
+  async function writeField(
+    answer: "updateProjectV2ItemFieldValue" | "clearProjectV2ItemFieldValue",
+    query: string,
+    variables: Record<string, unknown>,
+    itemId: string,
+  ): Promise<void> {
+    const data = await graphql<RawFieldValue>(query, variables);
+    const written = data[answer]?.projectV2Item?.id;
+    if (written !== itemId) {
+      throw new Error(`${answer}: the response holds ${JSON.stringify(written ?? null)}, not the item ${itemId}`);
+    }
+  }
+
   async function setDate(projectId: string, itemId: string, fieldId: string, date: string): Promise<void> {
-    await graphql(SET_DATE, { project: projectId, item: itemId, field: fieldId, date });
+    await writeField("updateProjectV2ItemFieldValue", SET_DATE, { project: projectId, item: itemId, field: fieldId, date }, itemId);
   }
 
   async function setSingleSelect(projectId: string, itemId: string, fieldId: string, optionId: string): Promise<void> {
-    await graphql(SET_SINGLE_SELECT, { project: projectId, item: itemId, field: fieldId, option: optionId });
+    await writeField(
+      "updateProjectV2ItemFieldValue",
+      SET_SINGLE_SELECT,
+      { project: projectId, item: itemId, field: fieldId, option: optionId },
+      itemId,
+    );
   }
 
   async function addComment(subjectId: string, body: string): Promise<void> {
-    await graphql(ADD_COMMENT, { subject: subjectId, body });
+    const data = await graphql<RawAddComment>(ADD_COMMENT, { subject: subjectId, body });
+    // The comment's own id: an envelope with no comment is an unconfirmed post,
+    // not a missing one. It may be on the issue anyway, so a retry reads the issue
+    // first: posting it again would post it twice.
+    if (typeof data.addComment?.commentEdge?.node?.id !== "string") {
+      throw new Error("addComment: the response holds no comment id");
+    }
   }
 
   async function createIssue(repo: string, title: string, body: string): Promise<{ id: string; number: number; url: string }> {
@@ -397,7 +471,11 @@ export function createBoardClient(token: string, fetchFn: FetchLike = fetch): Bo
   }
 
   async function setText(projectId: string, itemId: string, fieldId: string, text: string): Promise<void> {
-    await graphql(SET_TEXT, { project: projectId, item: itemId, field: fieldId, text });
+    await writeField("updateProjectV2ItemFieldValue", SET_TEXT, { project: projectId, item: itemId, field: fieldId, text }, itemId);
+  }
+
+  async function clearField(projectId: string, itemId: string, fieldId: string): Promise<void> {
+    await writeField("clearProjectV2ItemFieldValue", CLEAR_FIELD, { project: projectId, item: itemId, field: fieldId }, itemId);
   }
 
   async function addSubIssue(issueId: string, subIssueId: string): Promise<void> {
@@ -408,5 +486,5 @@ export function createBoardClient(token: string, fetchFn: FetchLike = fetch): Bo
     }
   }
 
-  return { fetchBoard, setDate, setSingleSelect, addComment, createIssue, findIssue, addToProject, setText, addSubIssue };
+  return { fetchBoard, setDate, setSingleSelect, clearField, addComment, createIssue, findIssue, addToProject, setText, addSubIssue };
 }

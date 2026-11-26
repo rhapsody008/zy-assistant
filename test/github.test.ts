@@ -76,21 +76,36 @@ const PAGE = {
               __typename: "ProjectV2SingleSelectField",
               id: "F_STATUS",
               name: "Status",
+              dataType: "SINGLE_SELECT",
               options: [
                 { id: "O_TODO", name: "Todo" },
                 { id: "O_PROGRESS", name: "In progress" },
                 { id: "O_DONE", name: "Done" },
               ],
             },
-            { __typename: "ProjectV2Field", id: "F_TARGET", name: "Target date" },
-            { __typename: "ProjectV2Field", id: "F_TOUCH", name: "Next touch" },
-            { __typename: "ProjectV2Field", id: "F_ACTION", name: "Next action" },
-            { __typename: "ProjectV2Field", id: "F_WAITING", name: "Waiting on" },
-            { __typename: "ProjectV2SingleSelectField", id: "F_TYPE", name: "Work type", options: [{ id: "O_FEATURE", name: "Feature" }] },
-            { __typename: "ProjectV2SingleSelectField", id: "F_STAGE", name: "Stage", options: [{ id: "O_BUILD", name: "Build" }] },
-            { __typename: "ProjectV2Field", id: "F_TRACK", name: "Track" },
-            { __typename: "ProjectV2Field", id: "F_ACCOUNT", name: "Account" },
-            { __typename: "ProjectV2Field", id: "F_CADENCE", name: "Cadence" },
+            { __typename: "ProjectV2Field", id: "F_TARGET", name: "Target date", dataType: "DATE" },
+            { __typename: "ProjectV2Field", id: "F_TOUCH", name: "Next touch", dataType: "DATE" },
+            { __typename: "ProjectV2Field", id: "F_ACTION", name: "Next action", dataType: "TEXT" },
+            { __typename: "ProjectV2Field", id: "F_WAITING", name: "Waiting on", dataType: "TEXT" },
+            {
+              __typename: "ProjectV2SingleSelectField",
+              id: "F_TYPE",
+              name: "Work type",
+              dataType: "SINGLE_SELECT",
+              options: [{ id: "O_FEATURE", name: "Feature" }],
+            },
+            {
+              __typename: "ProjectV2SingleSelectField",
+              id: "F_STAGE",
+              name: "Stage",
+              dataType: "SINGLE_SELECT",
+              options: [{ id: "O_BUILD", name: "Build" }],
+            },
+            { __typename: "ProjectV2Field", id: "F_TRACK", name: "Track", dataType: "TEXT" },
+            { __typename: "ProjectV2Field", id: "F_ACCOUNT", name: "Account", dataType: "TEXT" },
+            { __typename: "ProjectV2Field", id: "F_CADENCE", name: "Cadence", dataType: "TEXT" },
+            // A field of a type no write here understands: number, in the real one.
+            { __typename: "ProjectV2Field", id: "F_ESTIMATE", name: "Estimate", dataType: "NUMBER" },
           ],
         },
         items: {
@@ -124,6 +139,7 @@ test("maps field names, item content and the closed rule", async () => {
   const status = result.fields.get("Status");
   assert.ok(status);
   assert.equal(status.id, "F_STATUS");
+  assert.equal(status.kind, "singleSelect");
   assert.equal(status.options?.get("Done"), "O_DONE");
   assert.equal(status.options?.get("In progress"), "O_PROGRESS");
   assert.equal(result.fields.get("Target date")?.id, "F_TARGET");
@@ -131,6 +147,12 @@ test("maps field names, item content and the closed rule", async () => {
   assert.equal(result.fields.get("Next action")?.id, "F_ACTION");
   assert.equal(result.fields.get("Waiting on")?.id, "F_WAITING");
   assert.equal(result.fields.get("Target date")?.options, undefined);
+  // A write is only ever sent to a field of its own type, so the type is kept.
+  assert.equal(result.fields.get("Target date")?.kind, "date");
+  assert.equal(result.fields.get("Next touch")?.kind, "date");
+  assert.equal(result.fields.get("Next action")?.kind, "text");
+  assert.equal(result.fields.get("Waiting on")?.kind, "text");
+  assert.equal(result.fields.get("Estimate")?.kind, "other", "a field kind no write here understands");
 
   assert.equal(result.items.length, 3);
   const [issue, merged, draft] = result.items;
@@ -186,6 +208,8 @@ test("the board query asks for 50 field values, the parent issue, the issue id a
   // A field selection on a union must sit inside an inline fragment on the
   // shared type, or the whole query fails.
   assert.ok(body.query.includes("... on ProjectV2FieldCommon { name }"), "field name inside the fragment");
+  // A field's own type: what tells a date field from a text one before a write.
+  assert.ok(body.query.includes("... on ProjectV2FieldCommon { id name dataType }"), "the field's dataType, with its name");
 });
 
 test("addComment posts the issue's node id and the body to the addComment mutation", async () => {
@@ -383,6 +407,39 @@ test("setText writes a text field with the SetText mutation", async () => {
   assert.deepEqual(body.variables, { project: "PVT_1", item: "ITEM_31", field: "F_ACTION", text: "chase Acme" });
 });
 
+test("clearField empties a field with the ClearField mutation, writing no value at all", async () => {
+  const { calls, fetchFn } = fakeAnswer(200, { data: { clearProjectV2ItemFieldValue: { projectV2Item: { id: "ITEM_31" } } } });
+
+  await createBoardClient("test-token", fetchFn).clearField("PVT_1", "ITEM_31", "F_TARGET");
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.github.com/graphql");
+  assert.equal((calls[0].init.headers as Record<string, string>).authorization, "Bearer test-token");
+  const body = sentGraphQL(calls[0]);
+  assert.match(body.query, /mutation ClearField\(\$project: ID!, \$item: ID!, \$field: ID!\)/);
+  assert.match(
+    body.query,
+    /clearProjectV2ItemFieldValue\(input: \{ projectId: \$project, itemId: \$item, fieldId: \$field \}\)/,
+    "the clear mutation takes no value: a date has no empty date",
+  );
+  assert.deepEqual(body.variables, { project: "PVT_1", item: "ITEM_31", field: "F_TARGET" });
+});
+
+test("a clear whose answer names no item is a failure, not a silent success", async () => {
+  const boardOf = (payload: unknown) => createBoardClient("test-token", fakeAnswer(200, { data: payload }).fetchFn);
+
+  // An envelope with no payload: nothing says the field is empty now.
+  await assert.rejects(
+    () => boardOf({ clearProjectV2ItemFieldValue: null }).clearField("PVT_1", "ITEM_31", "F_TARGET"),
+    /clearProjectV2ItemFieldValue: the response holds null, not the item ITEM_31/,
+  );
+  // A payload naming another item: the clear landed somewhere else, if at all.
+  await assert.rejects(
+    () => boardOf({ clearProjectV2ItemFieldValue: { projectV2Item: { id: "ITEM_OTHER" } } }).clearField("PVT_1", "ITEM_31", "F_TARGET"),
+    /clearProjectV2ItemFieldValue: the response holds "ITEM_OTHER", not the item ITEM_31/,
+  );
+});
+
 test("addSubIssue links the new issue to its parent engagement issue", async () => {
   const { calls, fetchFn } = fakeAnswer(200, { data: { addSubIssue: { issue: { id: "I_9" }, subIssue: { id: "I_31" } } } });
 
@@ -405,6 +462,26 @@ test("a write whose response holds no value is an error, not a silent success", 
   await assert.rejects(
     () => boardOf({ addSubIssue: { issue: { id: "I_9" }, subIssue: null } }).addSubIssue("I_9", "I_31"),
     /addSubIssue: the response holds no subIssue id/,
+  );
+  // A field write is the item its mutation answered with, and a comment is its
+  // own id: the envelope around them says nothing was written.
+  await assert.rejects(
+    () => boardOf({ updateProjectV2ItemFieldValue: null }).setDate("PVT_1", "ITEM_31", "F_TARGET", "2026-12-02"),
+    /updateProjectV2ItemFieldValue: the response holds null, not the item ITEM_31/,
+  );
+  await assert.rejects(
+    () =>
+      boardOf({ updateProjectV2ItemFieldValue: { projectV2Item: { id: "ITEM_OTHER" } } }).setText(
+        "PVT_1",
+        "ITEM_31",
+        "F_ACTION",
+        "chase Acme",
+      ),
+    /updateProjectV2ItemFieldValue: the response holds "ITEM_OTHER", not the item ITEM_31/,
+  );
+  await assert.rejects(
+    () => boardOf({ addComment: null }).addComment("I_12", "a body"),
+    /addComment: the response holds no comment id/,
   );
 });
 
