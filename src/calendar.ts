@@ -38,7 +38,7 @@ const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])
 /** A generatedAt further ahead than this is a clock that is wrong, not a push from the future. */
 const FUTURE_MS = 5 * 60_000;
 
-/** A 16-hex-character id: what a log line and a later ping name a meeting by. */
+/** A 16-hex-character id: what a log line names a meeting by, and what dedupes it. */
 const ID_RE = /^[0-9a-f]{16}$/;
 
 /** The longest a zone identifier may be: an IANA name is far shorter, and a zone identifier reaches a log line. */
@@ -60,7 +60,7 @@ export interface CalendarWindow {
 
 /** One meeting as the Mac derived it: no body, no location, and a title nothing here shows. */
 export interface CalendarEvent {
-  id: string; // opaque, 16 hex characters: what a log line and a later ping name it by
+  id: string; // opaque, 16 hex characters: the stable name a log line and dedupe use
   start: string;
   end: string;
   allDay: boolean;
@@ -218,7 +218,7 @@ export function parseSnapshot(text: string, now: Date): CalendarSnapshot {
   const seen = new Set<string>();
   for (let i = 0; i < value.events.length; i += 1) {
     const parsed = event(value.events[i], `events[${i}]`);
-    // An id is what a later ping names the meeting by: two of them would make one.
+    // An id is the stable name for the meeting: two events with one id would be one meeting.
     if (seen.has(parsed.id)) fail(`events[${i}].id`, "duplicate");
     seen.add(parsed.id);
     events.push(parsed);

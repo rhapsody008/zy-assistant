@@ -2,9 +2,10 @@
 
 `zya` is a local CLI over ZY's GitHub Project board, the notes repo and the Mac's
 calendar. It runs where ZY is, when ZY — or an agent acting for ZY — runs it: no
-chat bot, no database, no scheduler, no server. Every read prints its result; two
-commands write, and a write is a decision ZY makes before the command is typed
-(see **Writes**).
+chat bot, no database, no server, and no scheduler in the CLI itself. The one
+schedule anywhere is the delivery CronJob in `deploy/` (see **Delivery**). Every
+read prints its result; two commands write, and a write is a decision ZY makes
+before the command is typed (see **Writes**).
 
 - **reads**: `zya brief`, `zya yesterday`, `zya calendar`. They fetch, they print,
   they change nothing.
@@ -292,17 +293,21 @@ and every example above is a dry run for that reason.
   looking at what the failed run printed (see **zya update**).
 - **The reads are never gated**, because they change nothing.
 
-## Delivery (parked)
+## Delivery
 
-Delivery is parked: while this is a CLI, nothing is mailed, messaged or
-scheduled, and no queue holds a briefing until someone reads it. The shape it comes
-back in is a pipe, because the briefing is already text:
-`zya brief --links plain` writes it for a terminal — no markup to unescape, no
-asterisks — and one sender takes it from stdin and posts it, `zya brief --links
-plain | <sender>`. The sender's webhook URL is a secret: it is read from the macOS
-Keychain at the moment of sending (`security find-generic-password -s <item> -w`),
-never from a file in this repo. Nothing else is parked with it: the reads and the
-writes above do not depend on delivery.
+Every day at 09:00 Asia/Singapore a CronJob in `deploy/` posts the briefing. The
+NKP Project's continuous delivery applies it into the project namespace, where the
+job runs two containers: `brief` fetches this public repo as a tarball at the
+commit pinned in `ZYA_REF` and runs `zya brief --links plain`, writing
+`{"data": "<brief>"}`; `post` sends that file with one curl POST to
+`BRIEF_WEBHOOK_URL`. Both values — `GITHUB_TOKEN`, read-only is enough, and
+`BRIEF_WEBHOOK_URL` — come from the project secret `zy-assistant-brief`, never
+from git, and the URL never reaches a log.
+
+There is no retry (`backoffLimit: 0`): a failed run is re-run by hand, once nothing
+was posted. Upgrading zya in the cluster is bumping `ZYA_REF` in
+`deploy/cronjob.yaml`; weekdays only is the schedule `0 9 * * 1-5`. For one run by
+hand, create a Job from the CronJob, copying its pod template.
 
 ## Develop
 

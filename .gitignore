@@ -1,6 +1,4 @@
 node_modules/
-data/
-*.db
 
 # Built by mac/calendar/build.sh
 mac/calendar/zy-calendar-export.app/

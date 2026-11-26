@@ -48,9 +48,10 @@ function fileToken(readFile: ReadFile, path: string): string | null {
 }
 
 export function loadEnv(env: NodeJS.ProcessEnv = process.env, readFile: ReadFile = readFileSyncText): Env {
-  // Every variable is read the same way: unset and empty are the same thing, as
-  // they were in the bot's config. A blank line in a shell file is not a value,
-  // and "" reaches a query or a formatter as a worse answer than the default.
+  // Every variable is read the same way: unset and empty are the same thing, and
+  // the token may come from the file rather than the shell. A blank line in a
+  // shell file is not a value, and "" reaches a query or a formatter as a worse
+  // answer than the default.
   const get = (name: string): string => env[name] ?? "";
 
   const token = get("GITHUB_TOKEN") || fileToken(readFile, ENV_FILE);

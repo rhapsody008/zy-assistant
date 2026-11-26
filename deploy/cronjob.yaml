@@ -78,9 +78,15 @@ spec:
               command: ["/bin/sh", "-ec"]
               args:
                 - |
-                  curl -fsS -o /dev/null -w 'posted: HTTP %{http_code}\n' \
+                  # curl's own error lines can carry the URL, so they are dropped:
+                  # the log is the HTTP code and curl's exit code, never the URL.
+                  rc=0
+                  code=$(curl -gs -o /dev/null -w '%{http_code}' --max-time 30 \
                     -X POST -H 'Content-Type: application/json' \
-                    --data @/work/payload.json "$BRIEF_WEBHOOK_URL"
+                    --data @/work/payload.json "$BRIEF_WEBHOOK_URL" 2>/dev/null) || rc=$?
+                  echo "post: HTTP ${code:-000}, curl exit $rc"
+                  case "$code" in 2??) exit 0 ;; esac
+                  exit 1
               volumeMounts:
                 - name: work
                   mountPath: /work
