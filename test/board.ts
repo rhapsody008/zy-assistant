@@ -1,9 +1,9 @@
 // The test boards, in one place: how a test builds an Item, and the week fixture
-// the characterization test and the CLI's golden both read. One Item field is one
-// edit, and the two tests cannot disagree about what the fixture says.
+// the CLI's golden reads. One Item field is one edit here, so a test cannot
+// disagree with the fixture about what an item says.
 
 import { readFileSync } from "node:fs";
-import type { Item, SentPing } from "../src/rules.ts";
+import type { Item } from "../src/rules.ts";
 import { addDays, isWeekend } from "../src/time.ts";
 
 const UPDATED = "2026-11-20T00:00:00.000Z";
@@ -54,7 +54,6 @@ export interface FixtureItem {
 
 export interface Week {
   items: FixtureItem[];
-  history: SentPing[];
 }
 
 export const FIXTURES = new URL("./fixtures/", import.meta.url);
@@ -91,7 +90,7 @@ export function weekdays(from: string, to: string): string[] {
   return days;
 }
 
-/** The synthetic week: Mon 2026-11-23 .. Mon 2026-11-30, and the week's history. */
+/** The synthetic week: Mon 2026-11-23 .. Mon 2026-11-30. */
 export const WEEK = readJson<Week>("week.json");
 export const WEEK_ITEMS = WEEK.items.map(toItem);
 export const WEEK_DATES = weekdays("2026-11-23", "2026-11-30");
