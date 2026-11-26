@@ -1,13 +1,10 @@
-// The scribe's pure parts: the prompt a note model answers, the note's shape,
-// the entry it renders, where the entry goes in a folder's README, and where a
-// write may land at all. No I/O and no clock in here: every date and every
-// folder list is passed in, so the whole file is testable without a model,
-// without GitHub and without a chat client.
+// The scribe's pure parts: the note's shape, the entry it renders, where the
+// entry goes in a folder's README, and where a write may land at all. No I/O and
+// no clock in here: every date and every folder list is passed in, so the whole
+// file is testable without GitHub and without a network.
 //
 // Format v0 of an entry: a heading line (date, type, topic), then the notes, then
 // the attribution. Newest first, directly under the README's "## Log" line.
-
-import { TZ } from "./time.ts";
 
 export const NOTE_TYPES = [
   "POC",
@@ -30,7 +27,7 @@ export interface NoteAction {
 }
 
 export interface Note {
-  /** One of the folders the prompt was given, or null: then newFolderName has one. */
+  /** One of the repo's folders, or null: then newFolderName has one. */
   folder: string | null;
   newFolderName: string | null; // a name, not a path: Accounts/<name>
   date: string; // YYYY-MM-DD
@@ -41,74 +38,6 @@ export interface Note {
   decisions: string[];
   /** Where the board items in `note-items.ts` start from: the scribe only stores them. */
   actions: NoteAction[];
-}
-
-/**
- * What the note model is told, minus the two things that change per dictation
- * (today's date and the folder list): scribeSystemPrompt() appends those.
- */
-export const SCRIBE_SYSTEM_PROMPT = `You are the note scribe of ZY's assistant. ZY dictates a meeting or a work note in a Slack DM; you turn that dictation into one entry for ZY's private notes repo.
-
-Reply with ONE JSON object and nothing else: no prose, no explanation, no code fences.
-
-{
-  "folder": "<one of the folders listed below, exactly as written, or null>",
-  "newFolderName": "<a folder name under Accounts/, or null>",
-  "date": "YYYY-MM-DD",
-  "type": "POC" | "Workshop" | "Follow-up" | "Demo-Slides" | "Partner" | "Experiment" | "Learning" | "Admin" | "Meeting",
-  "topic": "<at most 8 words>",
-  "attendees": ["<person>"],
-  "summary": "<2 to 5 sentences>",
-  "decisions": ["<one decision>"],
-  "actions": [{ "owner": "ZY", "text": "<what to do>", "due": "YYYY-MM-DD" | null }]
-}
-
-Rules:
-- folder: pick it ONLY from the list of existing folders below, exactly as written. If none of them fits, set folder to null and suggest newFolderName instead (a plain name such as "Acme", which becomes Accounts/Acme).
-- folder and newFolderName are never both null: if no folder fits, suggest a new one.
-- date: the date the meeting or the work happened; today when the dictation does not say.
-- type: the closest of the listed types. A plain note with no other fit is "Meeting"; internal admin or process work is "Admin".
-- topic: at most 8 words, no trailing punctuation, no date in it: the date is its own field.
-- summary: 2 to 5 sentences saying what the dictation says, and nothing more.
-- attendees: the people the dictation names, as written; an empty array when it names none.
-- decisions: what was decided, one string each; an empty array when nothing was decided.
-- actions: one per thing somebody has to do. The owner is "ZY" when ZY does it (the dictation says "I", "me", "my"), otherwise the person or team named. due is a date only when the dictation gives one, otherwise null.
-- Never invent facts, names, numbers or dates. What the dictation does not say is not there.
-- Relative dates ("tomorrow", "next Friday", "in two weeks", "end of the month") resolve against today's date. "This Friday" is the next Friday on or after today (today itself when today is a Friday); "next Friday" is the Friday of the following week, 7 days after "this Friday". The same holds for every other weekday.
-- ZY is the user: "I", "me" and "mine" mean ZY's own words.
-- Empty arrays are fine and correct. Never pad a field to look complete.`;
-
-/** The system prompt for one dictation: the rules, today's date, the folders. */
-export function scribeSystemPrompt(today: string, folders: readonly string[]): string {
-  const list = folders.length === 0 ? ["(none yet)"] : folders.map((folder) => `- ${folder}`);
-  return [
-    SCRIBE_SYSTEM_PROMPT,
-    "",
-    `Today is ${today} (${TZ}).`,
-    "",
-    "Existing folders in the notes repo:",
-    ...list,
-  ].join("\n");
-}
-
-/**
- * A hint as one quoted phrase: a title is written by hand, so a quote or a
- * backslash in it must not end the sentence it is quoted in, and a newline must
- * not become a line of its own. Collapsed first, escaped second. Pure.
- */
-function quotedHint(hint: string): string {
-  return oneLine(hint).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-/** The dictation itself, and the title it was dictated under when there is one. */
-export function scribeUserPrompt(text: string, hint: string | null): string {
-  const lines = [`Dictation from Slack:`, "", text.trim()];
-  // Neutral between the two things a hint can be, a board item and a meeting ask:
-  // both pass a title, and only one of them is about the board. Nothing at all for
-  // a hint that is empty once collapsed, so no sentence quotes an empty title.
-  const about = hint === null ? "" : quotedHint(hint);
-  if (about !== "") lines.push("", `It is about "${about}".`);
-  return lines.join("\n");
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -226,7 +155,7 @@ export function validateNote(value: unknown): Note {
   };
 }
 
-const ATTRIBUTION = "_Scribed by zy-assistant from Slack._";
+const ATTRIBUTION = "_Written via zya._";
 
 /** One note as a format v0 entry: no trailing newline, blank lines between blocks. */
 export function renderEntry(note: Note): string {
@@ -248,15 +177,6 @@ export function renderEntry(note: Note): string {
 
   blocks.push([ATTRIBUTION]);
   return blocks.map((block) => block.join("\n")).join("\n\n");
-}
-
-/** A dictation the model could not turn into a note: kept verbatim, never parsed. */
-export function rawEntry(today: string, text: string): string {
-  const quoted = text
-    .trim()
-    .split("\n")
-    .map((line) => (line.trim() === "" ? ">" : `> ${line.trim()}`));
-  return [`## ${today} · Meeting · Raw dictation (unprocessed)`, "", ...quoted, "", ATTRIBUTION].join("\n");
 }
 
 /** Where a new README's table sends a note: ZY's accounts and partners first. */
@@ -309,20 +229,35 @@ const trimmedEnd = (text: string): string => text.replace(/\s+$/, "");
  * The README with one entry inserted under its first exact "## Log" line, newest
  * first, one blank line each side. No "## Log" line: the section is appended.
  * An entry that is already in there is not inserted twice.
+ *
+ * Nothing outside the insertion is touched: the text before the heading and the
+ * old entries under it are copied through as they are, whatever their endings and
+ * trailing whitespace. Only the entry itself is formatted, with the ending the
+ * heading line uses — so a CRLF README gets a CRLF entry, and a README with mixed
+ * endings keeps them.
  */
 export function insertEntry(readme: string, entry: string): string {
-  if (readme.includes(entry)) return readme;
+  // Compared with one ending, so an entry already in a CRLF README is still found.
+  if (readme.replace(/\r\n/g, "\n").includes(entry)) return readme;
 
-  const lines = readme.split("\n");
-  const at = lines.findIndex((line) => line === "## Log");
-  if (at === -1) {
+  const firstEnding = /\r\n|\n/.exec(readme)?.[0] ?? "\n";
+  // The first "## Log" line, with its own ending: the heading, and where the lines
+  // under it start. A heading that ends the file has none, and takes the file's.
+  const heading = /(^|\r?\n)## Log(\r\n|\n|$)/.exec(readme);
+  if (heading === null) {
+    const added = entry.split(/\r?\n/).join(firstEnding);
     const body = trimmedEnd(readme);
-    return body === "" ? `## Log\n\n${entry}\n` : `${body}\n\n## Log\n\n${entry}\n`;
+    return body === ""
+      ? `## Log${firstEnding}${firstEnding}${added}${firstEnding}`
+      : `${body}${firstEnding}${firstEnding}## Log${firstEnding}${firstEnding}${added}${firstEnding}`;
   }
 
-  const head = `${lines.slice(0, at + 1).join("\n")}\n\n`;
-  const rest = lines.slice(at + 1);
-  while (rest.length > 0 && rest[0].trim() === "") rest.shift();
+  const ending = heading[2] === "" ? firstEnding : heading[2];
+  const head = readme.slice(0, heading.index) + heading[0] + (heading[2] === "" ? ending : "");
+  // The blank lines right under the heading make room for the entry; everything
+  // after them is the old entries, copied as it was.
+  const rest = readme.slice(heading.index + heading[0].length).replace(/^(?:[^\S\r\n]*\r?\n)+/, "");
+  const added = entry.split(/\r?\n/).join(ending);
   // A README that ends with "## Log" has nothing after it but blank lines.
-  return rest.length === 0 ? `${head}${entry}\n` : `${head}${entry}\n\n${trimmedEnd(rest.join("\n"))}\n`;
+  return rest === "" ? `${head}${ending}${added}${ending}` : `${head}${ending}${added}${ending}${ending}${rest}`;
 }

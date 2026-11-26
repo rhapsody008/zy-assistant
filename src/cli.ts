@@ -1,13 +1,15 @@
 // The CLI: read the board, apply the rules, print what they say; read the Mac's
 // calendar, print what it holds; report what happened since the previous workday;
-// and, with `update`, write one item's fields and its comment to the board. The
-// reads change nothing, and nothing else here does: no store, no scheduler.
+// and, with `update`, write one item's fields and its comment to the board, and
+// with `note`, one note as an entry in the notes repo. The reads change nothing,
+// and nothing else here does: no store, no scheduler.
 //
 // Every dependency is injected (the board, the calendar export, the clock, the sink,
 // the env, the network), so the whole command runs in a test without a network, a
 // real clock, a Calendar or a token. The entry point at the bottom of the file is
 // the only part that touches process.
 
+import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { brief, type Brief } from "./brief.ts";
 import { appFromEnv, exportCalendar, MAC_DEPS, renderCalendar } from "./calendar-export.ts";
@@ -15,7 +17,10 @@ import type { CalendarSnapshot } from "./calendar.ts";
 import { loadEnv, type Env } from "./env.ts";
 import { errMessage } from "./errors.ts";
 import { createBoardClient, type BoardSource, type FetchLike } from "./github.ts";
+import { writeNote } from "./note.ts";
+import { createNotesClient, type NotesClient } from "./notes.ts";
 import { renderBrief, renderText, type Links } from "./render.ts";
+import { validateNote, type Note } from "./scribe.ts";
 import { localNow, TZ } from "./time.ts";
 import { applyUpdate, isDate, planUpdate, publicOp, type UpdateArgs } from "./update.ts";
 import { CALENDAR_DAYS_BACK, renderYesterday, yesterday, type CalendarSource } from "./yesterday.ts";
@@ -58,6 +63,16 @@ export interface UpdateCliDeps {
   env: Env;
 }
 
+/**
+ * What `zya note` needs: the notes repo, the JSON the note arrives as, and the
+ * sink. No board, no clock, no env: the note says its own date and its own folder.
+ */
+export interface NoteCliDeps {
+  notes: NotesClient;
+  stdin: () => Promise<string>;
+  out: (s: string) => void;
+}
+
 type Format = "md" | "json";
 
 /** What a flag may say. Anything else is a usage error, never a silent default. */
@@ -75,6 +90,7 @@ const USAGE = `zya: ZY's board, notes and calendar, read; zya update writes to t
   zya yesterday [--date YYYY-MM-DD] [--format md|json]
   zya update --ref R [--status S] [--target D|none] [--next-touch D|none]
              [--next-action T] [--waiting-on T] [--comment T] [--dry-run]
+  zya note [--dry-run]
 
   brief     the morning briefing of a day (default: today), as text or as JSON
   links     how a row's link and emphasis are written: markdown (default), plain
@@ -93,14 +109,20 @@ const USAGE = `zya: ZY's board, notes and calendar, read; zya update writes to t
             plan and writes nothing; a run prints the writes it confirmed, and the
             one it could not confirm, which may have landed: check the item before
             retrying
+  note      one note, as JSON on stdin, written into the notes repo as one entry
+            under its folder's Log, newest first. The folder is one the repo lists,
+            or a new Accounts/<name>. A run prints the folder, the README's path,
+            the entry and the commit's url; --dry-run prints the same, with no url,
+            and writes nothing
 `;
 
-/** The four commands, each already checked: what a run is given, never a flag to re-read. */
+/** The commands, each already checked: what a run is given, never a flag to re-read. */
 type Command =
   | { cmd: "brief"; date: string | null; format: Format; links: Links } // date null: today
   | { cmd: "calendar"; from: number; days: number; format: Format }
   | { cmd: "yesterday"; date: string | null; format: Format } // date null: today
-  | { cmd: "update"; dryRun: boolean; update: UpdateArgs };
+  | { cmd: "update"; dryRun: boolean; update: UpdateArgs }
+  | { cmd: "note"; dryRun: boolean };
 
 /** One of the named values, or null: a typo is a usage error, not a default. */
 function oneOf<T extends string>(allowed: readonly T[], value: string | undefined, fallback: T): T | null {
@@ -216,6 +238,15 @@ function parseCommand(argv: string[]): Command | null {
     return { cmd: "update", dryRun: dryRun ?? false, update };
   }
 
+  if (command === "note") {
+    // A note has no day, no format, no window and no board item: the JSON on stdin
+    // says everything it writes, and --dry-run is its only flag.
+    if (date !== undefined || format !== undefined || links !== undefined) return null;
+    if (days !== undefined || from !== undefined) return null;
+    if ([ref, status, target, nextTouch, nextAction, waitingOn, comment].some((value) => value !== undefined)) return null;
+    return { cmd: "note", dryRun: dryRun ?? false };
+  }
+
   return null;
 }
 
@@ -288,6 +319,34 @@ export async function runUpdateCli(argv: string[], deps: UpdateCliDeps): Promise
 }
 
 /**
+ * The note the JSON says: one scribe-format note, and nothing else. A stdin that is
+ * not JSON is refused here, where the message can say so.
+ */
+function noteFromJson(text: string): Note {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("note: stdin is not JSON");
+  }
+  return validateNote(value);
+}
+
+/**
+ * `zya note`: one note as JSON on stdin, one entry into the notes repo. The note is
+ * validated before the repo is read, so an invalid one writes nothing, and
+ * `--dry-run` prints what would be written and writes nothing either. The output is
+ * the folder, the README's path, the entry, and the commit's url (null in a dry run).
+ */
+export async function runNoteCli(argv: string[], deps: NoteCliDeps): Promise<number> {
+  const args = parseCommand(argv);
+  if (args === null || args.cmd !== "note") return usage();
+  const note = noteFromJson(await deps.stdin());
+  deps.out(asJson(await writeNote(deps.notes, note, { dryRun: args.dryRun })));
+  return 0;
+}
+
+/**
  * The briefing as JSON: the same strings the text format prints, in the same
  * shape as the Brief, with the renderer's links applied to each of them.
  */
@@ -334,6 +393,19 @@ async function main(argv: string[]): Promise<number> {
         calendar: (request) => exportCalendar({ ...request, app: appFromEnv() }, MAC_DEPS),
         out: (s) => void process.stdout.write(s),
         tz: TZ,
+      });
+    }
+    if (args.cmd === "note") {
+      // A note writes no board item and reads no board: the board's own settings are
+      // left out of the env rather than refused, so a broken PROJECT_NUMBER is not a
+      // note's failure. The token and the notes repo come from the same loader as
+      // every other command's.
+      const { PROJECT_OWNER: _owner, PROJECT_NUMBER: _number, ...notesOnly } = process.env;
+      const env = loadEnv(notesOnly);
+      return await runNoteCli(argv, {
+        notes: createNotesClient({ repo: env.notesRepo, token: env.token }),
+        stdin: async () => readFileSync(0, "utf8"),
+        out: (s) => void process.stdout.write(s),
       });
     }
     const env = loadEnv();
